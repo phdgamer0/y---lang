@@ -1,0 +1,3 @@
+define function foo(str: string("hello")) -> string(): {
+   return str
+}
