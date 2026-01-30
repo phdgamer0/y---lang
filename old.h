@@ -2174,13 +2174,15 @@ struct Var {
 	Value value;
 	Value* alias = nullptr;
 	bool isConst = false;
+	bool isLocked = false;
 };
 struct LValue {
 	Value* ref = nullptr;
 	bool isRefTarget = false;
 	bool isConstView = false;
+	bool isLocked = false;
 	LValue() = default;
-	LValue(Value* r, bool i, bool c = false) : ref(r), isRefTarget(i), isConstView(c) {}
+	LValue(Value* r, bool i, bool c = false, bool l = false) : ref(r), isRefTarget(i), isConstView(c), isLocked(l) {}
 };
 struct CallArg { Value value; LValue lvalue; bool hasLValue = false; };
 struct Env {
@@ -2197,7 +2199,7 @@ struct Env {
 	}
 	void set(const string& n, Value v, bool locked, bool isConstVar = false) {
 		if (locked && v.ref) v.ref->typeLocked = true;
-		vars[n] = Var{ v, nullptr, isConstVar };
+		vars[n] = Var{ v, nullptr, isConstVar, locked };
 	}
 	Value get(const string& n) {
 		Var& var = lookup(n);
@@ -3366,14 +3368,13 @@ struct Interpreter {
 			}
 			return Value::String(line);
 		}), false);
-	}
-	
+	}	
 	LValue resolveLValue(Expr* e) {
 		if (auto v = dynamic_cast<VarExpr*>(e)) {
 			if (!env->exists(v->name)) throw NameError("Undefined variable '" + v->name + "'", e->line, e->col);
 			Var& var = env->lookup(v->name);
-			if (var.alias) return LValue(var.alias, true, var.isConst);
-			return LValue(&var.value, false, var.isConst);
+			if (var.alias) return LValue(var.alias, true, var.isConst, var.isLocked);
+			return LValue(&var.value, false, var.isConst, var.isLocked);
 		}
 		if (auto idx = dynamic_cast<IndexExpr*>(e)) {
 			LValue base = resolveLValue(idx->base);
@@ -5270,6 +5271,9 @@ struct Interpreter {
 				Value& cur = *lv.ref;
 				if (cur.isConst || lv.isConstView) throw ConstError("Cannot assign to or modify const variable", s->line, s->col);
 				Value rhs = eval(as->value);
+				if (lv.isLocked && cur.type != rhs.type) {
+					throw TypeError("Cannot change type of locked variable", s->line, s->col);
+				}
 				if (as->op == TokenType::ASSIGN) {
 					if (lv.isRefTarget) {
 						*lv.ref = rhs;
@@ -6755,7 +6759,6 @@ struct VM {
 				globals->set(name, val, false, false); // Define in our Env
 				break;
 			}
-
 			case OpCode::OP_GET_VAR: {
 				uint8_t nameIndex = *ip++;
 				string name = chunk.constants[nameIndex].asString();
@@ -6777,7 +6780,6 @@ struct VM {
 				}
 				break;
 			}
-
 			case OpCode::OP_JUMP: {
 				uint8_t hi = *ip++;
 				uint8_t lo = *ip++;

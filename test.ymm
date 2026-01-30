@@ -1,7 +1,5 @@
 define function main(): {
-   print(not (
-    (true and false)
-   or
-      ((false xor true) nand(true nxor false))
-) nor false)
+   let x := 1.7
+   x = true
+   print(x)
 }
