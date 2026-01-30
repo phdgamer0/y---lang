@@ -1,4 +1,7 @@
 define function main(): {
-	let s
-	print(s)
+   print(not (
+    (true and false)
+   or
+      ((false xor true) nand(true nxor false))
+) nor false)
 }

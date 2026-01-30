@@ -6386,12 +6386,13 @@ enum class OpCode : uint8_t {
 	// Variables & Scope
 	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR,
 	// Arithmetic & Logic
-	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_POW,
-	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE,
-	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN,
+	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW,
+	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_BUILD_IN,
+	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, 
+	OP_BUILD_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE,
 	// Containers
 	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT,
-	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING,
+	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE,
 	// Access & Calls
 	OP_GET_INDEX, OP_SET_INDEX, OP_INVOKE, OP_CALL,
 	// Control Flow
@@ -6467,6 +6468,11 @@ struct ByteCodeCompiler {
 	}
 	// Helper to handle the left-right-operator pattern of math
 	void compileBinary(BinExpr* b) {
+		if (b->op == TokenType::NOT) {
+			compile(b->right);
+			emitByte(OpCode::OP_NOT, b->line);
+			return; // Exit early!
+		}
 		compile(b->left);  // Push left operand to VM stack
 		compile(b->right); // Push right operand to VM stack
 
@@ -6475,10 +6481,45 @@ struct ByteCodeCompiler {
 		case TokenType::MINUS: emitByte(OpCode::OP_SUB, b->line); break;
 		case TokenType::STAR:  emitByte(OpCode::OP_MUL, b->line); break;
 		case TokenType::SLASH: emitByte(OpCode::OP_DIV, b->line); break;
+			//Logic
+		case TokenType::GT:    emitByte(OpCode::OP_GT, b->line); break;
+		case TokenType::GTE:   emitByte(OpCode::OP_GTE, b->line); break;
 		case TokenType::EQ:    emitByte(OpCode::OP_EQ, b->line); break;
 		case TokenType::NEQ:   emitByte(OpCode::OP_NEQ, b->line); break;
+		case TokenType::LT:    emitByte(OpCode::OP_LT, b->line); break;
+		case TokenType::LTE:   emitByte(OpCode::OP_LTE, b->line); break;
+
+			// Identity & Membership
+		case TokenType::IS:        emitByte(OpCode::OP_IS, b->line); break;
+		case TokenType::IS_NOT:    emitByte(OpCode::OP_IS_NOT, b->line); break;
+		case TokenType::IS_IN:     emitByte(OpCode::OP_BUILD_IN, b->line); break;
+		case TokenType::IS_NOT_IN: emitByte(OpCode::OP_BUILD_NOT_IN, b->line); break;
+
+			// Logical (non-short-circuiting)
+		case TokenType::XOR:  emitByte(OpCode::OP_XOR, b->line); break;
+		case TokenType::NXOR: emitByte(OpCode::OP_NXOR, b->line); break;
+		case TokenType::NOR:  emitByte(OpCode::OP_NOR, b->line); break;
+		case TokenType::NAND: emitByte(OpCode::OP_NAND, b->line); break;
 			// Add more token mappings here as we go
 		default: break;
+		}
+	}
+	void compileLogical(BinExpr* l) {
+		if (l->op == TokenType::AND) {
+			compile(l->left);
+			int endJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line);
+			emitByte(OpCode::OP_POP, l->line); // Pop left if it was true
+			compile(l->right);
+			patchJump(endJump);
+		}
+		else if (l->op == TokenType::OR) {
+			compile(l->left);
+			int elseJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line);
+			int endJump = emitJump(OpCode::OP_JUMP, l->line);
+			patchJump(elseJump);
+			emitByte(OpCode::OP_POP, l->line); // Pop left if it was false
+			compile(l->right);
+			patchJump(endJump);
 		}
 	}
 	// --- Low-level Emitting ---
@@ -6538,7 +6579,6 @@ struct ByteCodeCompiler {
 		case StmtType::ASSIGN: {
 			auto as = static_cast<AssignStmt*>(s);
 			compile(as->value);
-			// We assume for now the target is a simple variable (VarExpr)
 			if (auto v = dynamic_cast<VarExpr*>(as->target)) {
 				emitIdentifier(OpCode::OP_SET_VAR, v->name, as->line);
 			}
@@ -6546,17 +6586,29 @@ struct ByteCodeCompiler {
 		}
 		case StmtType::IF: {
 			auto ifs = static_cast<IfStmt*>(s);
-
-			compile(ifs->condition); // Leaves a Bool on the stack
-
-			// Jump if the condition is FALSE
-			int jumpOffset = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line);
-
-			emitByte(OpCode::OP_POP, ifs->line); // Clean up the condition result
+			vector<int> exitJumps;
+			compile(ifs->condition);
+			int jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line);
+			emitByte(OpCode::OP_POP, ifs->line);
 			for (auto stmt : ifs->body) compileStmt(stmt);
-
-			patchJump(jumpOffset);
-			emitByte(OpCode::OP_POP, ifs->line); // Clean up condition result on jump-path
+			exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line));
+			patchJump(jumpToNext);
+			emitByte(OpCode::OP_POP, ifs->line);
+			for (const auto& elif : ifs->elifs) {
+				compile(elif.first);
+				jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line);
+				emitByte(OpCode::OP_POP, ifs->line);
+				for (auto stmt : elif.second) compileStmt(stmt);
+				exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line));
+				patchJump(jumpToNext);
+				emitByte(OpCode::OP_POP, ifs->line);
+			}
+			if (!ifs->elseBody.empty()) {
+				for (auto stmt : ifs->elseBody) compileStmt(stmt);
+			}
+			for (int offset : exitJumps) {
+				patchJump(offset);
+			}
 			break;
 		}
 		case StmtType::FUNC: {
@@ -6597,7 +6649,6 @@ struct VM {
 
 	VM() {
 		globals = std::make_shared<Env>();
-		globals->set("None", Value::None(), true);
 
 			// Register your existing native print function
 			globals->set("print", Value::Native([this](const vector<Value>& args, int l, int c) {
@@ -6649,7 +6700,54 @@ struct VM {
 				}
 				break;
 			}
-
+									 // --- Comparisons ---
+			case OpCode::OP_GT: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() > b.asFloat())); break; }
+			case OpCode::OP_GTE: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() >= b.asFloat())); break; }
+			case OpCode::OP_LT: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() < b.asFloat())); break; }
+			case OpCode::OP_LTE: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() <= b.asFloat())); break; }
+			case OpCode::OP_EQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.strictEquals(b))); break; }
+			case OpCode::OP_NEQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.strictEquals(b)))); break; }
+			case OpCode::OP_IS: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Bool(a.type == b.type && a.ref.get() == b.ref.get()));
+				break;
+			}
+			case OpCode::OP_IS_NOT: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Bool(!(a.type == b.type && a.ref.get() == b.ref.get())));
+				break;
+			}
+			case OpCode::OP_XOR: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Bool(a.isTruthy() != b.isTruthy()));
+				break;
+			}
+			case OpCode::OP_NXOR: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Bool(a.isTruthy() == b.isTruthy()));
+				break;
+			}
+			case OpCode::OP_NAND: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Bool(!(a.isTruthy() && b.isTruthy())));
+				break;
+			}
+			case OpCode::OP_NOR: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Bool(!(a.isTruthy() || b.isTruthy())));
+				break;
+			}
+			case OpCode::OP_NOT: {
+				Value v = pop();
+				stack.push_back(Value::Bool(!v.isTruthy()));
+				break;
+			}
+			case OpCode::OP_NEGATE: {
+				Value v = pop();
+				if (v.type == ValueType::INT) stack.push_back(Value::Int(-v.iVal));
+				else stack.push_back(Value::Float(-v.asFloat()));
+				break;
+			}
 			case OpCode::OP_DEFINE_VAR: {
 				uint8_t nameIndex = *ip++;
 				string name = chunk.constants[nameIndex].asString();

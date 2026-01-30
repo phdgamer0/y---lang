@@ -5,7 +5,7 @@
 #include <iostream>
 
 int main() {
-   string path = "C:\\Users\\Windows\\source\\repos\\y--\\test.ymm";
+   string path = "C:\\Users\\Windows\\source\\repos\\phdgamer0\\y---lang\\test.ymm";
    std::ifstream file(path);
    if (!file) {
       std::cerr << "FATAL ERROR: Cannot open file at path:" << path << "\n";
@@ -23,7 +23,9 @@ int main() {
          program.push_back(parser.parseStmt());
       }
 
-      bool useVM = true; // Toggle this to true to use your new VM!
+      int useVM; // Toggle this to true to use your new VM!
+      cout<<"Choose Compiler: AST:0 VM:1 :";
+      cin>>useVM;
 
       if (!useVM) {
          Interpreter interp;
@@ -69,8 +71,8 @@ int main() {
          }
          // 4. Optional: If the last statement was an expression, show the result
          if (!vm.stack.empty()) {
-            std::cout << "\n--- Final Stack Top ---\n";
-            std::cout << valueToString(vm.stack.back()) << "\n";
+            //std::cout << "\n--- Final Stack Top ---\n";
+            //std::cout << valueToString(vm.stack.back()) << "\n";
          }
       }
    }
