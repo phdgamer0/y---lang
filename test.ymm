@@ -1,38 +1,4 @@
-~import Random
-define function FillMatrix(@mat:list())->list(): {
-	for i in range(length(mat)) do: {
-		for j in range(length(mat[0])) do: {
-			mat[i][j] = RandChoice(range(9))
-		}
-	}
-	return @mat
-}
-define function MakeMatrix(row:int(0),col:int(0))->list(): {
-	if row < 1 or col < 1: return
-	return [[0] * col]*row
-}
-define function MatrixMul(this: list(), that: list()) -> list(): {
-	if length(this[0]) != length(that): return []
-	let res = MakeMatrix(length(this), length(that[0]))
-	for i in range(length(this)) do: {
-		for j in range(length(that[0])) do: {
-			for k in range(length(that)) do: {
-				res[i][j]+=this[i][k]*that[k][j]
-			}
-		}
-	}
-	return res
-}
-define function convert($str:string(),base:int()) -> int(): {
-	if not str or base is not in range(2...37) or base === 10 or not str.isalnum(): return -1
-	let res, pos := 0,0
-	for char in str.lower().chars().reverse() do: {
-		res += base ** pos * (char.ascii() - ("a".ascii() - 10 if char.isalpha() else "0".ascii()))
-		pos++
-	}
-	return res
-}
 define function main(): {
-	print("")
-
+	let s
+	print(s)
 }
