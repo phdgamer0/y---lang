@@ -6413,7 +6413,7 @@ private:
 // ------------ BYTECODE VM ------------
 enum class OpCode : uint8_t {
 	// Literals & Constants
-	OP_CONSTANT, OP_TRUE, OP_FALSE, OP_NONE, OP_NOTYPE, OP_OMIT,
+	OP_CONSTANT, OP_TRUE, OP_FALSE, OP_NONE, OP_NOTYPE,
 	// Variables & Scope
 	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY,
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF,
@@ -6424,13 +6424,13 @@ enum class OpCode : uint8_t {
 	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
 	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
 	// Containers
-	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT,
+	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT, OP_UNPACK_DICT,
 	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE,
 	// Access & Calls
 	OP_GET_INDEX, OP_SET_INDEX, OP_INVOKE, OP_CALL,
 	// Control Flow
-	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN,
-	OP_BREAK, OP_CONTINUE, OP_SKIP,
+	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN, OP_TO_STREAM,
+	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER,
 	// Errors & Systems
 	OP_THROW, OP_ASSERT, OP_IMPORT, OP_POP
 };
@@ -6452,8 +6452,15 @@ struct Chunk {
 		return static_cast<int>(constants.size() - 1);
 	}
 };
+struct LoopContext {
+	int startAddress;
+	int stepAddress;
+	vector<int> breakJumps;
+	vector<int> continueJumps;
+};
 struct ByteCodeCompiler {
 	Chunk* chunk;
+	vector<LoopContext> loopStack;
 	ByteCodeCompiler(Chunk* c) : chunk(c) {}
 	void compile(Expr* e) {
 		if (!e) return;
@@ -6730,6 +6737,7 @@ struct ByteCodeCompiler {
 				}
 			}
 			emitIdentifier(OpCode::OP_SET_VAR, v->name, as->line, as->col);
+			emitByte(OpCode::OP_POP, as->line, as->col);
 			break;
 		}
 		case StmtType::IF: {
@@ -6815,6 +6823,110 @@ struct ByteCodeCompiler {
 			}
 			break;
 		}
+		case StmtType::WHILE: {
+			auto w = static_cast<WhileStmt*>(s);
+			int startAddr = (int)chunk->code.size();
+			LoopContext loop = { startAddr, startAddr, {}, {} };
+			loopStack.push_back(loop);
+			compile(w->condition);
+			int exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, w->line, w->col);
+			emitByte(OpCode::OP_POP, w->line, w->col);
+			for (auto stmt : w->body) compileStmt(stmt);
+			emitLoop(startAddr, w->line, w->col);
+			patchJump(exitJump);
+			emitByte(OpCode::OP_POP, w->line, w->col);
+			for (int b : loopStack.back().breakJumps) patchJump(b);
+			loopStack.pop_back();
+			break;
+		}
+		case StmtType::FOR: {
+			auto f = static_cast<ForStmt*>(s);
+			for (auto init : f->inits) compileStmt(init);
+			int condAddr = (int)chunk->code.size();
+			int exitJump = -1;
+			if (f->condition) {
+				compile(f->condition);
+				exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, f->line, f->col);
+				emitByte(OpCode::OP_POP, f->line, f->col);
+			}
+			LoopContext loop = { condAddr, -1, {}, {} };
+			loopStack.push_back(loop);
+			for (auto stmt : f->body) compileStmt(stmt);
+			int stepStart = (int)chunk->code.size();
+			for (int jump : loopStack.back().continueJumps) {
+				patchJump(jump);
+			}
+			loopStack.back().stepAddress = stepStart;
+			for (auto step : f->steps) compileStmt(step);
+			emitLoop(condAddr, f->line, f->col);
+			if (exitJump != -1) {
+				patchJump(exitJump);
+				emitByte(OpCode::OP_POP, f->line, f->col);
+			}
+			for (int b : loopStack.back().breakJumps) patchJump(b);
+			loopStack.pop_back();
+			break;
+		}
+		case StmtType::FOR_EACH: {
+			auto fe = static_cast<ForEachStmt*>(s);
+			size_t colCount = fe->collections.size();
+			size_t varCount = fe->loopVars.size();
+			bool isDictUnpack = (colCount == 1 && varCount == 2);
+			bool isOneToOne = (colCount == varCount);
+			if (!isDictUnpack && !isOneToOne) {
+				throw RuntimeError("Mismatch between loop variables and collections.", fe->line, fe->col);
+			}
+			int streamCount = isDictUnpack ? 2 : (int)colCount;
+			if (isDictUnpack) {
+				compile(fe->collections[0]);
+				emitByte(OpCode::OP_UNPACK_DICT, fe->line, fe->col);
+			}
+			else {
+				for (auto col : fe->collections) {
+					compile(col);
+					emitByte(OpCode::OP_TO_STREAM, fe->line, fe->col);
+				}
+			}
+			emitConstant(Value::Int(0), fe->line, fe->col);
+			int startAddr = (int)chunk->code.size();
+			emitByte(OpCode::OP_FOR_ITER, fe->line, fe->col);
+			int exitJump = (int)chunk->code.size();
+			chunk->write(0xff, fe->line, fe->col);
+			chunk->write(0xff, fe->line, fe->col);
+			chunk->write((uint8_t)streamCount, fe->line, fe->col);
+			for (int i = (int)fe->loopVars.size() - 1; i >= 0; i--) {
+				emitIdentifier(OpCode::OP_DEFINE_VAR, fe->loopVars[i], fe->line, fe->col);
+				chunk->write(0, fe->line, fe->col);
+			}
+			loopStack.push_back({ startAddr, startAddr, {}, {} });
+			for (auto stmt : fe->body) compileStmt(stmt);
+			emitLoop(startAddr, fe->line, fe->col);
+			patchJump(exitJump);
+			emitByte(OpCode::OP_POP, fe->line, fe->col);
+			for (int i = 0; i < streamCount; i++) {
+				emitByte(OpCode::OP_POP, fe->line, fe->col);
+			}
+			for (int b : loopStack.back().breakJumps) patchJump(b);
+			loopStack.pop_back();
+			break;
+		}
+		case StmtType::BREAK: {
+			if (loopStack.empty()) throw RuntimeError("break outside of loop", s->line, s->col);
+			loopStack.back().breakJumps.push_back(emitJump(OpCode::OP_JUMP, s->line, s->col));
+			break;
+		}
+		case StmtType::CONTINUE: {
+			if (loopStack.empty()) throw RuntimeError("continue outside of loop", s->line, s->col);
+			int target = loopStack.back().stepAddress;
+			if (target == -1) {
+				int jump = emitJump(OpCode::OP_JUMP, s->line, s->col);
+				loopStack.back().continueJumps.push_back(jump);
+			}
+			else {
+				emitLoop(target, s->line, s->col);
+			}
+			break;
+		}
 		default:
 			break;
 		}
@@ -6823,6 +6935,13 @@ struct ByteCodeCompiler {
 		int index = chunk->addConstant(Value::String(name));
 		emitByte(op, line, col);
 		chunk->write(static_cast<uint8_t>(index), line, col);
+	}
+	void emitLoop(int loopStart, int line, int col) {
+		emitByte(OpCode::OP_LOOP, line, col);
+		int offset = (int)chunk->code.size() - loopStart + 2;
+		if (offset > 65535) throw RuntimeError("Loop body too large", line, col);
+		chunk->write((offset >> 8) & 0xff, line, col);
+		chunk->write(offset & 0xff, line, col);
 	}
 };
 struct VM {
@@ -6844,8 +6963,12 @@ struct VM {
 		uint8_t* ip = chunk.code.data();
 		uint8_t* end = ip + chunk.code.size();
 		while (ip < end) {
+			// --- DEBUGGER START ---
+			//int currentOffset = (int)(ip - chunk.code.data());
+			//printf("IP: %d | OpCode: %d | StackSize: %d\n", currentOffset, *ip, (int)stack.size());
+			// --- DEBUGGER END ---
 			OpCode instruction = static_cast<OpCode>(*ip++);
-			int line = chunk.lines[ip - chunk.code.data() - 1];
+			int line = chunk.lines[ip - chunk.code.data() - 1];		
 			switch (instruction) {
 			case OpCode::OP_CONSTANT: {
 				uint8_t index = *ip++;
@@ -7003,19 +7126,19 @@ struct VM {
 				}
 				else if (rhs.type == ValueType::LIST) {
 					auto* list = static_cast<ListObject*>(rhs.ref.get());
-						for (const auto& item : list->elements) {
-							if (item.strictEquals(lhs)) { found = true; break; }
-						}
+					for (const auto& item : list->elements) {
+						if (item.strictEquals(lhs)) { found = true; break; }
+					}
 				}
 				else if (rhs.type == ValueType::DICT) {
 					auto* d = static_cast<DictObject*>(rhs.ref.get());
-						found = d->items.count(lhs) > 0;
+					found = d->items.count(lhs) > 0;
 				}
 				else if (rhs.type == ValueType::SET) {
 					auto* s = static_cast<SetObject*>(rhs.ref.get());
-						for (const auto& item : s->elements) {
-							if (item.strictEquals(lhs)) { found = true; break; }
-						}
+					for (const auto& item : s->elements) {
+						if (item.strictEquals(lhs)) { found = true; break; }
+					}
 				}
 				else if (rhs.type == ValueType::RANGE) {
 					auto* rng = static_cast<RangeObject*>(rhs.ref.get());
@@ -7029,11 +7152,18 @@ struct VM {
 						}
 						else {
 							found = inBounds;
-							}
+						}
 					}
 				}
 				bool finalResult = (instruction == OpCode::OP_IS_IN) ? found : !found;
 				stack.push_back(Value::Bool(finalResult));
+				break;
+			}
+			case OpCode::OP_LOOP: {
+				uint8_t hi = *ip++;
+				uint8_t lo = *ip++;
+				uint16_t offset = (hi << 8) | lo;
+				ip -= offset;
 				break;
 			}
 			case OpCode::OP_DEFINE_VAR: {
@@ -7055,7 +7185,6 @@ struct VM {
 				stack.push_back(globals->get(name));
 				break;
 			}
-
 			case OpCode::OP_RETURN:
 				return;
 			case OpCode::OP_JUMP_IF_FALSE: {
@@ -7091,6 +7220,22 @@ struct VM {
 				}
 				break;
 			}
+			case OpCode::OP_UNPACK_DICT: {
+				Value v = pop();
+				if (v.type != ValueType::DICT) {
+					throw RuntimeError("Cannot unpack non-dictionary", line, 0);
+				}
+				auto dict = static_cast<DictObject*>(v.ref.get());
+				auto keys = std::make_shared<ListObject>();
+				auto vals = std::make_shared<ListObject>();
+				for (const auto& pair : dict->items) {
+					keys->elements.push_back(pair.first);
+					vals->elements.push_back(pair.second);
+				}
+				stack.push_back(Value::List(keys->elements));
+				stack.push_back(Value::List(vals->elements));
+				break;
+			}
 			case OpCode::OP_SET_VAR: {
 				uint8_t nameIndex = *ip++;
 				string name = chunk.constants[nameIndex].asString();
@@ -7104,12 +7249,10 @@ struct VM {
 			case OpCode::OP_DEFINE_REF: {
 				uint8_t nameIdx = *ip++;
 				string newVarName = chunk.constants[nameIdx].asString();
-
 				OpCode subOp = static_cast<OpCode>(*ip++);
 				if (subOp == OpCode::OP_REF_VAR) {
 					string targetName = chunk.constants[*ip++].asString();
 					Var& targetVar = globals->lookup(targetName);
-
 					Var aliasVar;
 					aliasVar.alias = targetVar.alias ? targetVar.alias : &targetVar.value;
 					globals->vars[newVarName] = aliasVar;
@@ -7120,7 +7263,6 @@ struct VM {
 					if (base.type == ValueType::LIST) {
 						auto* list = static_cast<ListObject*>(base.ref.get());
 						int i = (int)index.asInt();
-
 						Var aliasVar;
 						aliasVar.alias = &list->elements[i];
 						globals->vars[newVarName] = aliasVar;
@@ -7147,6 +7289,43 @@ struct VM {
 				p.push_back({ k, v });
 				stack.push_back(Value::Paired(p));
 					break;
+			}
+			case OpCode::OP_TO_STREAM: {
+				Value v = pop();
+				auto streamList = collectionToStream(v, line);
+				stack.push_back(Value::List(streamList->elements));
+				break;
+			}
+			case OpCode::OP_FOR_ITER: {
+				uint8_t* jumpOffsetAddr = ip;
+				uint16_t offset = (jumpOffsetAddr[0] << 8) | jumpOffsetAddr[1];
+				ip += 2;
+				uint8_t count = *ip++;
+				Value& indexVal = stack.back();
+				long long currentIndex = indexVal.asInt();
+				bool valid = true;
+				vector<Value> nextValues;
+				for (int i = 0; i < count; i++) {
+					int stackPos = stack.size() - 1 - count + i;
+					Value& streamVal = stack[stackPos];
+					if (streamVal.type != ValueType::LIST) {
+						throw RuntimeError("Internal Error: Non-list stream in iterator", line, 0);
+					}
+					auto* listObj = static_cast<ListObject*>(streamVal.ref.get());
+					if (currentIndex >= (long long)listObj->elements.size()) {
+						valid = false;
+						break;
+					}
+					nextValues.push_back(listObj->elements[currentIndex]);
+				}
+				if (valid) {
+					for (const auto& val : nextValues) stack.push_back(val);
+					stack[stack.size() - 1 - count].iVal++;
+				}
+				else {
+					ip = jumpOffsetAddr + 2 + offset;
+				}
+				break;
 			}
 			//CONTAINERS
 			case OpCode::OP_BUILD_LIST: {
@@ -7234,6 +7413,50 @@ struct VM {
 	}
 
 private:
+	std::shared_ptr<ListObject> collectionToStream(Value collection, int line) {
+		auto list = std::make_shared<ListObject>();
+		if (collection.type == ValueType::LIST) {
+			auto* src = static_cast<ListObject*>(collection.ref.get());
+			list->elements = src->elements;
+		}
+		else if (collection.type == ValueType::TUPLE) {
+			auto* src = static_cast<TupleObject*>(collection.ref.get());
+			list->elements = src->elements;
+		}
+		else if (collection.type == ValueType::SET) {
+			auto* src = static_cast<SetObject*>(collection.ref.get());
+			for (const auto& el : src->elements) list->elements.push_back(el);
+		}
+		else if (collection.type == ValueType::STRING) {
+			string str = collection.asString();
+			for (char c : str) list->elements.push_back(Value::String(string(1, c)));
+		}
+		else if (collection.type == ValueType::DICT) {
+			auto* dict = static_cast<DictObject*>(collection.ref.get());
+			for (const auto& pair : dict->items) list->elements.push_back(pair.first);
+		}
+		else if (collection.type == ValueType::VECTOR) {
+			auto* vec = static_cast<VectorObject*>(collection.ref.get());
+			for (double d : vec->elements) list->elements.push_back(Value::Float(d));
+		}
+		else if (collection.type == ValueType::RANGE) {
+			auto* r = static_cast<RangeObject*>(collection.ref.get());
+			double cur = r->start;
+			if (!r->startInclusive) cur += r->step;
+			while (true) {
+				bool keep = (r->step > 0) ?
+					(r->endInclusive ? cur <= r->end : cur < r->end) :
+					(r->endInclusive ? cur >= r->end : cur > r->end);
+				if (!keep) break;
+				list->elements.push_back(r->isFloat ? Value::Float(cur) : Value::Int((long long)cur));
+				cur += r->step;
+			}
+		}
+		else {
+			throw TypeError("Object is not iterable", line, 0);
+		}
+		return list;
+	}
 	Value pop() {
 		if (stack.empty()) throw InternalError("Stack underflow", 0, 0);
 		Value v = stack.back();
