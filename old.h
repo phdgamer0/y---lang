@@ -1761,6 +1761,7 @@ struct Value {
 	bool bVal = false;
 	std::shared_ptr<HeapObject> ref;
 	bool isConst = false;
+	bool isLocked = false;
 	static Value Int(long long v, bool locked = false, bool isConst = false);
 	static Value Float(double v, bool locked = false, bool isConst = false);
 	static Value Bool(bool v, bool locked = false, bool isConst = false);
@@ -2198,12 +2199,28 @@ struct Env {
 		return vars.count(n);
 	}
 	void set(const string& n, Value v, bool locked, bool isConstVar = false) {
+		if (vars.count(n)) {
+			Var& existing = vars[n];
+			if (existing.isLocked && existing.value.type != v.type) {
+				throw RuntimeError("Type mismatch: variable '" + n + "' is type-locked.", 0, 0);
+			}
+			if (existing.isConst) throw RuntimeError("Cannot reassign a constant variable '" + n + "'", 0, 0);
+			existing.value = v;
+			v.isLocked = existing.isLocked;
+			v.isConst = existing.isConst;
+			return;
+		}
+		v.isLocked = locked;
+		v.isConst = isConstVar;
 		if (locked && v.ref) v.ref->typeLocked = true;
 		vars[n] = Var{ v, nullptr, isConstVar, locked };
 	}
 	Value get(const string& n) {
 		Var& var = lookup(n);
-		return var.alias ? *var.alias : var.value;
+		Value val = var.alias ? *var.alias : var.value;
+		val.isConst = var.isConst;
+		val.isLocked = var.isLocked;
+		return val;
 	}
 	void assign(const string& n, Value v) {
 		Var& var = lookup(n);
@@ -2456,6 +2473,11 @@ void printValue(const Value& v) {
 	std::unordered_set<const HeapObject*> seen;
 	printValue(v, seen, false);
 }
+struct ValueExpr : public Expr {
+	Value val;
+	Value* sourcePtr = nullptr;
+	ValueExpr(Value v, Value* src = nullptr) : Expr(ExprType::NUMBER), val(v), sourcePtr(src) {}
+};
 struct Interpreter {
 	std::shared_ptr<Env> env;
 	unordered_map<string, FuncVal*> funcs;
@@ -2470,7 +2492,7 @@ struct Interpreter {
 	std::unordered_set<string> importStack;
 	Interpreter() {
 		enableColors();
-		env = std::make_shared<Env>();	
+		env = std::make_shared<Env>();
 		env->set("None", Value::None(), true);
 		registerStdLib();
 	}
@@ -3195,9 +3217,7 @@ struct Interpreter {
 		}), false);
 		env->set("isLocked", Value::Native([this](const vector<Value>& args, int l, int c) {
 			if (args.size() != 1) throw ArgumentError("isLocked() takes exactly one argument", l, c);
-			Value v = args[0];
-			if (!v.ref) return Value::Bool(false);
-			return Value::Bool(v.ref->typeLocked);
+			return Value::Bool(args[0].isLocked);
 		}), false);
 		env->set("isConst", Value::Native([this](const vector<Value>& args, int l, int c) {
 			if (args.size() != 1) throw ArgumentError("isConst() takes exactly one argument", l, c);
@@ -3370,6 +3390,10 @@ struct Interpreter {
 		}), false);
 	}	
 	LValue resolveLValue(Expr* e) {
+		if (ValueExpr* ve = dynamic_cast<ValueExpr*>(e)) {
+			if (ve->sourcePtr) return LValue(ve->sourcePtr, true);
+			return LValue(&ve->val, false);
+		}
 		if (auto v = dynamic_cast<VarExpr*>(e)) {
 			if (!env->exists(v->name)) throw NameError("Undefined variable '" + v->name + "'", e->line, e->col);
 			Var& var = env->lookup(v->name);
@@ -4527,6 +4551,8 @@ struct Interpreter {
 		return e.type == typeName;
 	}
 	Value eval(Expr* e) {
+		if (!e) return Value::None();
+		if (ValueExpr* ve = dynamic_cast<ValueExpr*>(e)) return ve->val;
 		switch(e->type){
 			case ExprType::FSTRING: {
 				auto fs = static_cast<FStringExpr*>(e);
@@ -6384,16 +6410,19 @@ private:
 		return false;
 	}
 };
+// ------------ BYTECODE VM ------------
 enum class OpCode : uint8_t {
 	// Literals & Constants
 	OP_CONSTANT, OP_TRUE, OP_FALSE, OP_NONE, OP_NOTYPE, OP_OMIT,
 	// Variables & Scope
-	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR,
+	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY,
+	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF,
+	OP_MULTI_SET,
 	// Arithmetic & Logic
 	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW,
-	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_BUILD_IN,
-	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, 
-	OP_BUILD_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE,
+	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
+	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
+	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
 	// Containers
 	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT,
 	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE,
@@ -6409,12 +6438,14 @@ struct Chunk {
 	vector<uint8_t> code;
 	vector<Value> constants;
 	vector<int> lines;
-	void write(uint8_t byte, int line) {
+	vector<int> columns;
+	void write(uint8_t byte, int line, int col) {
 		code.push_back(byte);
 		lines.push_back(line);
+		columns.push_back(col);
 	}
-	void write(OpCode op, int line) {
-		write(static_cast<uint8_t>(op), line);
+	void write(OpCode op, int line, int col) {
+		write(static_cast<uint8_t>(op), line, col);
 	}
 	int addConstant(Value v) {
 		constants.push_back(v);
@@ -6430,17 +6461,17 @@ struct ByteCodeCompiler {
 		case ExprType::NUMBER: {
 			auto n = static_cast<NumberExpr*>(e);
 				Value val = n->isFloat ? Value::Float(n->val) : Value::Int((long long)n->val);
-				emitConstant(val, n->line);
+				emitConstant(val, n->line,  n->col);
 			break;
 		}
 		case ExprType::BOOL: {
 			auto b = static_cast<BoolExpr*>(e);
-				emitByte(b->value ? OpCode::OP_TRUE : OpCode::OP_FALSE, b->line);
+				emitByte(b->value ? OpCode::OP_TRUE : OpCode::OP_FALSE, b->line, b->col);
 			break;
 		}
 		case ExprType::STRING: {
 			auto s = static_cast<StringExpr*>(e);
-				emitConstant(Value::String(s->val), s->line);
+				emitConstant(Value::String(s->val), s->line, s->col);
 				break;
 		}
 		case ExprType::BINARY: {
@@ -6449,103 +6480,167 @@ struct ByteCodeCompiler {
 		}
 		case ExprType::VAR: {
 			auto v = static_cast<VarExpr*>(e);
-			emitIdentifier(OpCode::OP_GET_VAR, v->name, v->line);
+			if (v->name == "None") emitByte(OpCode::OP_NONE, v->line, v->col);
+			else emitIdentifier(OpCode::OP_GET_VAR, v->name, v->line, v->col);
+			break;
+		}
+		case ExprType::OWNERSHIP: {
+			auto o = static_cast<OwnershipExpr*>(e);
+			if (o->mode == CopyMode::DEEP) {
+				compile(o->expr);
+				emitByte(OpCode::OP_DEEP_COPY, o->line, o->col);
+			}
+			else if (o->mode == CopyMode::REF) {
+				// not implemented
+			}
 			break;
 		}
 		case ExprType::CALL: {
 			auto c = static_cast<CallExpr*>(e);
-			// 1. Push the arguments onto the stack first
-			for (auto arg : c->args) {
-				compile(arg);
-			}
-			// 2. Push the callee (function name)
-			emitIdentifier(OpCode::OP_GET_VAR, c->name, c->line);
-			// 3. Emit CALL with the number of arguments
-			emitByte(OpCode::OP_CALL, c->line);
-			chunk->write(static_cast<uint8_t>(c->args.size()), c->line);
+			for (auto arg : c->args) compile(arg);
+			emitIdentifier(OpCode::OP_GET_VAR, c->name, c->line, c->col);
+			emitByte(OpCode::OP_CALL, c->line, c->col);
+			chunk->write(static_cast<uint8_t>(c->args.size()), c->line, c->col);
 			break;
 		}
-		// We will add more cases (List, Dict, Call, etc.) one by one
+		case ExprType::LIST: {
+			auto l = static_cast<ListExpr*>(e);
+			for (auto item : l->elements) compile(item);
+			emitByte(OpCode::OP_BUILD_LIST, l->line, l->col);
+			chunk->write((uint8_t)l->elements.size(), l->line, l->col);
+			break;
+		}
+		case ExprType::SET: {
+			auto s = static_cast<SetExpr*>(e);
+			for (auto item : s->elements) compile(item);
+			emitByte(OpCode::OP_BUILD_SET, s->line, s->col);
+			chunk->write((uint8_t)s->elements.size(), s->line, s->col);
+			break;
+		}
+		case ExprType::TUPLE: {
+			auto t = static_cast<TupleExpr*>(e);
+			for (auto item : t->elements) compile(item);
+			emitByte(OpCode::OP_BUILD_TUPLE, t->line, t->col);
+			chunk->write((uint8_t)t->elements.size(), t->line, t->col);
+			break;
+		}
+		case ExprType::DICT: {
+			auto d = static_cast<DictExpr*>(e);
+			for (auto& item : d->items) {
+				compile(item.first);
+				compile(item.second);
+				emitByte(OpCode::OP_COLON, d->line, d->col);
+			}
+			emitByte(OpCode::OP_BUILD_DICT, d->line, d->col);
+			chunk->write((uint8_t)d->items.size(), d->line, d->col);
+			break;
+		}
+		case ExprType::RANGE: {
+			auto r = static_cast<RangeExpr*>(e);
+			compile(r->start);
+			compile(r->end);
+			if (r->step) compile(r->step);
+			else emitConstant(Value::Int(1), r->line, r->col);
+			emitByte(OpCode::OP_BUILD_RANGE, r->line, r->col);
+			break;
+		}
+		case ExprType::METHOD_CALL: {
+			auto m = static_cast<MethodCallExpr*>(e);
+			compile(m->object);
+			for (auto arg : m->args) {
+				compile(arg);
+			}
+			emitByte(OpCode::OP_INVOKE, m->line, m->col);
+			int nameIdx = chunk->addConstant(Value::String(m->method));
+			chunk->write((uint8_t)nameIdx, m->line, m->col);
+			chunk->write((uint8_t)m->args.size(), m->line, m->col);
+			break;
+		}
+		// will add more cases
 		default:
 			break;
 		}
 	}
-	// Helper to handle the left-right-operator pattern of math
 	void compileBinary(BinExpr* b) {
 		if (b->op == TokenType::NOT) {
 			compile(b->right);
-			emitByte(OpCode::OP_NOT, b->line);
+			emitByte(OpCode::OP_NOT, b->line, b->col);
 			return; // Exit early!
 		}
 		compile(b->left);  // Push left operand to VM stack
 		compile(b->right); // Push right operand to VM stack
 
 		switch (b->op) {
-		case TokenType::PLUS:  emitByte(OpCode::OP_ADD, b->line); break;
-		case TokenType::MINUS: emitByte(OpCode::OP_SUB, b->line); break;
-		case TokenType::STAR:  emitByte(OpCode::OP_MUL, b->line); break;
-		case TokenType::SLASH: emitByte(OpCode::OP_DIV, b->line); break;
+		case TokenType::PLUS:      emitByte(OpCode::OP_ADD, b->line, b->col); break;
+		case TokenType::MINUS:     emitByte(OpCode::OP_SUB, b->line, b->col); break;
+		case TokenType::STAR:      emitByte(OpCode::OP_MUL, b->line, b->col); break;
+		case TokenType::SLASH:     emitByte(OpCode::OP_DIV, b->line, b->col); break;
+		case TokenType::FLOOR_DIV: emitByte(OpCode::OP_FLOOR_DIV, b->line, b->col); break;
+		case TokenType::MOD:       emitByte(OpCode::OP_MOD, b->line, b->col); break;
+		case TokenType::POW:       emitByte(OpCode::OP_POW, b->line, b->col); break;
 			//Logic
-		case TokenType::GT:    emitByte(OpCode::OP_GT, b->line); break;
-		case TokenType::GTE:   emitByte(OpCode::OP_GTE, b->line); break;
-		case TokenType::EQ:    emitByte(OpCode::OP_EQ, b->line); break;
-		case TokenType::NEQ:   emitByte(OpCode::OP_NEQ, b->line); break;
-		case TokenType::LT:    emitByte(OpCode::OP_LT, b->line); break;
-		case TokenType::LTE:   emitByte(OpCode::OP_LTE, b->line); break;
+		case TokenType::GT:    emitByte(OpCode::OP_GT, b->line, b->col); break;
+		case TokenType::GTE:   emitByte(OpCode::OP_GTE, b->line, b->col); break;
+		case TokenType::EQ:    emitByte(OpCode::OP_EQ, b->line, b->col); break;
+		case TokenType::NEQ:   emitByte(OpCode::OP_NEQ, b->line, b->col); break;
+		case TokenType::STRICT_EQ:    emitByte(OpCode::OP_STRICT_EQ, b->line, b->col); break;
+		case TokenType::STRICT_NEQ:   emitByte(OpCode::OP_STRICT_NEQ, b->line, b->col); break;
+		case TokenType::LT:    emitByte(OpCode::OP_LT, b->line, b->col); break;
+		case TokenType::LTE:   emitByte(OpCode::OP_LTE, b->line, b->col); break;
 
 			// Identity & Membership
-		case TokenType::IS:        emitByte(OpCode::OP_IS, b->line); break;
-		case TokenType::IS_NOT:    emitByte(OpCode::OP_IS_NOT, b->line); break;
-		case TokenType::IS_IN:     emitByte(OpCode::OP_BUILD_IN, b->line); break;
-		case TokenType::IS_NOT_IN: emitByte(OpCode::OP_BUILD_NOT_IN, b->line); break;
+		case TokenType::IS:        emitByte(OpCode::OP_IS, b->line, b->col); break;
+		case TokenType::IS_NOT:    emitByte(OpCode::OP_IS_NOT, b->line, b->col); break;
+		case TokenType::IS_IN:     emitByte(OpCode::OP_IS_IN, b->line, b->col); break;
+		case TokenType::IS_NOT_IN: emitByte(OpCode::OP_IS_NOT_IN, b->line, b->col); break;
 
 			// Logical (non-short-circuiting)
-		case TokenType::XOR:  emitByte(OpCode::OP_XOR, b->line); break;
-		case TokenType::NXOR: emitByte(OpCode::OP_NXOR, b->line); break;
-		case TokenType::NOR:  emitByte(OpCode::OP_NOR, b->line); break;
-		case TokenType::NAND: emitByte(OpCode::OP_NAND, b->line); break;
-			// Add more token mappings here as we go
+		case TokenType::XOR:  emitByte(OpCode::OP_XOR, b->line, b->col); break;
+		case TokenType::NXOR: emitByte(OpCode::OP_NXOR, b->line, b->col); break;
+		case TokenType::NOR:  emitByte(OpCode::OP_NOR, b->line, b->col); break;
+		case TokenType::NAND: emitByte(OpCode::OP_NAND, b->line, b->col); break;
+			//"pairing" op
+		case TokenType::COLON:
+			emitByte(OpCode::OP_COLON, b->line, b->col);
+			break;
 		default: break;
 		}
 	}
 	void compileLogical(BinExpr* l) {
 		if (l->op == TokenType::AND) {
 			compile(l->left);
-			int endJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line);
-			emitByte(OpCode::OP_POP, l->line); // Pop left if it was true
+			int endJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line, l->col);
+			emitByte(OpCode::OP_POP, l->line, l->col); // Pop left if it was true
 			compile(l->right);
 			patchJump(endJump);
 		}
 		else if (l->op == TokenType::OR) {
 			compile(l->left);
-			int elseJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line);
-			int endJump = emitJump(OpCode::OP_JUMP, l->line);
+			int elseJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line, l->col);
+			int endJump = emitJump(OpCode::OP_JUMP, l->line, l->col);
 			patchJump(elseJump);
-			emitByte(OpCode::OP_POP, l->line); // Pop left if it was false
+			emitByte(OpCode::OP_POP, l->line, l->col); // Pop left if it was false
 			compile(l->right);
 			patchJump(endJump);
 		}
 	}
-	// --- Low-level Emitting ---
-	void emitByte(OpCode op, int line) {
-		chunk->write(op, line);
+	void emitByte(OpCode op, int line, int col) {
+		chunk->write(op, line, col);
 	}
-	void emitConstant(Value v, int line) {
+	void emitConstant(Value v, int line, int col) {
 		int index = chunk->addConstant(v);
 		if (index > 255) {
-			throw RuntimeError("Too many constants in one chunk", line, 0);
+			throw RuntimeError("Too many constants in one chunk", line, col);
 		}
-		emitByte(OpCode::OP_CONSTANT, line);
-		chunk->write(static_cast<uint8_t>(index), line);
+		emitByte(OpCode::OP_CONSTANT, line, col);
+		chunk->write(static_cast<uint8_t>(index), line, col);
 	}
-	// Emits a jump instruction with a 2-byte placeholder for the offset
-	int emitJump(OpCode instruction, int line) {
-		emitByte(instruction, line);
-		chunk->write(0xff, line); // Placeholder high byte
-		chunk->write(0xff, line); // Placeholder low byte
+	int emitJump(OpCode instruction, int line, int col) {
+		emitByte(instruction, line, col);
+		chunk->write(0xff, line, col); // Placeholder high byte
+		chunk->write(0xff, line, col); // Placeholder low byte
 		return (int)chunk->code.size() - 2; // Return the position to patch later
 	}
-	// Patches the placeholder at 'offset' with the actual distance jumped
 	void patchJump(int offset) {
 		// How far did we jump from the placeholder to the current end of code?
 		int jump = (int)chunk->code.size() - offset - 2;
@@ -6557,55 +6652,104 @@ struct ByteCodeCompiler {
 		chunk->code[offset] = (jump >> 8) & 0xff;
 		chunk->code[offset + 1] = jump & 0xff;
 	}
+	void compileWithMode(Expr* expr, int line, int col) {
+		if (auto o = dynamic_cast<OwnershipExpr*>(expr)) {
+			if (o->mode == CopyMode::DEEP) {
+				compile(o->expr);
+				emitByte(OpCode::OP_DEEP_COPY, line, col);
+			}
+			else if (o->mode == CopyMode::REF) {
+			}
+		}
+		else compile(expr);
+	}
 	void compileStmt(Stmt* s) {
 		if (!s) return;
-
 		switch (s->type) {
 		case StmtType::EXPR: {
 			auto es = static_cast<ExprStmt*>(s);
 			compile(es->expr);
-			// Expressions used as statements should not leave a value on the stack
-			emitByte(OpCode::OP_POP, es->line);
+			emitByte(OpCode::OP_POP, es->line, es->col);
 			break;
 		}
 		case StmtType::LET: {
 			auto let = static_cast<LetStmt*>(s);
-			if (let->value) {
-				compile(let->value);
+			if (let->value && let->value->type == ExprType::OWNERSHIP) {
+				auto o = static_cast<OwnershipExpr*>(let->value);
+				if (o->mode == CopyMode::REF) {
+					emitIdentifier(OpCode::OP_DEFINE_REF, let->name, let->line, let->col);
+					if (auto v = dynamic_cast<VarExpr*>(o->expr)) {
+						emitIdentifier(OpCode::OP_REF_VAR, v->name, let->line, let->col);
+					}
+					else if (auto idx = dynamic_cast<IndexExpr*>(o->expr)) {
+						compile(idx->base);
+						compile(idx->index);
+						emitByte(OpCode::OP_REF_INDEX, let->line, let->col);
+					}
+					break;
+				}
 			}
-			else {
-				emitByte(OpCode::OP_NOTYPE, let->line);
-			}
-			// This tells the VM to store the top of the stack into a variable name
-			emitIdentifier(OpCode::OP_DEFINE_VAR, let->name, let->line);
+			if (let->value) compile(let->value);
+			else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
+			emitIdentifier(OpCode::OP_DEFINE_VAR, let->name, let->line, let->col);
+			uint8_t flags = 0;
+			if (let->isConst) flags |= 0x01;
+			if (let->isLocked) flags |= 0x02;
+			chunk->write(flags, let->line, let->col);
 			break;
 		}
 		case StmtType::ASSIGN: {
 			auto as = static_cast<AssignStmt*>(s);
-			compile(as->value);
-			if (auto v = dynamic_cast<VarExpr*>(as->target)) {
-				emitIdentifier(OpCode::OP_SET_VAR, v->name, as->line);
+			auto v = static_cast<VarExpr*>(as->target);
+			if (auto o = dynamic_cast<OwnershipExpr*>(as->value)) {
+				if (o->mode == CopyMode::REF) {
+					emitIdentifier(OpCode::OP_SET_REF, v->name, as->line, as->col);
+					if (auto targetVar = dynamic_cast<VarExpr*>(o->expr)) {
+						emitIdentifier(OpCode::OP_REF_VAR, targetVar->name, as->line, as->col);
+					}
+					else if (auto idx = dynamic_cast<IndexExpr*>(o->expr)) {
+						compile(idx->base);
+						compile(idx->index);
+						emitByte(OpCode::OP_REF_INDEX, as->line, as->col);
+					}
+					break;
+				}
 			}
+			if (as->op == TokenType::ASSIGN) compileWithMode(as->value, as->line, as->col);
+			else {
+				emitIdentifier(OpCode::OP_GET_VAR, v->name, as->line, as->col);
+				compileWithMode(as->value, as->line, as->col);
+				switch (as->op) {
+				case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
+				case TokenType::MINUS_EQ: emitByte(OpCode::OP_SUB, as->line, as->col); break;
+				case TokenType::STAR_EQ: emitByte(OpCode::OP_MUL, as->line, as->col); break;
+				case TokenType::DIV_EQ: emitByte(OpCode::OP_DIV, as->line, as->col); break;
+				case TokenType::FLOOR_DIV_EQ: emitByte(OpCode::OP_FLOOR_DIV, as->line, as->col); break;
+				case TokenType::POW_EQ: emitByte(OpCode::OP_POW, as->line, as->col); break;
+				case TokenType::MOD_EQ: emitByte(OpCode::OP_MOD, as->line, as->col); break;
+				}
+			}
+			emitIdentifier(OpCode::OP_SET_VAR, v->name, as->line, as->col);
 			break;
 		}
 		case StmtType::IF: {
 			auto ifs = static_cast<IfStmt*>(s);
 			vector<int> exitJumps;
 			compile(ifs->condition);
-			int jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line);
-			emitByte(OpCode::OP_POP, ifs->line);
+			int jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line, ifs->col);
+			emitByte(OpCode::OP_POP, ifs->line, ifs->col);
 			for (auto stmt : ifs->body) compileStmt(stmt);
-			exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line));
+			exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line, ifs->col));
 			patchJump(jumpToNext);
-			emitByte(OpCode::OP_POP, ifs->line);
+			emitByte(OpCode::OP_POP, ifs->line, ifs->col);
 			for (const auto& elif : ifs->elifs) {
 				compile(elif.first);
-				jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line);
-				emitByte(OpCode::OP_POP, ifs->line);
+				jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line, ifs->col);
+				emitByte(OpCode::OP_POP, ifs->line, ifs->col);
 				for (auto stmt : elif.second) compileStmt(stmt);
-				exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line));
+				exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line, ifs->col));
 				patchJump(jumpToNext);
-				emitByte(OpCode::OP_POP, ifs->line);
+				emitByte(OpCode::OP_POP, ifs->line, ifs->col);
 			}
 			if (!ifs->elseBody.empty()) {
 				for (auto stmt : ifs->elseBody) compileStmt(stmt);
@@ -6617,63 +6761,91 @@ struct ByteCodeCompiler {
 		}
 		case StmtType::FUNC: {
 			auto f = static_cast<FuncStmt*>(s);
-			// 1. Create sub-chunk for function body
 			Chunk* funcChunk = new Chunk();
 			ByteCodeCompiler subCompiler(funcChunk);
 			for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
-			subCompiler.emitByte(OpCode::OP_RETURN, f->line);
-
-			// 2. Build the Function Object
+			subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
 			auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,
 				f->returnsConst, f->body, nullptr, f->isCached);
-
 			Value funcVal;
 			funcVal.type = ValueType::FUNCTION;
 			funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
-
-			// 3. IMPORTANT: Push the function onto the stack before defining it
-			emitConstant(funcVal, f->line);
-			emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line);
+			emitConstant(funcVal, f->line, f->col);
+			emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line, f->col);
+			break;
+		}
+		case StmtType::MULTI_LET: {
+			auto m = static_cast<MultiLetStmt*>(s);
+			for (auto val : m->values) {
+				if (val) compileWithMode(val, val->line, val->col);
+				else emitByte(OpCode::OP_NOTYPE, m->line, m->col);
+			}
+			for (int i = (int)m->names.size() - 1; i >= 0; i--) {
+				Expr* valExpr = m->values[i];
+				if (valExpr && valExpr->type == ExprType::OWNERSHIP &&
+					static_cast<OwnershipExpr*>(valExpr)->mode == CopyMode::REF) {
+					auto o = static_cast<OwnershipExpr*>(valExpr);
+					emitIdentifier(OpCode::OP_DEFINE_REF, m->names[i], m->line, m->col);
+					if (auto v = dynamic_cast<VarExpr*>(o->expr)) {
+						emitIdentifier(OpCode::OP_REF_VAR, v->name, m->line, m->col);
+					}
+					else if (auto idx = dynamic_cast<IndexExpr*>(o->expr)) {
+						compile(idx->base);
+						compile(idx->index);
+						emitByte(OpCode::OP_REF_INDEX, m->line, m->col);
+					}
+				}
+				else {
+					emitIdentifier(OpCode::OP_DEFINE_VAR, m->names[i], m->line, m->col);
+					uint8_t flags = 0;
+					if (m->isConsts[i]) flags |= 0x01;
+					if (m->isLocked)  flags |= 0x02;
+					chunk->write(flags, m->line, m->col);
+				}
+			}
+			break;
+		}
+		case StmtType::MULTI_ASSIGN: {
+			auto ma = static_cast<MultiAssignStmt*>(s);
+			for (auto val : ma->values) compileWithMode(val, val->line, val->col);
+			for (int i = (int)ma->targets.size() - 1; i >= 0; i--) {
+				auto v = static_cast<VarExpr*>(ma->targets[i]);
+				emitIdentifier(OpCode::OP_SET_VAR, v->name, ma->line, ma->col);
+				emitByte(OpCode::OP_POP, ma->line, ma->col);
+			}
 			break;
 		}
 		default:
 			break;
 		}
 	}
-	// Helper for instructions that need a name (like variable names)
-	void emitIdentifier(OpCode op, const string& name, int line) {
-		int index = chunk->addConstant(Value::String(name)); // Reuse your existing String Value
-		emitByte(op, line);
-		chunk->write(static_cast<uint8_t>(index), line);
+	void emitIdentifier(OpCode op, const string& name, int line, int col) {
+		int index = chunk->addConstant(Value::String(name));
+		emitByte(op, line, col);
+		chunk->write(static_cast<uint8_t>(index), line, col);
 	}
 };
 struct VM {
-	std::vector<Value> stack; // The execution stack for temporary values
-	std::shared_ptr<Env> globals; // Reusing your existing Env for variables
-
+	std::vector<Value> stack;
+	std::shared_ptr<Env> globals;
+	std::function<Value(MethodCallExpr*)> methodResolver;
 	VM() {
 		globals = std::make_shared<Env>();
-
-			// Register your existing native print function
-			globals->set("print", Value::Native([this](const vector<Value>& args, int l, int c) {
-			for (auto& v : args) {
-				printValue(v); // Reuses your 200+ line printValue function
-				std::cout << " ";
-			}
-			std::cout << "\n";
-			return Value::None();
-			}), true);
+		globals->set("print", Value::Native([this](const vector<Value>& args, int l, int c) {
+		for (auto& v : args) {
+			printValue(v);
+			std::cout << " ";
+		}
+		std::cout << "\n";
+		return Value::None();
+		}), true);
 	}
-
-	// Main execution loop
 	void run(Chunk& chunk) {
-		uint8_t* ip = chunk.code.data(); // Instruction Pointer
+		uint8_t* ip = chunk.code.data();
 		uint8_t* end = ip + chunk.code.size();
-
 		while (ip < end) {
 			OpCode instruction = static_cast<OpCode>(*ip++);
-			int line = chunk.lines[ip - chunk.code.data() - 1]; // Current line for errors
-
+			int line = chunk.lines[ip - chunk.code.data() - 1];
 			switch (instruction) {
 			case OpCode::OP_CONSTANT: {
 				uint8_t index = *ip++;
@@ -6688,11 +6860,9 @@ struct VM {
 				if (!stack.empty()) stack.pop_back();
 				break;
 			}
-
 			case OpCode::OP_ADD: {
 				Value b = pop();
 				Value a = pop();
-				// Reusing your addition logic from ymm.h
 				if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
 					stack.push_back(Value::String(valueToString(a) + valueToString(b)));
 				}
@@ -6704,13 +6874,82 @@ struct VM {
 				}
 				break;
 			}
-									 // --- Comparisons ---
+			case OpCode::OP_SUB: {
+				Value a = pop(), b = pop();
+				if (a.type == ValueType::INT && b.type == ValueType::INT) {
+					stack.push_back(Value::Int(b.iVal - a.iVal));
+				}
+				else if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) {
+					stack.push_back(Value::Float(b.fVal - a.fVal));
+				}
+				break;
+			}
+			case OpCode::OP_DIV: {
+				Value b = pop();
+				Value a = pop();
+				if (b.asFloat() == 0) throw DivisionByZeroError("Division by zero", line, 0);
+				stack.push_back(Value::Float(a.asFloat() / b.asFloat()));
+				break;
+			}
+			case OpCode::OP_MUL: {
+				Value b = pop();
+				Value a = pop();
+				if (a.type == ValueType::STRING && b.type == ValueType::INT) {
+					string res = "";
+					string base = a.asString();
+					long long count = b.asInt();
+					if (count < 0) count = 0;
+					if (count > 1000000) throw MemoryError("String repetition too large", line, 0);
+					for (long long i = 0; i < count; i++) res += base;
+					stack.push_back(Value::String(res));
+				}
+				else if (a.type == ValueType::LIST && b.type == ValueType::INT) {
+					auto* listObj = static_cast<ListObject*>(a.ref.get());
+					long long count = b.asInt();
+					vector<Value> res;
+					if (count > 0) {
+						if (listObj->elements.size() * count > 1000000)
+							throw MemoryError("List repetition too large", line, 0);
+						res.reserve(listObj->elements.size() * count);
+						for (int i = 0; i < count; i++) {for (const auto& elem : listObj->elements) res.push_back(deepCopy(elem));}
+					}
+					stack.push_back(Value::List(res));
+				}
+				else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+					stack.push_back(Value::Int(a.iVal * b.iVal));
+				}
+				else {
+					stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
+				}
+				break;
+			}
+			case OpCode::OP_FLOOR_DIV: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Int((long long)(a.asFloat() / b.asFloat())));
+				break;
+			}
+			case OpCode::OP_MOD: {
+				Value b = pop(); Value a = pop();
+				if (a.type == ValueType::INT && b.type == ValueType::INT)
+					stack.push_back(Value::Int(a.iVal % b.iVal));
+				else
+					stack.push_back(Value::Float(fmod(a.asFloat(), b.asFloat())));
+				break;
+			}
+			case OpCode::OP_POW: {
+				Value b = pop(); Value a = pop();
+				stack.push_back(Value::Float(pow(a.asFloat(), b.asFloat())));
+				break;
+			}
+			// --- Comparisons ---
 			case OpCode::OP_GT: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() > b.asFloat())); break; }
 			case OpCode::OP_GTE: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() >= b.asFloat())); break; }
 			case OpCode::OP_LT: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() < b.asFloat())); break; }
 			case OpCode::OP_LTE: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() <= b.asFloat())); break; }
-			case OpCode::OP_EQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.strictEquals(b))); break; }
-			case OpCode::OP_NEQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.strictEquals(b)))); break; }
+			case OpCode::OP_EQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.looseEquals(b))); break; }
+			case OpCode::OP_NEQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.looseEquals(b)))); break; }
+			case OpCode::OP_STRICT_EQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.strictEquals(b))); break; }
+			case OpCode::OP_STRICT_NEQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.strictEquals(b)))); break; }
 			case OpCode::OP_IS: {
 				Value b = pop(); Value a = pop();
 				stack.push_back(Value::Bool(a.type == b.type && a.ref.get() == b.ref.get()));
@@ -6752,11 +6991,59 @@ struct VM {
 				else stack.push_back(Value::Float(-v.asFloat()));
 				break;
 			}
+			case OpCode::OP_IS_IN: 
+			case OpCode::OP_IS_NOT_IN: {
+				Value rhs = pop();
+				Value lhs = pop();
+				bool found = false;
+				if (rhs.type == ValueType::STRING) {
+					if (lhs.type == ValueType::STRING) {
+						found = rhs.asString().find(lhs.asString()) != string::npos;
+					}
+				}
+				else if (rhs.type == ValueType::LIST) {
+					auto* list = static_cast<ListObject*>(rhs.ref.get());
+						for (const auto& item : list->elements) {
+							if (item.strictEquals(lhs)) { found = true; break; }
+						}
+				}
+				else if (rhs.type == ValueType::DICT) {
+					auto* d = static_cast<DictObject*>(rhs.ref.get());
+						found = d->items.count(lhs) > 0;
+				}
+				else if (rhs.type == ValueType::SET) {
+					auto* s = static_cast<SetObject*>(rhs.ref.get());
+						for (const auto& item : s->elements) {
+							if (item.strictEquals(lhs)) { found = true; break; }
+						}
+				}
+				else if (rhs.type == ValueType::RANGE) {
+					auto* rng = static_cast<RangeObject*>(rhs.ref.get());
+					if (lhs.isNumber()) {
+						double val = lhs.asFloat();
+						bool inBounds = (rng->step > 0) ?
+						(val >= rng->start && (rng->endInclusive ? val <= rng->end : val < rng->end)) :
+						(val <= rng->start && (rng->endInclusive ? val >= rng->end : val > rng->end));
+						if (inBounds && !rng->isFloat && lhs.type == ValueType::INT) {
+							found = ((long long)(val - rng->start) % (long long)rng->step == 0);
+						}
+						else {
+							found = inBounds;
+							}
+					}
+				}
+				bool finalResult = (instruction == OpCode::OP_IS_IN) ? found : !found;
+				stack.push_back(Value::Bool(finalResult));
+				break;
+			}
 			case OpCode::OP_DEFINE_VAR: {
 				uint8_t nameIndex = *ip++;
+				uint8_t flags = *ip++;
 				string name = chunk.constants[nameIndex].asString();
 				Value val = pop();
-				globals->set(name, val, false, false); // Define in our Env
+				bool isConst = (flags & 0x01) != 0;
+				bool isLocked = (flags & 0x02) != 0;
+				globals->set(name, val, isLocked, isConst);
 				break;
 			}
 			case OpCode::OP_GET_VAR: {
@@ -6789,14 +7076,12 @@ struct VM {
 			}
 			case OpCode::OP_CALL: {
 				uint8_t argCount = *ip++;
-				Value callee = pop(); // The function object (e.g., the native print function)
-
+				Value callee = pop();
 				if (callee.type == ValueType::NATIVE_FUNCTION) {
 					vector<Value> args;
 					for (int i = 0; i < argCount; i++) {
 						args.insert(args.begin(), pop());
 					}
-					// Execute the native logic you've already defined
 					auto native = static_cast<NativeFunctionObject*>(callee.ref.get());
 					Value result = native->func(args, line, 0);
 						stack.push_back(result);
@@ -6804,6 +7089,142 @@ struct VM {
 				else if (callee.type == ValueType::FUNCTION) {
 					// This will be for user-defined functions like main() later
 				}
+				break;
+			}
+			case OpCode::OP_SET_VAR: {
+				uint8_t nameIndex = *ip++;
+				string name = chunk.constants[nameIndex].asString();
+				Value val = stack.back();
+				if (!globals->exists(name)) {
+					throw NameError("Undefined variable '" + name + "'", line, 0);
+				}
+				globals->set(name, val, false, false);
+				break;
+			}
+			case OpCode::OP_DEFINE_REF: {
+				uint8_t nameIdx = *ip++;
+				string newVarName = chunk.constants[nameIdx].asString();
+
+				OpCode subOp = static_cast<OpCode>(*ip++);
+				if (subOp == OpCode::OP_REF_VAR) {
+					string targetName = chunk.constants[*ip++].asString();
+					Var& targetVar = globals->lookup(targetName);
+
+					Var aliasVar;
+					aliasVar.alias = targetVar.alias ? targetVar.alias : &targetVar.value;
+					globals->vars[newVarName] = aliasVar;
+				}
+				else if (subOp == OpCode::OP_REF_INDEX) {
+					Value index = pop();
+					Value base = pop();
+					if (base.type == ValueType::LIST) {
+						auto* list = static_cast<ListObject*>(base.ref.get());
+						int i = (int)index.asInt();
+
+						Var aliasVar;
+						aliasVar.alias = &list->elements[i];
+						globals->vars[newVarName] = aliasVar;
+					}
+				}
+				break;
+			}
+			case OpCode::OP_SET_REF: {
+				uint8_t nameIdx = *ip++;
+				string varName = chunk.constants[nameIdx].asString();
+				if (!globals->exists(varName)) throw NameError("Undefined variable", line, 0);
+				OpCode subOp = static_cast<OpCode>(*ip++);
+				if (subOp == OpCode::OP_REF_VAR) {
+					string target = chunk.constants[*ip++].asString();
+					Var& targetVar = globals->lookup(target);
+					globals->vars[varName].alias = targetVar.alias ? targetVar.alias : &targetVar.value;
+				}
+				break;
+			}
+			case OpCode::OP_COLON: {
+				Value v = pop();
+				Value k = pop();
+				vector<std::pair<Value, Value>> p;
+				p.push_back({ k, v });
+				stack.push_back(Value::Paired(p));
+					break;
+			}
+			//CONTAINERS
+			case OpCode::OP_BUILD_LIST: {
+				uint8_t count = *ip++;
+				auto list = std::make_shared<ListObject>();
+				if (stack.size() < count) throw InternalError("Stack underflow during list build", line, 0);
+				list->elements.resize(count);
+				for (int i = count - 1; i >= 0; i--) {
+					list->elements[i] = pop();
+				}
+				stack.push_back(Value::List(list->elements));
+				break;
+			}
+			case OpCode::OP_BUILD_DICT: {
+				uint8_t count = *ip++;
+				auto dict = std::make_shared<DictObject>();
+				for (int i = 0; i < count; i++) {
+					Value pairVal = pop();
+					if (pairVal.type == ValueType::PAIRED) {
+						auto* pObj = static_cast<PairedObject*>(pairVal.ref.get());
+						for (const auto& entry : pObj->pairs) {
+							Value key = entry.first;
+							if (key.type == ValueType::LIST || key.type == ValueType::SET) {
+								key = deepCopy(key);
+								key.isConst = true;
+							}
+							dict->items[entry.first] = entry.second;
+						}
+					}
+				}
+				stack.push_back(Value::Dict(dict->items));
+				break;
+			}
+			case OpCode::OP_BUILD_SET: {
+				uint8_t count = *ip++;
+				auto set = std::make_shared<SetObject>();
+				for (int i = 0; i < count; i++) setAdd(set->elements, pop());
+				stack.push_back(Value::Set(set->elements));
+				break;
+			}
+			case OpCode::OP_BUILD_TUPLE: {
+				uint8_t count = *ip++;
+				vector<Value> elems(count);
+				for (int i = count - 1; i >= 0; i--) elems[i] = pop();
+				stack.push_back(Value::Tuple(elems));
+				break;
+			}
+			case OpCode::OP_BUILD_RANGE: {
+				Value step = pop();
+				Value end = pop();
+				Value start = pop();
+				bool isFloat = (start.type == ValueType::FLOAT || end.type == ValueType::FLOAT || step.type == ValueType::FLOAT);
+				stack.push_back(Value::Range(start.asFloat(), end.asFloat(), step.asFloat(), true, false, isFloat));
+				break;
+			}
+			case OpCode::OP_DEEP_COPY: {
+				Value v = pop();
+				stack.push_back(deepCopy(v));
+				break;
+			}
+			// ENVOKE
+			case OpCode::OP_INVOKE: {
+				uint8_t nameIdx = *ip++;
+				uint8_t argCount = *ip++;
+				string methodName = chunk.constants[nameIdx].asString();
+				vector<Expr*> dummyArgs;
+				for (int i = 0; i < argCount; i++) {
+					dummyArgs.insert(dummyArgs.begin(), new ValueExpr(pop()));
+				}
+				Value targetVal = pop();
+				Expr* dummyObject = new ValueExpr(targetVal);
+				MethodCallExpr mockAST(dummyObject, methodName, dummyArgs);
+				mockAST.line = line;
+				if (!methodResolver) throw InternalError("VM methodResolver bridge not initialized.", line, 0);
+				Value result = methodResolver(&mockAST);
+				delete dummyObject;
+				for (auto* a : dummyArgs) delete a;
+				stack.push_back(result);
 				break;
 			}
 			default:
