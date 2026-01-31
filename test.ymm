@@ -1,5 +1,6 @@
 define function main(): {
-   let x := 1.7
-   x = true
-   print(x)
+	let test = [1,2,3,[4]]
+	let x,y,z= test, @test, $test
+x.pop()
+	print(x,y,test,z)
 }
