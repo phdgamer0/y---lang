@@ -1,6 +1,4 @@
 define function main(): {
-	let test = [1,2,3,[4]]
-	let x,y,z= test, @test, $test
-x.pop()
-	print(x,y,test,z)
+   let x = dict(pair(set(1, 2, 3), list(4, 5, 6)))
+   print(x.keys(),x.values())
 }
