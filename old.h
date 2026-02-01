@@ -6417,7 +6417,7 @@ enum class OpCode : uint8_t {
 	// Variables & Scope
 	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY,
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF,
-	OP_MULTI_SET,
+	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL,
 	// Arithmetic & Logic
 	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW,
 	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
@@ -6430,7 +6430,7 @@ enum class OpCode : uint8_t {
 	OP_GET_INDEX, OP_SET_INDEX, OP_INVOKE, OP_CALL,
 	// Control Flow
 	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN, OP_TO_STREAM,
-	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER,
+	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER, OP_SKIP_ITER,
 	// Errors & Systems
 	OP_THROW, OP_ASSERT, OP_IMPORT, OP_POP
 };
@@ -6457,11 +6457,32 @@ struct LoopContext {
 	int stepAddress;
 	vector<int> breakJumps;
 	vector<int> continueJumps;
+	bool isForEach;
+	int startLocalCount;
+	int iteratorSlot;
+};
+struct Local {
+	string name;
+	int depth;
 };
 struct ByteCodeCompiler {
 	Chunk* chunk;
 	vector<LoopContext> loopStack;
+	vector<Local> locals;
+	int scopeDepth = 0;
 	ByteCodeCompiler(Chunk* c) : chunk(c) {}
+	int resolveLocal(string name) {
+		for (int i = (int)locals.size() - 1; i >= 0; i--) if (locals[i].name == name) return i;
+		return -1;
+	}
+	void addLocal(string name) {
+		locals.push_back({ name, scopeDepth });
+	}
+	void beginScope() { scopeDepth++; }
+	void endScope(int line, int col) {
+		scopeDepth--;
+		while (!locals.empty() && locals.back().depth > scopeDepth) {emitByte(OpCode::OP_POP, line, col);locals.pop_back();}
+	}
 	void compile(Expr* e) {
 		if (!e) return;
 		switch (e->type) {
@@ -6487,7 +6508,15 @@ struct ByteCodeCompiler {
 		}
 		case ExprType::VAR: {
 			auto v = static_cast<VarExpr*>(e);
-			if (v->name == "None") emitByte(OpCode::OP_NONE, v->line, v->col);
+			if (v->name == "None") {
+				emitByte(OpCode::OP_NONE, v->line, v->col);
+				break;
+			}
+			int arg = resolveLocal(v->name);
+			if (arg != -1) {
+				emitByte(OpCode::OP_GET_LOCAL, v->line, v->col);
+				chunk->write((uint8_t)arg, v->line, v->col);
+			}
 			else emitIdentifier(OpCode::OP_GET_VAR, v->name, v->line, v->col);
 			break;
 		}
@@ -6698,11 +6727,14 @@ struct ByteCodeCompiler {
 			}
 			if (let->value) compile(let->value);
 			else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
-			emitIdentifier(OpCode::OP_DEFINE_VAR, let->name, let->line, let->col);
-			uint8_t flags = 0;
-			if (let->isConst) flags |= 0x01;
-			if (let->isLocked) flags |= 0x02;
-			chunk->write(flags, let->line, let->col);
+			if (scopeDepth>0) addLocal(let->name);
+			else {
+				emitIdentifier(OpCode::OP_DEFINE_VAR, let->name, let->line, let->col);
+				uint8_t flags = 0;
+				if (let->isConst) flags |= 0x01;
+				if (let->isLocked) flags |= 0x02;
+				chunk->write(flags, let->line, let->col);
+			}
 			break;
 		}
 		case StmtType::ASSIGN: {
@@ -6722,9 +6754,14 @@ struct ByteCodeCompiler {
 					break;
 				}
 			}
+			int arg = resolveLocal(v->name);
 			if (as->op == TokenType::ASSIGN) compileWithMode(as->value, as->line, as->col);
 			else {
-				emitIdentifier(OpCode::OP_GET_VAR, v->name, as->line, as->col);
+				if (arg != -1) {
+					emitByte(OpCode::OP_GET_LOCAL, as->line, as->col);
+					chunk->write((uint8_t)arg, as->line, as->col);
+				}
+				else emitIdentifier(OpCode::OP_GET_VAR, v->name, as->line, as->col);
 				compileWithMode(as->value, as->line, as->col);
 				switch (as->op) {
 				case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
@@ -6736,7 +6773,11 @@ struct ByteCodeCompiler {
 				case TokenType::MOD_EQ: emitByte(OpCode::OP_MOD, as->line, as->col); break;
 				}
 			}
-			emitIdentifier(OpCode::OP_SET_VAR, v->name, as->line, as->col);
+			if (arg != -1) {
+				emitByte(OpCode::OP_SET_LOCAL, as->line, as->col);
+				chunk->write((uint8_t)arg, as->line, as->col);
+			}
+			else emitIdentifier(OpCode::OP_SET_VAR, v->name, as->line, as->col);
 			emitByte(OpCode::OP_POP, as->line, as->col);
 			break;
 		}
@@ -6746,7 +6787,9 @@ struct ByteCodeCompiler {
 			compile(ifs->condition);
 			int jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line, ifs->col);
 			emitByte(OpCode::OP_POP, ifs->line, ifs->col);
+			beginScope();
 			for (auto stmt : ifs->body) compileStmt(stmt);
+			endScope(ifs->line, ifs->col);
 			exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line, ifs->col));
 			patchJump(jumpToNext);
 			emitByte(OpCode::OP_POP, ifs->line, ifs->col);
@@ -6754,13 +6797,17 @@ struct ByteCodeCompiler {
 				compile(elif.first);
 				jumpToNext = emitJump(OpCode::OP_JUMP_IF_FALSE, ifs->line, ifs->col);
 				emitByte(OpCode::OP_POP, ifs->line, ifs->col);
+				beginScope();
 				for (auto stmt : elif.second) compileStmt(stmt);
+				endScope(ifs->line, ifs->col);
 				exitJumps.push_back(emitJump(OpCode::OP_JUMP, ifs->line, ifs->col));
 				patchJump(jumpToNext);
 				emitByte(OpCode::OP_POP, ifs->line, ifs->col);
 			}
 			if (!ifs->elseBody.empty()) {
+				beginScope();
 				for (auto stmt : ifs->elseBody) compileStmt(stmt);
+				endScope(ifs->line, ifs->col);
 			}
 			for (int offset : exitJumps) {
 				patchJump(offset);
@@ -6773,8 +6820,7 @@ struct ByteCodeCompiler {
 			ByteCodeCompiler subCompiler(funcChunk);
 			for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
 			subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
-			auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,
-				f->returnsConst, f->body, nullptr, f->isCached);
+			auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,f->returnsConst, f->body, nullptr, f->isCached);
 			Value funcVal;
 			funcVal.type = ValueType::FUNCTION;
 			funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
@@ -6788,27 +6834,31 @@ struct ByteCodeCompiler {
 				if (val) compileWithMode(val, val->line, val->col);
 				else emitByte(OpCode::OP_NOTYPE, m->line, m->col);
 			}
-			for (int i = (int)m->names.size() - 1; i >= 0; i--) {
-				Expr* valExpr = m->values[i];
-				if (valExpr && valExpr->type == ExprType::OWNERSHIP &&
-					static_cast<OwnershipExpr*>(valExpr)->mode == CopyMode::REF) {
-					auto o = static_cast<OwnershipExpr*>(valExpr);
-					emitIdentifier(OpCode::OP_DEFINE_REF, m->names[i], m->line, m->col);
-					if (auto v = dynamic_cast<VarExpr*>(o->expr)) {
-						emitIdentifier(OpCode::OP_REF_VAR, v->name, m->line, m->col);
-					}
-					else if (auto idx = dynamic_cast<IndexExpr*>(o->expr)) {
-						compile(idx->base);
-						compile(idx->index);
-						emitByte(OpCode::OP_REF_INDEX, m->line, m->col);
-					}
+			if (scopeDepth > 0) {
+				for (size_t i = 0; i < m->names.size(); i++) {
+					addLocal(m->names[i]);
 				}
-				else {
-					emitIdentifier(OpCode::OP_DEFINE_VAR, m->names[i], m->line, m->col);
-					uint8_t flags = 0;
-					if (m->isConsts[i]) flags |= 0x01;
-					if (m->isLocked)  flags |= 0x02;
-					chunk->write(flags, m->line, m->col);
+			}
+			else {
+				for (int i = (int)m->names.size() - 1; i >= 0; i--) {
+					Expr* valExpr = m->values[i];
+					if (valExpr && valExpr->type == ExprType::OWNERSHIP && static_cast<OwnershipExpr*>(valExpr)->mode == CopyMode::REF) {
+						auto o = static_cast<OwnershipExpr*>(valExpr);
+						emitIdentifier(OpCode::OP_DEFINE_REF, m->names[i], m->line, m->col);
+						if (auto v = dynamic_cast<VarExpr*>(o->expr)) emitIdentifier(OpCode::OP_REF_VAR, v->name, m->line, m->col);
+						else if (auto idx = dynamic_cast<IndexExpr*>(o->expr)) {
+							compile(idx->base);
+							compile(idx->index);
+							emitByte(OpCode::OP_REF_INDEX, m->line, m->col);
+						}
+					}
+					else {
+						emitIdentifier(OpCode::OP_DEFINE_VAR, m->names[i], m->line, m->col);
+						uint8_t flags = 0;
+						if (m->isConsts[i]) flags |= 0x01;
+						if (m->isLocked)  flags |= 0x02;
+						chunk->write(flags, m->line, m->col);
+					}
 				}
 			}
 			break;
@@ -6818,15 +6868,21 @@ struct ByteCodeCompiler {
 			for (auto val : ma->values) compileWithMode(val, val->line, val->col);
 			for (int i = (int)ma->targets.size() - 1; i >= 0; i--) {
 				auto v = static_cast<VarExpr*>(ma->targets[i]);
-				emitIdentifier(OpCode::OP_SET_VAR, v->name, ma->line, ma->col);
+				int arg = resolveLocal(v->name);
+				if (arg != -1) {
+					emitByte(OpCode::OP_SET_LOCAL, ma->line, ma->col);
+					chunk->write((uint8_t)arg, ma->line, ma->col);
+				}
+				else emitIdentifier(OpCode::OP_SET_VAR, v->name, ma->line, ma->col);
 				emitByte(OpCode::OP_POP, ma->line, ma->col);
 			}
 			break;
 		}
 		case StmtType::WHILE: {
+			beginScope();
 			auto w = static_cast<WhileStmt*>(s);
 			int startAddr = (int)chunk->code.size();
-			LoopContext loop = { startAddr, startAddr, {}, {} };
+			LoopContext loop = { startAddr, startAddr, {}, {}, false, locals.size(), -1 };
 			loopStack.push_back(loop);
 			compile(w->condition);
 			int exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, w->line, w->col);
@@ -6837,9 +6893,30 @@ struct ByteCodeCompiler {
 			emitByte(OpCode::OP_POP, w->line, w->col);
 			for (int b : loopStack.back().breakJumps) patchJump(b);
 			loopStack.pop_back();
+			endScope(w->line, w->col);
+			break;
+		}
+		case StmtType::DO_WHILE: {
+			auto dw = static_cast<DoWhileStmt*>(s);
+			int startAddr = (int)chunk->code.size();
+			beginScope();
+			LoopContext loop = { startAddr, -1, {}, {}, false, locals.size(), -1 };
+			loopStack.push_back(loop);
+			for (auto stmt : dw->body) compileStmt(stmt);
+			for (int jump : loopStack.back().continueJumps) patchJump(jump);
+			endScope(dw->line, dw->col);
+			compile(dw->condition);
+			int exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, dw->line, dw->col);
+			emitByte(OpCode::OP_POP, dw->line, dw->col);
+			emitLoop(startAddr, dw->line, dw->col);
+			patchJump(exitJump);
+			emitByte(OpCode::OP_POP, dw->line, dw->col);
+			for (int b : loopStack.back().breakJumps) patchJump(b);
+			loopStack.pop_back();
 			break;
 		}
 		case StmtType::FOR: {
+			beginScope();
 			auto f = static_cast<ForStmt*>(s);
 			for (auto init : f->inits) compileStmt(init);
 			int condAddr = (int)chunk->code.size();
@@ -6849,9 +6926,11 @@ struct ByteCodeCompiler {
 				exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, f->line, f->col);
 				emitByte(OpCode::OP_POP, f->line, f->col);
 			}
-			LoopContext loop = { condAddr, -1, {}, {} };
+			LoopContext loop = { condAddr, -1, {}, {}, false, locals.size(), -1 };
 			loopStack.push_back(loop);
+			beginScope();
 			for (auto stmt : f->body) compileStmt(stmt);
+			endScope(f->line, f->col);
 			int stepStart = (int)chunk->code.size();
 			for (int jump : loopStack.back().continueJumps) {
 				patchJump(jump);
@@ -6865,6 +6944,7 @@ struct ByteCodeCompiler {
 			}
 			for (int b : loopStack.back().breakJumps) patchJump(b);
 			loopStack.pop_back();
+			endScope(f->line, f->col);
 			break;
 		}
 		case StmtType::FOR_EACH: {
@@ -6894,11 +6974,18 @@ struct ByteCodeCompiler {
 			chunk->write(0xff, fe->line, fe->col);
 			chunk->write(0xff, fe->line, fe->col);
 			chunk->write((uint8_t)streamCount, fe->line, fe->col);
-			for (int i = (int)fe->loopVars.size() - 1; i >= 0; i--) {
-				emitIdentifier(OpCode::OP_DEFINE_VAR, fe->loopVars[i], fe->line, fe->col);
-				chunk->write(0, fe->line, fe->col);
+			beginScope();
+			int iterSlot = (int)locals.size();
+			if (scopeDepth > 0) {
+				for (size_t i = 0; i < fe->loopVars.size(); i++) addLocal(fe->loopVars[i]);
 			}
-			loopStack.push_back({ startAddr, startAddr, {}, {} });
+			else {
+				for (int i = (int)fe->loopVars.size() - 1; i >= 0; i--) {
+					emitIdentifier(OpCode::OP_DEFINE_VAR, fe->loopVars[i], fe->line, fe->col);
+					chunk->write(0, fe->line, fe->col);
+				}
+			}
+			loopStack.push_back({ startAddr, startAddr, {}, {}, true, (int)locals.size(), iterSlot });
 			for (auto stmt : fe->body) compileStmt(stmt);
 			emitLoop(startAddr, fe->line, fe->col);
 			patchJump(exitJump);
@@ -6912,19 +6999,33 @@ struct ByteCodeCompiler {
 		}
 		case StmtType::BREAK: {
 			if (loopStack.empty()) throw RuntimeError("break outside of loop", s->line, s->col);
+			int localsToPop = (int)locals.size() - loopStack.back().startLocalCount;
+			for (int i = 0; i < localsToPop; i++) emitByte(OpCode::OP_POP, s->line, s->col);
 			loopStack.back().breakJumps.push_back(emitJump(OpCode::OP_JUMP, s->line, s->col));
 			break;
 		}
 		case StmtType::CONTINUE: {
 			if (loopStack.empty()) throw RuntimeError("continue outside of loop", s->line, s->col);
+			int localsToPop = (int)locals.size() - loopStack.back().startLocalCount;
+			for (int i = 0; i < localsToPop; i++) emitByte(OpCode::OP_POP, s->line, s->col);
 			int target = loopStack.back().stepAddress;
 			if (target == -1) {
 				int jump = emitJump(OpCode::OP_JUMP, s->line, s->col);
 				loopStack.back().continueJumps.push_back(jump);
 			}
-			else {
-				emitLoop(target, s->line, s->col);
+			else emitLoop(target, s->line, s->col);
+			break;
+		}
+		case StmtType::SKIP: {
+			auto sk = static_cast<SkipStmt*>(s);
+			if (loopStack.empty()) throw RuntimeError("skip statement outside of loop", s->line, s->col);
+			if (!loopStack.back().isForEach) {
+				throw RuntimeError("skip statement is only valid in for-each loops.", s->line, s->col);
 			}
+			compile(sk->count);
+			emitByte(OpCode::OP_SKIP_ITER, s->line, s->col);
+			int slot = loopStack.back().iteratorSlot;
+			chunk->write((uint8_t)slot, s->line, s->col);
 			break;
 		}
 		default:
@@ -6950,14 +7051,6 @@ struct VM {
 	std::function<Value(MethodCallExpr*)> methodResolver;
 	VM() {
 		globals = std::make_shared<Env>();
-		globals->set("print", Value::Native([this](const vector<Value>& args, int l, int c) {
-		for (auto& v : args) {
-			printValue(v);
-			std::cout << " ";
-		}
-		std::cout << "\n";
-		return Value::None();
-		}), true);
 	}
 	void run(Chunk& chunk) {
 		uint8_t* ip = chunk.code.data();
@@ -6970,6 +7063,16 @@ struct VM {
 			OpCode instruction = static_cast<OpCode>(*ip++);
 			int line = chunk.lines[ip - chunk.code.data() - 1];		
 			switch (instruction) {
+			case OpCode::OP_GET_LOCAL: {
+				uint8_t slot = *ip++;
+				stack.push_back(stack[slot]);
+				break;
+			}
+			case OpCode::OP_SET_LOCAL: {
+				uint8_t slot = *ip++;
+				stack[slot] = stack.back();
+				break;
+			}
 			case OpCode::OP_CONSTANT: {
 				uint8_t index = *ip++;
 				stack.push_back(chunk.constants[index]);
@@ -7327,6 +7430,15 @@ struct VM {
 				}
 				break;
 			}
+			case OpCode::OP_SKIP_ITER: {
+				uint8_t slot = *ip++;
+				Value amount = pop();
+				if (!amount.isNumber()) throw RuntimeError("skip amount must be a number", line, 0);
+				long long skipN = amount.asInt();
+				if (slot >= stack.size()) throw InternalError("Skip iterator slot out of bounds", line, 0);
+				stack[slot].iVal += skipN;
+				break;
+			}
 			//CONTAINERS
 			case OpCode::OP_BUILD_LIST: {
 				uint8_t count = *ip++;
@@ -7411,7 +7523,6 @@ struct VM {
 			}
 		}
 	}
-
 private:
 	std::shared_ptr<ListObject> collectionToStream(Value collection, int line) {
 		auto list = std::make_shared<ListObject>();
