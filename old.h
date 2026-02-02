@@ -2345,8 +2345,10 @@ struct CacheKeyCmp {
 	}
 };
 struct FuncVal { FuncStmt* stmt; std::map<vector<Value>, Value, CacheKeyCmp> cache; FuncVal(FuncStmt* s) :stmt(s) {} };
+struct Chunk;
 struct FunctionObject : HeapObject {
 	vector<ParamSpec> params;
+	Chunk* chunk;
 	ValueType returnType;
 	vector<Expr*> defaultRetArgs;
 	bool returnsConst;
@@ -2356,6 +2358,9 @@ struct FunctionObject : HeapObject {
 	std::map<vector<Value>, Value, CacheKeyCmp> cache;
 	FunctionObject(const vector<ParamSpec>& p, ValueType rt, vector<Expr*> dra,bool rc, const vector<Stmt*>& b, std::shared_ptr<Env> c, bool cached)
 		: HeapObject(ValueType::FUNCTION), params(p), returnType(rt), defaultRetArgs(dra) ,returnsConst(rc), body(b), closure(c), isCached(cached) {}
+	~FunctionObject() {
+		if (chunk) delete chunk;
+	}
 };
 void setAdd(std::vector<Value>& elems, const Value& v) {
 	Value finalVal = deepCopy(v);
@@ -6465,6 +6470,11 @@ struct Local {
 	string name;
 	int depth;
 };
+struct CallFrame {
+	FunctionObject* function;
+	uint8_t* ip;
+	int basePointer;
+};
 struct ByteCodeCompiler {
 	Chunk* chunk;
 	vector<LoopContext> loopStack;
@@ -6918,14 +6928,18 @@ struct ByteCodeCompiler {
 			auto f = static_cast<FuncStmt*>(s);
 			Chunk* funcChunk = new Chunk();
 			ByteCodeCompiler subCompiler(funcChunk);
+			subCompiler.beginScope();
+			for (const auto& param : f->params) subCompiler.addLocal(param.name);
 			for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
 			subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
 			auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,f->returnsConst, f->body, nullptr, f->isCached);
+			funcObj->chunk=funcChunk;
 			Value funcVal;
 			funcVal.type = ValueType::FUNCTION;
 			funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
 			emitConstant(funcVal, f->line, f->col);
 			emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line, f->col);
+			chunk->write((uint8_t)0, f->line, f->col);
 			break;
 		}
 		case StmtType::MULTI_LET: {
@@ -7073,6 +7087,7 @@ struct ByteCodeCompiler {
 		}
 		case StmtType::FOR_EACH: {
 			auto fe = static_cast<ForEachStmt*>(s);
+			beginScope();
 			size_t colCount = fe->collections.size();
 			size_t varCount = fe->loopVars.size();
 			bool isDictUnpack = (colCount == 1 && varCount == 2);
@@ -7091,7 +7106,9 @@ struct ByteCodeCompiler {
 					emitByte(OpCode::OP_TO_STREAM, fe->line, fe->col);
 				}
 			}
+			for (int i = 0; i < streamCount; i++) addLocal("");
 			emitConstant(Value::Int(0), fe->line, fe->col);
+			addLocal("");
 			int startAddr = (int)chunk->code.size();
 			emitByte(OpCode::OP_FOR_ITER, fe->line, fe->col);
 			int exitJump = (int)chunk->code.size();
@@ -7099,7 +7116,7 @@ struct ByteCodeCompiler {
 			chunk->write(0xff, fe->line, fe->col);
 			chunk->write((uint8_t)streamCount, fe->line, fe->col);
 			beginScope();
-			int iterSlot = (int)locals.size();
+			int iterSlot = (int)locals.size() - 1;
 			if (scopeDepth > 0) {
 				for (size_t i = 0; i < fe->loopVars.size(); i++) addLocal(fe->loopVars[i]);
 			}
@@ -7109,14 +7126,14 @@ struct ByteCodeCompiler {
 					chunk->write(0, fe->line, fe->col);
 				}
 			}
-			loopStack.push_back({ startAddr, startAddr, {}, {}, true, (int)locals.size(), iterSlot });
+			loopStack.push_back({ startAddr, startAddr, {}, {}, true, (int)locals.size() - streamCount, iterSlot });
 			for (auto stmt : fe->body) compileStmt(stmt);
-			emitLoop(startAddr, fe->line, fe->col);
-			patchJump(exitJump);
-			emitByte(OpCode::OP_POP, fe->line, fe->col);
 			for (int i = 0; i < streamCount; i++) {
 				emitByte(OpCode::OP_POP, fe->line, fe->col);
 			}
+			emitLoop(startAddr, fe->line, fe->col);
+			patchJump(exitJump);
+			emitByte(OpCode::OP_POP, fe->line, fe->col);
 			for (int b : loopStack.back().breakJumps) patchJump(b);
 			loopStack.pop_back();
 			break;
@@ -7173,33 +7190,45 @@ struct VM {
 	std::vector<Value> stack;
 	std::shared_ptr<Env> globals;
 	std::function<Value(MethodCallExpr*)> methodResolver;
+	std::vector<CallFrame> frames;
+	CallFrame* frame;
+	uint8_t* ip;
 	VM() {
 		globals = std::make_shared<Env>();
+		frame = nullptr;
+		ip = nullptr;
 	}
 	void run(Chunk& chunk)	 {
-		uint8_t* ip = chunk.code.data();
-		uint8_t* end = ip + chunk.code.size();
-		while (ip < end) {
+		CallFrame mainFrame;
+		mainFrame.function = nullptr;
+		mainFrame.ip = chunk.code.data();
+		mainFrame.basePointer = 0;
+		frames.push_back(mainFrame);
+		frame = &frames.back();
+		ip = frame->ip;
+		while (true) {
+			Chunk* currentChunk = frame->function ? frame->function->chunk : &chunk;
 			// --- DEBUGGER START ---
-			//int currentOffset = (int)(ip - chunk.code.data());
+			//int currentOffset = (int)(ip - currentChunk->code.data());
 			//printf("IP: %d | OpCode: %d | StackSize: %d\n", currentOffset, *ip, (int)stack.size());
 			// --- DEBUGGER END ---
 			OpCode instruction = static_cast<OpCode>(*ip++);
-			int line = chunk.lines[ip - chunk.code.data() - 1];		
+			int offset = (int)(ip - currentChunk->code.data());
+			int line = currentChunk->lines[offset - 1];
 			switch (instruction) {
 			case OpCode::OP_GET_LOCAL: {
 				uint8_t slot = *ip++;
-				stack.push_back(stack[slot]);
+				stack.push_back(stack[frame->basePointer + slot]);
 				break;
 			}
 			case OpCode::OP_SET_LOCAL: {
 				uint8_t slot = *ip++;
-				stack[slot] = stack.back();
+				stack[frame->basePointer + slot] = stack.back();
 				break;
 			}
 			case OpCode::OP_INC_LOCAL: {
 				uint8_t slot = *ip++;
-				if (stack[slot].type == ValueType::INT) stack[slot].iVal++;
+				if (stack[slot].type == ValueType::INT) stack[frame->basePointer + slot].iVal++;
 				else stack[slot].fVal++;
 				break;
 			}
@@ -7210,7 +7239,7 @@ struct VM {
 				ip += 2;
 				if (stack[slot].type == ValueType::INT) {
 					 long long localVal = stack[slot].iVal;
-					 long long constVal = chunk.constants[constIdx].iVal;
+					 long long constVal = currentChunk->constants[constIdx].iVal;
 					 if (localVal >= constVal) ip += offset;
 				}
 				else throw RuntimeError("Optimized loop requires integer.", line, 0);
@@ -7221,7 +7250,7 @@ struct VM {
 				uint8_t minIdx = *ip++;
 				uint8_t count = *ip++;
 				if (val.type == ValueType::INT) {
-					long long minVal = chunk.constants[minIdx].iVal;
+					long long minVal = currentChunk->constants[minIdx].iVal;
 					long long jumpIdx = val.iVal - minVal;
 					if (jumpIdx >= 0 && jumpIdx < count) {
 						uint8_t* tableEntry = ip + (jumpIdx * 2);
@@ -7235,7 +7264,7 @@ struct VM {
 			}
 			case OpCode::OP_CONSTANT: {
 				uint8_t index = *ip++;
-				stack.push_back(chunk.constants[index]);
+				stack.push_back(currentChunk->constants[index]);
 				break;
 			}
 			case OpCode::OP_TRUE:  stack.push_back(Value::Bool(true)); break;
@@ -7432,7 +7461,7 @@ struct VM {
 			case OpCode::OP_DEFINE_VAR: {
 				uint8_t nameIndex = *ip++;
 				uint8_t flags = *ip++;
-				string name = chunk.constants[nameIndex].asString();
+				string name = currentChunk->constants[nameIndex].asString();
 				Value val = pop();
 				bool isConst = (flags & 0x01) != 0;
 				bool isLocked = (flags & 0x02) != 0;
@@ -7441,15 +7470,13 @@ struct VM {
 			}
 			case OpCode::OP_GET_VAR: {
 				uint8_t nameIndex = *ip++;
-				string name = chunk.constants[nameIndex].asString();
+				string name = currentChunk->constants[nameIndex].asString();
 				if (!globals->exists(name)) {
 					throw NameError("Undefined variable '" + name + "'", line, 0);
 				}
 				stack.push_back(globals->get(name));
 				break;
 			}
-			case OpCode::OP_RETURN:
-				return;
 			case OpCode::OP_JUMP_IF_FALSE: {
 				uint8_t hi = *ip++;
 				uint8_t lo = *ip++;
@@ -7478,9 +7505,7 @@ struct VM {
 					Value result = native->func(args, line, 0);
 						stack.push_back(result);
 				}
-				else if (callee.type == ValueType::FUNCTION) {
-					// This will be for user-defined functions like main() later
-				}
+				else callValue(callee, argCount, line);
 				break;
 			}
 			case OpCode::OP_UNPACK_DICT: {
@@ -7501,7 +7526,7 @@ struct VM {
 			}
 			case OpCode::OP_SET_VAR: {
 				uint8_t nameIndex = *ip++;
-				string name = chunk.constants[nameIndex].asString();
+				string name = currentChunk->constants[nameIndex].asString();
 				Value val = stack.back();
 				if (!globals->exists(name)) {
 					throw NameError("Undefined variable '" + name + "'", line, 0);
@@ -7511,10 +7536,10 @@ struct VM {
 			}
 			case OpCode::OP_DEFINE_REF: {
 				uint8_t nameIdx = *ip++;
-				string newVarName = chunk.constants[nameIdx].asString();
+				string newVarName = currentChunk->constants[nameIdx].asString();
 				OpCode subOp = static_cast<OpCode>(*ip++);
 				if (subOp == OpCode::OP_REF_VAR) {
-					string targetName = chunk.constants[*ip++].asString();
+					string targetName = currentChunk->constants[*ip++].asString();
 					Var& targetVar = globals->lookup(targetName);
 					Var aliasVar;
 					aliasVar.alias = targetVar.alias ? targetVar.alias : &targetVar.value;
@@ -7535,11 +7560,11 @@ struct VM {
 			}
 			case OpCode::OP_SET_REF: {
 				uint8_t nameIdx = *ip++;
-				string varName = chunk.constants[nameIdx].asString();
+				string varName = currentChunk->constants[nameIdx].asString();
 				if (!globals->exists(varName)) throw NameError("Undefined variable", line, 0);
 				OpCode subOp = static_cast<OpCode>(*ip++);
 				if (subOp == OpCode::OP_REF_VAR) {
-					string target = chunk.constants[*ip++].asString();
+					string target = currentChunk->constants[*ip++].asString();
 					Var& targetVar = globals->lookup(target);
 					globals->vars[varName].alias = targetVar.alias ? targetVar.alias : &targetVar.value;
 				}
@@ -7555,8 +7580,7 @@ struct VM {
 			}
 			case OpCode::OP_TO_STREAM: {
 				Value v = pop();
-				auto streamList = collectionToStream(v, line);
-				stack.push_back(Value::List(streamList->elements));
+				stack.push_back(prepareIterable(v, line));
 				break;
 			}
 			case OpCode::OP_FOR_ITER: {
@@ -7565,29 +7589,53 @@ struct VM {
 				ip += 2;
 				uint8_t count = *ip++;
 				Value& indexVal = stack.back();
-				long long currentIndex = indexVal.asInt();
+				long long stepCount = indexVal.asInt();
 				bool valid = true;
 				vector<Value> nextValues;
 				for (int i = 0; i < count; i++) {
 					int stackPos = stack.size() - 1 - count + i;
-					Value& streamVal = stack[stackPos];
-					if (streamVal.type != ValueType::LIST) {
-						throw RuntimeError("Internal Error: Non-list stream in iterator", line, 0);
+					Value& stream = stack[stackPos];
+					if (stream.type == ValueType::LIST) {
+						auto* list = static_cast<ListObject*>(stream.ref.get());
+						if (stepCount >= (long long)list->elements.size()) { valid = false; break; }
+						nextValues.push_back(list->elements[stepCount]);
 					}
-					auto* listObj = static_cast<ListObject*>(streamVal.ref.get());
-					if (currentIndex >= (long long)listObj->elements.size()) {
-						valid = false;
-						break;
+					else if (stream.type == ValueType::TUPLE) {
+						auto* tuple = static_cast<TupleObject*>(stream.ref.get());
+						if (stepCount >= (long long)tuple->elements.size()) { valid = false; break; }
+						nextValues.push_back(tuple->elements[stepCount]);
 					}
-					nextValues.push_back(listObj->elements[currentIndex]);
+					else if (stream.type == ValueType::SET) {
+						auto* s = static_cast<SetObject*>(stream.ref.get());
+						if (stepCount>= (long long)s->elements.size()) {valid = false; break;}
+						nextValues.push_back(s->elements[stepCount]);
+					}
+					else if (stream.type == ValueType::STRING) {
+						string s = stream.asString();
+						if (stepCount >= (long long)s.length()) { valid = false; break; }
+						nextValues.push_back(Value::String(string(1, s[stepCount])));
+					}
+					else if (stream.type == ValueType::VECTOR) {
+						auto* vec = static_cast<VectorObject*>(stream.ref.get());
+						if (stepCount >= (long long)vec->elements.size()) { valid = false; break; }
+						nextValues.push_back(Value::Float(vec->elements[stepCount]));
+					}
+					else if (stream.type == ValueType::RANGE) {
+						auto* r = static_cast<RangeObject*>(stream.ref.get());
+						double current = r->start + (r->step * stepCount);
+						bool inBounds = (r->step > 0) ?(r->endInclusive ? current <= r->end : current < r->end) :
+							(r->endInclusive ? current >= r->end : current > r->end);
+						if (!inBounds) { valid = false; break; }
+						if (r->isFloat) nextValues.push_back(Value::Float(current));
+						else nextValues.push_back(Value::Int((long long)current));
+					}
+					else throw RuntimeError("Internal Error: Unsupported stream type in iterator", line, 0);
 				}
 				if (valid) {
 					for (const auto& val : nextValues) stack.push_back(val);
 					stack[stack.size() - 1 - count].iVal++;
 				}
-				else {
-					ip = jumpOffsetAddr + 2 + offset;
-				}
+				else ip = jumpOffsetAddr + 2 + offset;
 				break;
 			}
 			case OpCode::OP_SKIP_ITER: {
@@ -7662,7 +7710,7 @@ struct VM {
 			case OpCode::OP_INVOKE: {
 				uint8_t nameIdx = *ip++;
 				uint8_t argCount = *ip++;
-				string methodName = chunk.constants[nameIdx].asString();
+				string methodName = currentChunk->constants[nameIdx].asString();
 				vector<Expr*> dummyArgs;
 				for (int i = 0; i < argCount; i++) {
 					dummyArgs.insert(dummyArgs.begin(), new ValueExpr(pop()));
@@ -7678,55 +7726,162 @@ struct VM {
 				stack.push_back(result);
 				break;
 			}
+			case OpCode::OP_RETURN: {
+				Value result = pop();
+				frames.pop_back();
+				if (frames.empty()) return;
+				frame = &frames.back();
+				ip = frame->ip;
+				stack.push_back(result);
+				break;
+			}
 			default:
 				throw InternalError("Unknown OpCode encountered", line, 0);
 			}
 		}
 	}
 private:
-	std::shared_ptr<ListObject> collectionToStream(Value collection, int line) {
+	void callValue(Value callee, int argCount, int line) {
+		// ------------------ 1. RESOLVE CALLEE ------------------
+		FunctionObject* function = nullptr;
+		NativeFunctionObject* nativeObj = nullptr;
+		if (callee.type == ValueType::FUNCTION) {
+			function = static_cast<FunctionObject*>(callee.ref.get());
+		}
+		else if (callee.type == ValueType::NATIVE_FUNCTION) {
+			nativeObj = static_cast<NativeFunctionObject*>(callee.ref.get());
+		}
+		else if (callee.type == ValueType::OVERLOAD) {
+			// [KEEP YOUR EXACT OVERLOAD LOGIC HERE]
+			// You need to peek at the stack args without popping them yet.
+			// Use stack[stack.size() - argCount + i] to access args.
+			// ... (Copy your overload selection loop) ...
+			// function = candidate;
+		}
+		else throw TypeError("Object is not callable", line, 0);
+		if (nativeObj) {
+			vector<Value> args;
+			for (int i = 0; i < argCount; i++) args.push_back(pop());
+			std::reverse(args.begin(), args.end());
+			stack.push_back(nativeObj->func(args, line, 0));
+			return;
+		}
+		if (function->isCached) {
+			vector<Value> key;
+			for (int i = 0; i < argCount; i++) {
+				key.push_back(stack[stack.size() - argCount + i]);
+			}
+			if (function->cache.count(key)) {
+				stack.resize(stack.size() - argCount);
+				stack.push_back(function->cache[key]);
+				return;
+			}
+		}
+		vector<Value> providedArgs;
+		providedArgs.resize(argCount);
+		for (int i = argCount - 1; i >= 0; i--) providedArgs[i] = pop();
+		vector<Value> finalArgs;
+		finalArgs.resize(function->params.size());
+		size_t argIndex = 0;
+		for (size_t i = 0; i < function->params.size(); i++) {
+			const ParamSpec& p = function->params[i];
+			Value argVal = Value::None();
+			if (p.isKwargs) {
+				auto dict = std::make_shared<DictObject>();
+				while (argIndex < providedArgs.size()) {
+					Value v = providedArgs[argIndex];
+					if (v.type != ValueType::PAIRED) throw RuntimeError("Positional argument after keyword args.", line, 0);
+					auto* pairObj = static_cast<PairedObject*>(v.ref.get());
+					for (const auto& entry : pairObj->pairs) {
+						Value key = entry.first;
+						Value val = entry.second;
+						if (p.mode == CopyMode::DEEP) {
+							key = deepCopy(key);
+							val = deepCopy(val);
+						}
+						dict->items[key] = val;
+					}
+					argIndex++;
+				}
+				argVal = Value::Dict(dict->items);
+				if (p.isConst) argVal.isConst = true;
+			}
+			else if (p.isVariadic) {
+				vector<Value> tupleItems;
+				while (argIndex < providedArgs.size()) {
+					if (providedArgs[argIndex].type == ValueType::PAIRED) break; // Stop at kwargs
+					Value v = providedArgs[argIndex];
+					if (p.mode == CopyMode::DEEP) v = deepCopy(v);
+					tupleItems.push_back(v);
+					argIndex++;
+				}
+				argVal = Value::Tuple(tupleItems);
+			}
+			else {
+				bool foundValue = false;
+				if (argIndex < providedArgs.size() && providedArgs[argIndex].type != ValueType::PAIRED) {
+					if (providedArgs[argIndex].type == ValueType::OMIT_MARKER) {
+						if (p.defaultValue != nullptr) {
+							argVal = executeDefault(p.defaultValue, line); // <--- EXECUTE AST
+							foundValue = true;
+						}
+						else throw ArgumentError("Argument '" + p.name + "' cannot be omitted.", line, 0);
+					}
+					else {
+						argVal = providedArgs[argIndex];
+						if (p.mode == CopyMode::DEEP) argVal = deepCopy(argVal);
+						foundValue = true;
+					}
+					argIndex++;
+				}
+				if (!foundValue) {
+					if (p.defaultValue != nullptr) argVal = executeDefault(p.defaultValue, line);
+					else throw ArgumentError("Missing required argument '" + p.name + "'", line, 0);
+				}
+				if (p.type != ValueType::NOTYPE && argVal.type != p.type) {
+					if (p.type == ValueType::FLOAT && argVal.type == ValueType::INT) argVal = Value::Float((double)argVal.asInt());
+					else throw TypeError("Type mismatch for '" + p.name + "'", line, 0);
+				}
+			}
+			finalArgs[i] = argVal;
+		}
+		frame->ip = ip;
+		CallFrame newFrame;
+		newFrame.function = function;
+		newFrame.ip = function->chunk->code.data();
+		newFrame.basePointer = stack.size();
+		for (const auto& v : finalArgs) stack.push_back(v);
+		frames.push_back(newFrame);
+		frame = &frames.back();
+		ip = frame->ip;
+	}
+	Value executeDefault(Expr* expr, int line) {
+		if (!expr) return Value::None();
+
+		Chunk tempChunk;
+		ByteCodeCompiler compiler(&tempChunk);
+		compiler.compile(expr);
+		compiler.emitByte(OpCode::OP_RETURN, line, 0);
+		VM tempVM;
+		tempVM.globals = this->globals;
+		tempVM.methodResolver = this->methodResolver;
+		tempVM.run(tempChunk);
+		if (tempVM.stack.empty()) return Value::None();
+		return tempVM.stack.back();
+	}
+	Value prepareIterable(Value collection, int line) {
+		if (collection.type == ValueType::LIST || collection.type == ValueType::SET ||
+			collection.type == ValueType::TUPLE ||collection.type == ValueType::STRING ||
+			collection.type == ValueType::VECTOR ||collection.type == ValueType::RANGE) {
+			return collection;
+		}
 		auto list = std::make_shared<ListObject>();
-		if (collection.type == ValueType::LIST) {
-			auto* src = static_cast<ListObject*>(collection.ref.get());
-			list->elements = src->elements;
-		}
-		else if (collection.type == ValueType::TUPLE) {
-			auto* src = static_cast<TupleObject*>(collection.ref.get());
-			list->elements = src->elements;
-		}
-		else if (collection.type == ValueType::SET) {
-			auto* src = static_cast<SetObject*>(collection.ref.get());
-			for (const auto& el : src->elements) list->elements.push_back(el);
-		}
-		else if (collection.type == ValueType::STRING) {
-			string str = collection.asString();
-			for (char c : str) list->elements.push_back(Value::String(string(1, c)));
-		}
-		else if (collection.type == ValueType::DICT) {
+		if (collection.type == ValueType::DICT) {
 			auto* dict = static_cast<DictObject*>(collection.ref.get());
 			for (const auto& pair : dict->items) list->elements.push_back(pair.first);
 		}
-		else if (collection.type == ValueType::VECTOR) {
-			auto* vec = static_cast<VectorObject*>(collection.ref.get());
-			for (double d : vec->elements) list->elements.push_back(Value::Float(d));
-		}
-		else if (collection.type == ValueType::RANGE) {
-			auto* r = static_cast<RangeObject*>(collection.ref.get());
-			double cur = r->start;
-			if (!r->startInclusive) cur += r->step;
-			while (true) {
-				bool keep = (r->step > 0) ?
-					(r->endInclusive ? cur <= r->end : cur < r->end) :
-					(r->endInclusive ? cur >= r->end : cur > r->end);
-				if (!keep) break;
-				list->elements.push_back(r->isFloat ? Value::Float(cur) : Value::Int((long long)cur));
-				cur += r->step;
-			}
-		}
-		else {
-			throw TypeError("Object is not iterable", line, 0);
-		}
-		return list;
+		else throw TypeError("Object is not iterable", line, 0);
+		return Value::List(list->elements);
 	}
 	Value pop() {
 		if (stack.empty()) throw InternalError("Stack underflow", 0, 0);
