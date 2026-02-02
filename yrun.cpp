@@ -30,7 +30,10 @@ int main() {
 			Chunk chunk;
 			ByteCodeCompiler compiler(&chunk);
 			for (Stmt* stmt : program) compiler.compileStmt(stmt);
-			compiler.emitByte(OpCode::OP_RETURN, program.empty() ? 0 : program.back()->line, program.empty() ? 0 : program.back()->col);
+			int line = program.empty() ? 0 : program.back()->line;
+			int col = program.empty() ? 0 : program.back()->col;
+			compiler.emitByte(OpCode::OP_NOTYPE, line, col);
+			compiler.emitByte(OpCode::OP_RETURN, line, col);
 			VM vm;
 			vm.globals = interp.env;
 			vm.methodResolver = [&](MethodCallExpr* m) {
@@ -40,12 +43,15 @@ int main() {
 			if (vm.globals->exists("main")) {
 				Value mainVal = vm.globals->get("main");
 				if (mainVal.type == ValueType::FUNCTION) {
-					auto* func = static_cast<FunctionObject*>(mainVal.ref.get());
-					Chunk mainChunk;
-					ByteCodeCompiler mainCompiler(&mainChunk);
-					for (Stmt* s : func->body) mainCompiler.compileStmt(s);
-					mainCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
-					vm.run(mainChunk);
+					Chunk bootChunk;
+					ByteCodeCompiler bootCompiler(&bootChunk);
+					bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
+					bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
+					bootCompiler.chunk->write((uint8_t)0, 0, 0);
+					bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
+					bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+					bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
+					vm.run(bootChunk);
 				}
 				std::cout << "Program finished successfully with code 0";
 			}
