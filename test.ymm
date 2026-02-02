@@ -1,29 +1,4 @@
+define function foo(): {return 1}
 define function main(): {
-	let i = 4
-switch (i):{
-	case 1 then do: {
-		print(i)
-		break
-	}
-	case 2 then do: {
-		print(i)
-		break
-	}
-	case 3 then do: {
-		print(i)
-		break
-	}
-	case 4 then do: {
-		print(i)
-		i++
-	}
-	case 5 do: {
-		print(i)
-		i++
-	}
-	default do: {
-		print("default")
-		break
-   }
-}
+	print(foo())
 }
