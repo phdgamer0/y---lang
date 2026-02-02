@@ -6417,7 +6417,7 @@ enum class OpCode : uint8_t {
 	// Variables & Scope
 	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY,
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF,
-	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL,
+	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL,
 	// Arithmetic & Logic
 	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW,
 	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
@@ -6429,8 +6429,8 @@ enum class OpCode : uint8_t {
 	// Access & Calls
 	OP_GET_INDEX, OP_SET_INDEX, OP_INVOKE, OP_CALL,
 	// Control Flow
-	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN, OP_TO_STREAM,
-	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER, OP_SKIP_ITER,
+	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN, OP_TO_STREAM, OP_JUMP_IF_NOT_LT,
+	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER, OP_SKIP_ITER, OP_SWITCH_TABLE,
 	// Errors & Systems
 	OP_THROW, OP_ASSERT, OP_IMPORT, OP_POP
 };
@@ -6755,6 +6755,18 @@ struct ByteCodeCompiler {
 				}
 			}
 			int arg = resolveLocal(v->name);
+			if (arg != -1) {
+				bool isInc = (as->op == TokenType::PLUS_EQ);
+				if (isInc) {
+					if (auto num = dynamic_cast<NumberExpr*>(as->value)) {
+						if (num->val == 1) {
+							emitByte(OpCode::OP_INC_LOCAL, as->line, as->col);
+							chunk->write((uint8_t)arg, as->line, as->col);
+							break;
+						}
+					}
+				}
+			}
 			if (as->op == TokenType::ASSIGN) compileWithMode(as->value, as->line, as->col);
 			else {
 				if (arg != -1) {
@@ -6812,6 +6824,94 @@ struct ByteCodeCompiler {
 			for (int offset : exitJumps) {
 				patchJump(offset);
 			}
+			break;
+		}
+		case StmtType::SWITCH: {
+			auto sw = static_cast<SwitchStmt*>(s);
+			int startAddr = (int)chunk->code.size();
+			beginScope();
+			compile(sw->target);
+			addLocal("");
+			LoopContext switchLoop = { startAddr, -1, {}, {}, false, (int)locals.size(), -1 };
+			loopStack.push_back(switchLoop);
+			bool useTable = true;
+			vector<long long> tableKeys;
+
+			for (const auto& c : sw->cases) {
+				if (c.value->type == ExprType::NUMBER) {
+					auto num = static_cast<NumberExpr*>(c.value);
+					if (!num->isFloat) tableKeys.push_back((long long)num->val);
+					else { useTable = false; break; }
+				}
+				else { useTable = false; break; }
+			}
+			if (useTable && !tableKeys.empty()) {
+				auto minVal = *std::min_element(tableKeys.begin(), tableKeys.end());
+				auto maxVal = *std::max_element(tableKeys.begin(), tableKeys.end());
+				if ((maxVal - minVal) > 256) useTable = false;
+			}
+			else useTable = false;
+			// JUMP TABLE (Fast)
+			if (useTable && !tableKeys.empty()) {
+				long long minVal = *std::min_element(tableKeys.begin(), tableKeys.end());
+				long long maxVal = *std::max_element(tableKeys.begin(), tableKeys.end());
+				long long count = maxVal - minVal + 1;
+				emitByte(OpCode::OP_SWITCH_TABLE, sw->line, sw->col);
+
+				int minIdx = chunk->addConstant(Value::Int(minVal));
+				chunk->write((uint8_t)minIdx, sw->line, sw->col);
+				chunk->write((uint8_t)count, sw->line, sw->col);
+
+				int tableStart = (int)chunk->code.size();
+				for (int i = 0; i < count; i++) {
+					chunk->write(0xff, sw->line, sw->col);
+					chunk->write(0xff, sw->line, sw->col);
+				}
+				auto compileBodyWithLoop = [&](const vector<Stmt*>& stmts) {
+					for (auto stmt : stmts) compileStmt(stmt);
+					emitByte(OpCode::OP_POP, sw->line, sw->col);
+					emitLoop(startAddr, sw->line, sw->col);
+				};
+				int defaultAddr = (int)chunk->code.size();
+				compileBodyWithLoop(sw->defaultBody);
+				std::map<long long, int> caseAddresses;
+				for (size_t i = 0; i < sw->cases.size(); i++) {
+					caseAddresses[(long long)((NumberExpr*)sw->cases[i].value)->val] = (int)chunk->code.size();
+					compileBodyWithLoop(sw->cases[i].body);
+				}
+				int currentPos = tableStart;
+				for (long long i = 0; i < count; i++) {
+					long long val = minVal + i;
+					int target = caseAddresses.count(val) ? caseAddresses[val] : defaultAddr;
+					int offset = target - currentPos - 2;
+					chunk->code[currentPos] = (offset >> 8) & 0xff;
+					chunk->code[currentPos + 1] = offset & 0xff;
+					currentPos += 2;
+				}
+			}
+			// LINEAR SCAN (Compatible)
+			else {
+				vector<int> nextCaseJumps;
+				for (const auto& c : sw->cases) {
+					emitByte(OpCode::OP_GET_LOCAL, sw->line, sw->col);
+					chunk->write((uint8_t)(locals.size() - 1), sw->line, sw->col);
+					compile(c.value);
+					emitByte(OpCode::OP_EQ, sw->line, sw->col);
+					int nextJump = emitJump(OpCode::OP_JUMP_IF_FALSE, sw->line, sw->col);
+					emitByte(OpCode::OP_POP, sw->line, sw->col);
+					for (auto stmt : c.body) compileStmt(stmt);
+					emitByte(OpCode::OP_POP, sw->line, sw->col);
+					emitLoop(startAddr, sw->line, sw->col);
+					patchJump(nextJump);
+					emitByte(OpCode::OP_POP, sw->line, sw->col);
+				}
+				for (auto stmt : sw->defaultBody) compileStmt(stmt);
+				emitByte(OpCode::OP_POP, sw->line, sw->col);
+				emitLoop(startAddr, sw->line, sw->col);
+			}
+			for (int b : loopStack.back().breakJumps) patchJump(b);
+			loopStack.pop_back();
+			endScope(sw->line, sw->col);
 			break;
 		}
 		case StmtType::FUNC: {
@@ -6884,13 +6984,37 @@ struct ByteCodeCompiler {
 			int startAddr = (int)chunk->code.size();
 			LoopContext loop = { startAddr, startAddr, {}, {}, false, locals.size(), -1 };
 			loopStack.push_back(loop);
-			compile(w->condition);
-			int exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, w->line, w->col);
-			emitByte(OpCode::OP_POP, w->line, w->col);
+			bool optimized = false;
+			int exitJump = -1;
+			if (w->condition->type == ExprType::BINARY) {
+				auto bin = static_cast<BinExpr*>(w->condition);
+				if (bin->op == TokenType::LT) {
+					if (bin->left->type == ExprType::VAR) {
+						auto var = static_cast<VarExpr*>(bin->left);
+						int localSlot = resolveLocal(var->name);
+						if (localSlot != -1 && bin->right->type == ExprType::NUMBER) {
+							auto num = static_cast<NumberExpr*>(bin->right);
+							optimized = true;
+							emitByte(OpCode::OP_JUMP_IF_NOT_LT, w->line, w->col);
+							chunk->write((uint8_t)localSlot, w->line, w->col);
+							int constIdx = chunk->addConstant(Value::Int((long long)num->val));
+							chunk->write((uint8_t)constIdx, w->line, w->col);
+							exitJump = (int)chunk->code.size();
+							chunk->write(0xff, w->line, w->col);
+							chunk->write(0xff, w->line, w->col);
+						}
+					}
+				}
+			}
+			if (!optimized) {
+				compile(w->condition);
+				exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, w->line, w->col);
+				emitByte(OpCode::OP_POP, w->line, w->col);
+			}
 			for (auto stmt : w->body) compileStmt(stmt);
 			emitLoop(startAddr, w->line, w->col);
 			patchJump(exitJump);
-			emitByte(OpCode::OP_POP, w->line, w->col);
+			if (!optimized) emitByte(OpCode::OP_POP, w->line, w->col);
 			for (int b : loopStack.back().breakJumps) patchJump(b);
 			loopStack.pop_back();
 			endScope(w->line, w->col);
@@ -7052,7 +7176,7 @@ struct VM {
 	VM() {
 		globals = std::make_shared<Env>();
 	}
-	void run(Chunk& chunk) {
+	void run(Chunk& chunk)	 {
 		uint8_t* ip = chunk.code.data();
 		uint8_t* end = ip + chunk.code.size();
 		while (ip < end) {
@@ -7071,6 +7195,42 @@ struct VM {
 			case OpCode::OP_SET_LOCAL: {
 				uint8_t slot = *ip++;
 				stack[slot] = stack.back();
+				break;
+			}
+			case OpCode::OP_INC_LOCAL: {
+				uint8_t slot = *ip++;
+				if (stack[slot].type == ValueType::INT) stack[slot].iVal++;
+				else stack[slot].fVal++;
+				break;
+			}
+			case OpCode::OP_JUMP_IF_NOT_LT: {
+				uint8_t slot = *ip++;
+				uint8_t constIdx = *ip++;
+				uint16_t offset = (ip[0] << 8) | ip[1];
+				ip += 2;
+				if (stack[slot].type == ValueType::INT) {
+					 long long localVal = stack[slot].iVal;
+					 long long constVal = chunk.constants[constIdx].iVal;
+					 if (localVal >= constVal) ip += offset;
+				}
+				else throw RuntimeError("Optimized loop requires integer.", line, 0);
+				break;
+			}
+			case OpCode::OP_SWITCH_TABLE: {
+				Value val = stack.back();
+				uint8_t minIdx = *ip++;
+				uint8_t count = *ip++;
+				if (val.type == ValueType::INT) {
+					long long minVal = chunk.constants[minIdx].iVal;
+					long long jumpIdx = val.iVal - minVal;
+					if (jumpIdx >= 0 && jumpIdx < count) {
+						uint8_t* tableEntry = ip + (jumpIdx * 2);
+						uint16_t offset = (tableEntry[0] << 8) | tableEntry[1];
+						ip = tableEntry + 2 + offset;
+					}
+					else ip += (count * 2);
+				}
+				else ip += (count * 2);
 				break;
 			}
 			case OpCode::OP_CONSTANT: {
