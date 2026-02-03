@@ -6931,6 +6931,7 @@ struct ByteCodeCompiler {
 			subCompiler.beginScope();
 			for (const auto& param : f->params) subCompiler.addLocal(param.name);
 			for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
+			subCompiler.emitByte(OpCode::OP_NOTYPE, f->line, f->col);
 			subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
 			auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,f->returnsConst, f->body, nullptr, f->isCached);
 			funcObj->chunk=funcChunk;
@@ -6940,6 +6941,13 @@ struct ByteCodeCompiler {
 			emitConstant(funcVal, f->line, f->col);
 			emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line, f->col);
 			chunk->write((uint8_t)0, f->line, f->col);
+			break;
+		}
+		case StmtType::RETURN: {
+			auto r = static_cast<ReturnStmt*>(s);
+			if (r->value) compile(r->value);
+			else emitByte(OpCode::OP_NOTYPE, r->line, r->col);
+			emitByte(OpCode::OP_RETURN, r->line, r->col);
 			break;
 		}
 		case StmtType::MULTI_LET: {
@@ -7209,8 +7217,8 @@ struct VM {
 		while (true) {
 			Chunk* currentChunk = frame->function ? frame->function->chunk : &chunk;
 			// --- DEBUGGER START ---
-			//int currentOffset = (int)(ip - currentChunk->code.data());
-			//printf("IP: %d | OpCode: %d | StackSize: %d\n", currentOffset, *ip, (int)stack.size());
+			int currentOffset = (int)(ip - currentChunk->code.data());
+			printf("IP: %d | OpCode: %d | StackSize: %d\n", currentOffset, *ip, (int)stack.size());
 			// --- DEBUGGER END ---
 			OpCode instruction = static_cast<OpCode>(*ip++);
 			int offset = (int)(ip - currentChunk->code.data());
@@ -7728,15 +7736,77 @@ struct VM {
 			}
 			case OpCode::OP_RETURN: {
 				Value result = pop();
+				FunctionObject* func = frame->function;
+				if (func) {
+					if (result.type == ValueType::NOTYPE) {
+						if (!func->defaultRetArgs.empty()) {
+							result = executeDefault(func->defaultRetArgs[0], line);
+						}
+						else if (func->returnType != ValueType::NOTYPE) {
+							string typeName = "";
+							switch (func->returnType) {
+							case ValueType::INT:    typeName = "int"; break;
+							case ValueType::FLOAT:  typeName = "float"; break;
+							case ValueType::BOOL:   typeName = "bool"; break;
+							case ValueType::STRING: typeName = "string"; break;
+							case ValueType::LIST:   typeName = "list"; break;
+							case ValueType::SET:    typeName = "set"; break;
+							case ValueType::DICT:   typeName = "dict"; break;
+							case ValueType::TUPLE:  typeName = "tuple"; break;
+							case ValueType::VECTOR: typeName = "vector"; break;
+							case ValueType::RANGE:  typeName = "range"; break;
+							default: break;
+							}
+							bool found = false;
+							if (!typeName.empty() && globals->exists(typeName)) {
+								Value ctor = globals->get(typeName);
+								vector<Value> noArgs;
+								if (ctor.type == ValueType::NATIVE_FUNCTION) {
+									auto* nat = static_cast<NativeFunctionObject*>(ctor.ref.get());
+									result = nat->func(noArgs, line, 0);
+									found = true;
+								}
+								else if (ctor.type == ValueType::OVERLOAD) {
+									auto* ov = static_cast<OverloadObject*>(ctor.ref.get());
+									for (const auto& v : ov->overloads) {
+										if (v.type == ValueType::NATIVE_FUNCTION) {
+											auto* nat = static_cast<NativeFunctionObject*>(v.ref.get());
+											try {
+												result = nat->func(noArgs, line, 0);
+												found = true;
+												break;
+											}
+											catch (...) {}
+										}
+									}
+								}
+							}
+							if (!found) result = Value::NoType();
+						}
+						else result = Value::NoType();
+					}
+					if (func->returnType != ValueType::NOTYPE && result.type != func->returnType) {
+						if (func->returnType == ValueType::FLOAT && result.type == ValueType::INT) {
+							result = Value::Float((double)result.asInt());
+						}
+						else if (func->returnType == ValueType::INT && result.type == ValueType::FLOAT) {
+							result = Value::Int((long long)result.asFloat());
+						}
+						else throw TypeError("Return type mismatch.", line, 0);
+					}
+					if (func->returnsConst) result.isConst = true;
+				}
 				frames.pop_back();
-				if (frames.empty()) return;
+				if (frames.empty()) {
+					stack.push_back(result);
+					return;
+				}
 				frame = &frames.back();
 				ip = frame->ip;
 				stack.push_back(result);
 				break;
 			}
-			default:
-				throw InternalError("Unknown OpCode encountered", line, 0);
+			default: throw InternalError("Unknown OpCode encountered", line, 0);
 			}
 		}
 	}
