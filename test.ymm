@@ -1,4 +1,11 @@
-define function foo()->int("123"): {print(1)}
+define cached function fib(n: int()) -> int(): {
+	if n is in [0,1]: return n
+	else : return (fib(n-1)+fib(n-2))
+}
+define cached function fac(n: int()) -> int(): {
+	if n is in [0, 1]: return 1
+	else: return n*fac(n-1)
+}
 define function main(): {
-	print(foo())
+	print(2**63)
 }
