@@ -11,6 +11,7 @@
 #undef IN
 #undef _TOKEN_INFORMATION_CLASS
 #undef min
+#undef max
 #endif
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
@@ -38,6 +39,7 @@
 #include <thread>
 #include <ctime>
 #include <math.h>
+#include <intrin.h>
 
 namespace fs = std::filesystem;
 using std::string;
@@ -370,7 +372,7 @@ struct DeprecationWarning : Warning { DeprecationWarning(string m, int l, int c)
 struct RuntimeWarning : Warning { RuntimeWarning(string m, int l, int c) : Warning("RuntimeWarning: " + m, l, c) {} };
 struct ImportWarning : Warning { ImportWarning(string m, int l, int c) : Warning("ImportWarning: " + m, l, c) {} };
 enum class ValueType { 
-	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE,
+	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE, BIGINT,
 	PAIRED, RANGE, TUPLE, SET, FUNCTION, NATIVE_FUNCTION, FILE, OVERLOAD, OMIT_MARKER
 };
 enum class CopyMode { SHALLOW, DEEP, REF };
@@ -1746,7 +1748,7 @@ public:
 // -------------------- RUNTIME -------------------
 struct Env;
 struct HeapObject;
-struct HeapObject;
+struct BigIntObject;
 using NativeFunc = std::function<Value(const std::vector<Value>&, int, int)>;
 struct ValueHash {
 	std::size_t operator()(const Value& v) const;
@@ -1763,6 +1765,9 @@ struct Value {
 	bool isConst = false;
 	bool isLocked = false;
 	static Value Int(long long v, bool locked = false, bool isConst = false);
+	static Value BigInt(long long n);
+	static Value BigInt(std::vector<uint64_t> chunks, bool isNegative);
+	static Value BigInt(std::shared_ptr<BigIntObject> obj);
 	static Value Float(double v, bool locked = false, bool isConst = false);
 	static Value Bool(bool v, bool locked = false, bool isConst = false);
 	static Value String(const string& v, bool locked = false, bool isConst = false);
@@ -1861,12 +1866,236 @@ struct VectorObject : HeapObject {
 	vector<double> elements;
 	VectorObject(const vector<double>& e) : HeapObject(ValueType::VECTOR), elements(e) {}
 };
+struct BigIntObject : HeapObject {
+	bool isNegative;
+	std::vector<uint32_t> chunks;
+	BigIntObject(long long n) : HeapObject(ValueType::BIGINT) {
+		if (n < 0) { isNegative = true; n = -n; }
+		else isNegative = false;
+		if (n == 0) chunks.push_back(0);
+		while (n > 0) {
+			chunks.push_back((uint32_t)(n & 0xFFFFFFFF));
+			n >>= 32;
+		}
+	}
+	BigIntObject(std::vector<uint32_t> c, bool neg)
+		: HeapObject(ValueType::BIGINT), chunks(c), isNegative(neg) {
+		trim();
+	}
+	void trim() {
+		while (chunks.size() > 1 && chunks.back() == 0) chunks.pop_back();
+		if (chunks.size() == 1 && chunks[0] == 0) isNegative = false;
+	}
+	bool operator==(const BigIntObject& other) const {
+		return isNegative == other.isNegative && chunks == other.chunks;
+	}
+	bool operator<(const BigIntObject& other) const {
+		if (isNegative != other.isNegative) return isNegative;
+		if (chunks.size() != other.chunks.size())
+			return isNegative ? chunks.size() > other.chunks.size() : chunks.size() < other.chunks.size();
+		for (int i = chunks.size() - 1; i >= 0; i--) {
+			if (chunks[i] != other.chunks[i]) return isNegative ? chunks[i] > other.chunks[i] : chunks[i] < other.chunks[i];
+		}
+		return false;
+	}
+	bool operator>(const BigIntObject& other) const { return other < *this; }
+	bool absLess(const BigIntObject& other) const {
+		if (chunks.size() != other.chunks.size()) return chunks.size() < other.chunks.size();
+		for (int i = chunks.size() - 1; i >= 0; i--) if (chunks[i] != other.chunks[i]) return chunks[i] < other.chunks[i];
+		return false;
+	}
+	BigIntObject absAdd(const BigIntObject& other) const {
+		std::vector<uint32_t> res;
+		uint64_t carry = 0;
+		size_t n = std::max(chunks.size(), other.chunks.size());
+		res.reserve(n + 1);
+		for (size_t i = 0; i < n || carry; i++) {
+			uint64_t sum = carry + (i < chunks.size() ? chunks[i] : 0) + (i < other.chunks.size() ? other.chunks[i] : 0);
+			res.push_back((uint32_t)(sum & 0xFFFFFFFF));
+			carry = sum >> 32;
+		}
+		return BigIntObject(res, false);
+	}
+	BigIntObject absSub(const BigIntObject& other) const {
+		std::vector<uint32_t> res;
+		int64_t borrow = 0;
+		size_t n = chunks.size();
+		res.reserve(n);
+		for (size_t i = 0; i < n; i++) {
+			int64_t sub = (int64_t)chunks[i] - (i < other.chunks.size() ? other.chunks[i] : 0) - borrow;
+			if (sub < 0) {
+				sub += 4294967296LL;
+				borrow = 1;
+			}
+			else borrow = 0;
+			res.push_back((uint32_t)sub);
+		}
+		return BigIntObject(res, false);
+	}
+	BigIntObject operator+(const BigIntObject& other) const {
+		if (isNegative == other.isNegative) {
+			BigIntObject res = absAdd(other);
+			res.isNegative = isNegative;
+			return res;
+		}
+		else {
+			if (absLess(other)) {
+				BigIntObject res = other.absSub(*this);
+				res.isNegative = other.isNegative;
+				return res;
+			}
+			else {
+				BigIntObject res = absSub(other);
+				res.isNegative = isNegative;
+				return res;
+			}
+		}
+	}
+	BigIntObject operator-(const BigIntObject& other) const {
+		if (isNegative != other.isNegative) {
+			BigIntObject res = absAdd(other);
+			res.isNegative = isNegative;
+			return res;
+		}
+		else {
+			if (absLess(other)) {
+				BigIntObject res = other.absSub(*this);
+				res.isNegative = !isNegative;
+				return res;
+			}
+			else {
+				BigIntObject res = absSub(other);
+				res.isNegative = isNegative;
+				return res;
+			}
+		}
+	}
+	BigIntObject operator*(const BigIntObject& other) const {
+		size_t n = chunks.size(), m = other.chunks.size();
+		std::vector<uint64_t> res(n + m, 0);
+		for (size_t i = 0; i < n; i++) {
+			uint64_t carry = 0;
+			for (size_t j = 0; j < m; j++) {
+				uint64_t high;
+				uint64_t low = _umul128(chunks[i], other.chunks[j], &high);
+				unsigned char c1 = _addcarry_u64(0, res[i + j], low, &res[i + j]);
+				_addcarry_u64(c1, high, 0, &high);
+				_addcarry_u64(0, res[i + j], carry, &res[i + j]);
+				uint64_t r = res[i + j];
+				unsigned char c_add1 = _addcarry_u64(0, r, low, &r);
+				res[i + j] = r;
+				uint64_t h = high + c_add1;
+				carry = h;
+			}
+		}
+		std::fill(res.begin(), res.end(), 0);
+		for (size_t i = 0; i < n; i++) {
+			uint64_t carry = 0;
+			for (size_t j = 0; j < m; j++) {
+				uint64_t prod = (uint64_t)chunks[i] * other.chunks[j] + res[i + j] + carry;
+				res[i + j] = (uint32_t)(prod & 0xFFFFFFFF);
+				carry = prod >> 32;
+			}
+			res[i + m] += (uint32_t)carry;
+		}
+		return BigIntObject(res, isNegative != other.isNegative);
+	}
+	std::pair<BigIntObject, BigIntObject> divMod(const BigIntObject& other) const {
+		if (other.chunks.size() == 1 && other.chunks[0] == 0) throw std::runtime_error("Divide by zero");
+		BigIntObject dividend = *this; dividend.isNegative = false;
+		BigIntObject divisor = other; divisor.isNegative = false;
+		BigIntObject quotient(0);
+		BigIntObject remainder(0);
+		if (dividend < divisor) return { BigIntObject(0), *this };
+		size_t nBits = dividend.chunks.size() * 64;
+		for (int i = dividend.chunks.size() * 64 - 1; i >= 0; i--) {
+			remainder.lshift(1);
+			int chunkIdx = i / 64;
+			int bitIdx = i % 64;
+			if ((dividend.chunks[chunkIdx] >> bitIdx) & 1) {
+				remainder.chunks[0] |= 1;
+			}
+			if (!remainder.absLess(divisor)) {
+				remainder = remainder.absSub(divisor);
+				quotient.setBit(i);
+			}
+		}
+		quotient.isNegative = isNegative != other.isNegative;
+		remainder.isNegative = isNegative;
+		return { quotient, remainder };
+	}
+	BigIntObject operator/(const BigIntObject& other) const { return divMod(other).first; }
+	BigIntObject operator%(const BigIntObject& other) const { return divMod(other).second; }
+	void lshift(int shift) {
+		if (shift == 0) return;
+		uint64_t carry = 0;
+		for (size_t i = 0; i < chunks.size(); i++) {
+			uint64_t nextCarry = chunks[i] >> 63;
+			chunks[i] = (chunks[i] << 1) | carry;
+			carry = nextCarry;
+		}
+		if (carry) chunks.push_back(carry);
+	}
+	void setBit(int n) {
+		int chunkIdx = n / 64;
+		int bitIdx = n % 64;
+		if (chunkIdx >= chunks.size()) chunks.resize(chunkIdx + 1, 0);
+		chunks[chunkIdx] |= (1ULL << bitIdx);
+	}
+	static std::pair<BigIntObject*, BigIntObject*> promote(Value& a, Value& b) {
+		BigIntObject* ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject*>(a.ref.get()) : new BigIntObject(a.asInt());
+		BigIntObject* bb = (b.type == ValueType::BIGINT) ? static_cast<BigIntObject*>(b.ref.get()) : new BigIntObject(b.asInt());
+		return { ba, bb };
+	}
+	static Value add(Value a, Value b) { auto [ba, bb] = promote(a, b); return Value::BigInt(std::make_shared<BigIntObject>(*ba + *bb)); }
+	static Value sub(Value a, Value b) { auto [ba, bb] = promote(a, b); return Value::BigInt(std::make_shared<BigIntObject>(*ba - *bb)); }
+	static Value mul(Value a, Value b) { auto [ba, bb] = promote(a, b); return Value::BigInt(std::make_shared<BigIntObject>(*ba * *bb)); }
+	static Value div(Value a, Value b) { auto [ba, bb] = promote(a, b); return Value::BigInt(std::make_shared<BigIntObject>(*ba / *bb)); }
+	static Value mod(Value a, Value b) { auto [ba, bb] = promote(a, b); return Value::BigInt(std::make_shared<BigIntObject>(*ba % *bb)); }
+	static Value pow(Value a, Value b) {
+		auto [ba, bb] = promote(a, b);
+		if (bb->isNegative) return Value::Int(0);
+		BigIntObject base = *ba;
+		BigIntObject exp = *bb;
+		BigIntObject res(1);
+		while (!exp.absLess(BigIntObject(1)) && !(exp.chunks.size() == 1 && exp.chunks[0] == 0)) {
+			if (exp.chunks[0] & 1) res = res * base;
+			uint64_t carry = 0;
+			for (int i = exp.chunks.size() - 1; i >= 0; i--) {
+				uint64_t nextCarry = (exp.chunks[i] & 1) << 63;
+				exp.chunks[i] = (exp.chunks[i] >> 1) | carry;
+				carry = nextCarry;
+			}
+			exp.trim();
+			base = base * base;
+		}
+		return Value::BigInt(std::make_shared<BigIntObject>(res));
+	}
+};
 inline Value Value::Int(long long v, bool locked, bool isConst) {
 	Value x;
 	x.type = ValueType::INT;
 	x.iVal = v;
 	x.isConst = isConst;
 	return x;
+}
+inline Value Value::BigInt(long long n) {
+	Value v;
+	v.type = ValueType::BIGINT;
+	v.ref = std::make_shared<BigIntObject>(n);
+	return v;
+}
+inline Value Value::BigInt(std::vector<uint64_t> chunks, bool isNegative) {
+	Value v;
+	v.type = ValueType::BIGINT;
+	v.ref = std::make_shared<BigIntObject>(chunks, isNegative);
+	return v;
+}
+inline Value Value::BigInt(std::shared_ptr<BigIntObject> obj) {
+	Value v;
+	v.type = ValueType::BIGINT;
+	v.ref = obj;
+	return v;
 }
 inline Value Value::Float(double v, bool locked, bool isConst) {
 	Value x;
@@ -1885,8 +2114,16 @@ inline Value Value::Bool(bool v, bool locked, bool isConst) {
 inline Value Value::String(const string& v, bool locked, bool isConst) {
 	Value x; x.type = ValueType::STRING; x.ref = std::make_shared<StringObject>(v, locked); return x;
 }
-inline Value Value::None() { Value x; x.type = ValueType::NONE; return x; }
-inline Value Value::NoType() { Value x; x.type = ValueType::NOTYPE; return x; }
+inline Value Value::None() { 
+	Value x; 
+	x.type = ValueType::NONE; 
+	return x; 
+}
+inline Value Value::NoType() { 
+	Value x; 
+	x.type = ValueType::NOTYPE; 
+	return x; 
+}
 inline Value Value::List() {
 	Value x; x.type = ValueType::LIST; x.ref = std::make_shared<ListObject>(); return x;
 }
@@ -2102,6 +2339,21 @@ inline std::size_t ValueHash::operator()(const Value& v) const {
 inline bool ValueEqual::operator()(const Value& a, const Value& b) const {
 	return a.strictEquals(b);
 }
+struct VectorHash {
+	std::size_t operator()(const std::vector<Value>& vec) const {
+		std::size_t seed = vec.size();
+		ValueHash hasher;
+		for (const auto& v : vec) seed ^= hasher(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+		return seed;
+	}
+};
+struct VectorEqual {
+	bool operator()(const std::vector<Value>& a, const std::vector<Value>& b) const {
+		if (a.size() != b.size()) return false;
+		for (size_t i = 0; i < a.size(); ++i) if (!(a[i].strictEquals(b[i]))) return false;
+		return true;
+	}
+};
 static void setAdd(std::vector<Value>& elems, const Value& v);
 Value deepCopy(const Value& v) {
 	Value out;
@@ -2238,6 +2490,30 @@ struct Env {
 		return false;
 	}
 };
+static inline int divMod10(std::vector<uint64_t>& chunks) {
+	uint64_t remainder = 0;
+	for (int i = chunks.size() - 1; i >= 0; i--) {
+		uint64_t quotient;
+		quotient = _udiv128(remainder, chunks[i], 10, &remainder);
+		chunks[i] = quotient;
+	}
+	while (chunks.size() > 1 && chunks.back() == 0) chunks.pop_back();
+	return (int)remainder;
+}
+static inline std::string bigIntToString(BigIntObject* big) {
+	if (big->chunks.empty()) return "0";
+	if (big->chunks.size() == 1 && big->chunks[0] == 0) return "0";
+	std::vector<uint64_t> temp = big->chunks;
+	std::string res = "";
+	while (temp.size() > 1 || temp[0] > 0) {
+		int digit = divMod10(temp);
+		res += std::to_string(digit);
+	}
+	if (res.empty()) return "0";
+	if (big->isNegative) res += "-";
+	std::reverse(res.begin(), res.end());
+	return res;
+}
 static inline std::string formatNumber(double val) {
 	std::string s = std::to_string(val);
 	s.erase(s.find_last_not_of('0') + 1, std::string::npos);
@@ -2311,6 +2587,10 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 		s += ">";
 		return s;
 	}
+	case ValueType::BIGINT: {
+		auto* big = static_cast<BigIntObject*>(v.ref.get());
+		return bigIntToString(big);
+	}
 	default: throw TypeError("Cannot implicitly convert this type to string", line, col);
 	}
 }
@@ -2355,9 +2635,8 @@ struct FunctionObject : HeapObject {
 	vector<Stmt*> body;
 	std::shared_ptr<Env> closure;
 	bool isCached;
-	std::map<vector<Value>, Value, CacheKeyCmp> cache;
-	FunctionObject(const vector<ParamSpec>& p, ValueType rt, vector<Expr*> dra,bool rc, const vector<Stmt*>& b, std::shared_ptr<Env> c, bool cached)
-		: HeapObject(ValueType::FUNCTION), params(p), returnType(rt), defaultRetArgs(dra) ,returnsConst(rc), body(b), closure(c), isCached(cached) {}
+	std::unordered_map<vector<Value>, Value, VectorHash, VectorEqual> cache;
+	FunctionObject(const vector<ParamSpec>& p, ValueType rt, vector<Expr*> dra,bool rc, const vector<Stmt*>& b, std::shared_ptr<Env> c, bool cached, Chunk* ch = nullptr): HeapObject(ValueType::FUNCTION), params(p), returnType(rt), defaultRetArgs(dra) ,returnsConst(rc), body(b), closure(c), isCached(cached), chunk(ch) {}
 	~FunctionObject() {
 		if (chunk) delete chunk;
 	}
@@ -2470,6 +2749,11 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 	case ValueType::VECTOR: {
 		auto* vec = static_cast<VectorObject*>(v.ref.get());
 		std::cout << valueToString(v);
+		break;
+	}
+	case ValueType::BIGINT: {
+		auto* big = static_cast<BigIntObject*>(v.ref.get());
+		std::cout<< bigIntToString(big);
 		break;
 	}
 	}
@@ -2992,6 +3276,7 @@ struct Interpreter {
 			if (v.type == ValueType::INT) return Value::Int(v.asInt(), true);
 			if (v.type == ValueType::FLOAT) return Value::Int((long long)v.asFloat(), true);
 			if (v.type == ValueType::BOOL) return Value::Int(v.asBool() ? 1 : 0, true);
+			if (v.type == ValueType::BIGINT) return v;
 			if (v.type == ValueType::STRING && isdecimal_str(v.asString())) {
 				try {
 					return Value::Int(std::stoll(v.asString()));
@@ -3216,6 +3501,7 @@ struct Interpreter {
 			case ValueType::NATIVE_FUNCTION: return Value::String("native function");
 			case ValueType::FILE: return Value::String("file");
 			case ValueType::PAIRED: return Value::String("pair");
+			case ValueType::BIGINT: return Value::String("integer");
 			case ValueType::NONE: return Value::String("None");
 			default: return Value::String("NoType");
 			}
@@ -6474,6 +6760,7 @@ struct CallFrame {
 	FunctionObject* function;
 	uint8_t* ip;
 	int basePointer;
+	vector<Value> cacheKey;
 };
 struct ByteCodeCompiler {
 	Chunk* chunk;
@@ -6933,8 +7220,7 @@ struct ByteCodeCompiler {
 			for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
 			subCompiler.emitByte(OpCode::OP_NOTYPE, f->line, f->col);
 			subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
-			auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,f->returnsConst, f->body, nullptr, f->isCached);
-			funcObj->chunk=funcChunk;
+			auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,f->returnsConst, f->body, nullptr, f->isCached, funcChunk);
 			Value funcVal;
 			funcVal.type = ValueType::FUNCTION;
 			funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
@@ -7217,8 +7503,8 @@ struct VM {
 		while (true) {
 			Chunk* currentChunk = frame->function ? frame->function->chunk : &chunk;
 			// --- DEBUGGER START ---
-			int currentOffset = (int)(ip - currentChunk->code.data());
-			printf("IP: %d | OpCode: %d | StackSize: %d\n", currentOffset, *ip, (int)stack.size());
+			//int currentOffset = (int)(ip - currentChunk->code.data());
+			//printf("IP: %d | OpCode: %d | StackSize: %d\n", currentOffset, *ip, (int)stack.size());
 			// --- DEBUGGER END ---
 			OpCode instruction = static_cast<OpCode>(*ip++);
 			int offset = (int)(ip - currentChunk->code.data());
@@ -7286,32 +7572,42 @@ struct VM {
 			case OpCode::OP_ADD: {
 				Value b = pop();
 				Value a = pop();
-				if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
+				if (a.type == ValueType::INT && b.type == ValueType::INT) {
+					long long res = a.iVal + b.iVal;
+					bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;
+					if (overflow) stack.push_back(BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
+					else stack.push_back(Value::Int(res));
+				}
+				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+					stack.push_back(BigIntObject::add(a, b));
+				}
+				else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
 					stack.push_back(Value::String(valueToString(a) + valueToString(b)));
 				}
-				else if (a.type == ValueType::INT && b.type == ValueType::INT) {
-					stack.push_back(Value::Int(a.iVal + b.iVal));
-				}
-				else {
-					stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
-				}
+				else stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
 				break;
 			}
 			case OpCode::OP_SUB: {
-				Value a = pop(), b = pop();
+				Value b = pop();
+				Value a = pop();
+
 				if (a.type == ValueType::INT && b.type == ValueType::INT) {
-					stack.push_back(Value::Int(b.iVal - a.iVal));
+					long long res = a.iVal - b.iVal;
+					bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
+					if (overflow) stack.push_back(BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
+					else stack.push_back(Value::Int(res));
 				}
-				else if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) {
-					stack.push_back(Value::Float(b.fVal - a.fVal));
-				}
+				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) stack.push_back(BigIntObject::sub(a, b));
+				else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
+				else stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
 				break;
 			}
 			case OpCode::OP_DIV: {
 				Value b = pop();
 				Value a = pop();
-				if (b.asFloat() == 0) throw DivisionByZeroError("Division by zero", line, 0);
-				stack.push_back(Value::Float(a.asFloat() / b.asFloat()));
+				double db = b.asFloat();
+				if (db == 0) throw DivisionByZeroError("Division by zero", line, 0);
+				stack.push_back(Value::Float(a.asFloat() / db));
 				break;
 			}
 			case OpCode::OP_MUL: {
@@ -7339,29 +7635,53 @@ struct VM {
 					stack.push_back(Value::List(res));
 				}
 				else if (a.type == ValueType::INT && b.type == ValueType::INT) {
-					stack.push_back(Value::Int(a.iVal * b.iVal));
+					long long res = a.iVal * b.iVal;
+					bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
+					if (overflow) stack.push_back(BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
+					else stack.push_back(Value::Int(res));
 				}
-				else {
-					stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
+				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+					stack.push_back(BigIntObject::mul(a, b));
 				}
+				else stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
 				break;
 			}
 			case OpCode::OP_FLOOR_DIV: {
-				Value b = pop(); Value a = pop();
-				stack.push_back(Value::Int((long long)(a.asFloat() / b.asFloat())));
+				Value b = pop();
+				Value a = pop();
+				if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+					if (b.asFloat() == 0) throw DivisionByZeroError("Division by zero", line, 0);
+					stack.push_back(BigIntObject::div(a, b));
+				}
+				else {
+					double db = b.asFloat();
+					if (db == 0) throw DivisionByZeroError("Division by zero", line, 0);
+					stack.push_back(Value::Int((long long)(a.asFloat() / db)));
+				}
 				break;
 			}
 			case OpCode::OP_MOD: {
-				Value b = pop(); Value a = pop();
-				if (a.type == ValueType::INT && b.type == ValueType::INT)
+				Value b = pop();
+				Value a = pop();
+				if (a.type == ValueType::INT && b.type == ValueType::INT) {
+					if (b.iVal == 0) throw DivisionByZeroError("Modulo by zero", line, 0);
 					stack.push_back(Value::Int(a.iVal % b.iVal));
-				else
+				}
+				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) stack.push_back(BigIntObject::mod(a, b));
+				else {
+					if (b.asFloat() == 0) throw DivisionByZeroError("Modulo by zero", line, 0);
 					stack.push_back(Value::Float(fmod(a.asFloat(), b.asFloat())));
+				}
 				break;
 			}
 			case OpCode::OP_POW: {
-				Value b = pop(); Value a = pop();
-				stack.push_back(Value::Float(pow(a.asFloat(), b.asFloat())));
+				Value b = pop(); 
+				Value a = pop();
+				if ((a.type == ValueType::INT || a.type == ValueType::BIGINT) &&
+					(b.type == ValueType::INT || b.type == ValueType::BIGINT)) {
+					stack.push_back(BigIntObject::pow(a, b));
+				}
+				else stack.push_back(Value::Float(pow(a.asFloat(), b.asFloat())));
 				break;
 			}
 			// --- Comparisons ---
@@ -7743,6 +8063,30 @@ struct VM {
 							result = executeDefault(func->defaultRetArgs[0], line);
 						}
 						else if (func->returnType != ValueType::NOTYPE) {
+							result = Value::None();
+						}
+						else {
+							result = Value::None();
+						}
+					}
+					if (func->returnType != ValueType::NOTYPE && result.type != func->returnType) {
+						bool converted = false;
+						if (func->returnType == ValueType::FLOAT && result.type == ValueType::INT) {
+							result = Value::Float((double)result.asInt());
+							converted = true;
+						}
+						else if (func->returnType == ValueType::INT && result.type == ValueType::FLOAT) {
+							result = Value::Int((long long)result.asFloat());
+							converted = true;
+						}
+						else if (func->returnType == ValueType::INT && result.type == ValueType::BIGINT) {
+							converted = true;
+						}
+						else if (func->returnType == ValueType::BIGINT && result.type == ValueType::INT) {
+							result = Value::BigInt(result.asInt());
+							converted = true;
+						}
+						if (!converted) {
 							string typeName = "";
 							switch (func->returnType) {
 							case ValueType::INT:    typeName = "int"; break;
@@ -7757,45 +8101,47 @@ struct VM {
 							case ValueType::RANGE:  typeName = "range"; break;
 							default: break;
 							}
-							bool found = false;
 							if (!typeName.empty() && globals->exists(typeName)) {
 								Value ctor = globals->get(typeName);
-								vector<Value> noArgs;
-								if (ctor.type == ValueType::NATIVE_FUNCTION) {
-									auto* nat = static_cast<NativeFunctionObject*>(ctor.ref.get());
-									result = nat->func(noArgs, line, 0);
-									found = true;
+								vector<Value> args;
+								if (result.type != ValueType::NONE && result.type != ValueType::NOTYPE) {
+									args.push_back(result);
 								}
-								else if (ctor.type == ValueType::OVERLOAD) {
-									auto* ov = static_cast<OverloadObject*>(ctor.ref.get());
-									for (const auto& v : ov->overloads) {
-										if (v.type == ValueType::NATIVE_FUNCTION) {
-											auto* nat = static_cast<NativeFunctionObject*>(v.ref.get());
-											try {
-												result = nat->func(noArgs, line, 0);
-												found = true;
-												break;
+								try {
+									if (ctor.type == ValueType::NATIVE_FUNCTION) {
+										auto* nat = static_cast<NativeFunctionObject*>(ctor.ref.get());
+										result = nat->func(args, line, 0);
+										converted = true;
+									}
+									else if (ctor.type == ValueType::OVERLOAD) {
+										auto* ov = static_cast<OverloadObject*>(ctor.ref.get());
+										for (const auto& v : ov->overloads) {
+											if (v.type == ValueType::NATIVE_FUNCTION) {
+												auto* nat = static_cast<NativeFunctionObject*>(v.ref.get());
+												try {
+													result = nat->func(args, line, 0);
+													converted = true;
+													break;
+												}
+												catch (...) {}
 											}
-											catch (...) {}
 										}
 									}
 								}
+								catch (...) {
+									
+								}
 							}
-							if (!found) result = Value::NoType();
 						}
-						else result = Value::NoType();
-					}
-					if (func->returnType != ValueType::NOTYPE && result.type != func->returnType) {
-						if (func->returnType == ValueType::FLOAT && result.type == ValueType::INT) {
-							result = Value::Float((double)result.asInt());
+						if (!converted && result.type != ValueType::NONE) {
+							throw TypeError("Return type mismatch. Expected " + std::to_string((int)func->returnType) +
+								" Got " + std::to_string((int)result.type), line, 0);
 						}
-						else if (func->returnType == ValueType::INT && result.type == ValueType::FLOAT) {
-							result = Value::Int((long long)result.asFloat());
-						}
-						else throw TypeError("Return type mismatch.", line, 0);
 					}
 					if (func->returnsConst) result.isConst = true;
+					if (func->isCached) func->cache[frame->cacheKey] = result;
 				}
+				int returnSlot = frame->basePointer;
 				frames.pop_back();
 				if (frames.empty()) {
 					stack.push_back(result);
@@ -7803,6 +8149,7 @@ struct VM {
 				}
 				frame = &frames.back();
 				ip = frame->ip;
+				stack.resize(returnSlot);
 				stack.push_back(result);
 				break;
 			}
@@ -7812,7 +8159,6 @@ struct VM {
 	}
 private:
 	void callValue(Value callee, int argCount, int line) {
-		// ------------------ 1. RESOLVE CALLEE ------------------
 		FunctionObject* function = nullptr;
 		NativeFunctionObject* nativeObj = nullptr;
 		if (callee.type == ValueType::FUNCTION) {
@@ -7836,20 +8182,12 @@ private:
 			stack.push_back(nativeObj->func(args, line, 0));
 			return;
 		}
-		if (function->isCached) {
-			vector<Value> key;
-			for (int i = 0; i < argCount; i++) {
-				key.push_back(stack[stack.size() - argCount + i]);
-			}
-			if (function->cache.count(key)) {
-				stack.resize(stack.size() - argCount);
-				stack.push_back(function->cache[key]);
-				return;
-			}
-		}
+		
 		vector<Value> providedArgs;
 		providedArgs.resize(argCount);
 		for (int i = argCount - 1; i >= 0; i--) providedArgs[i] = pop();
+		// Debugging: Verify we have params
+		//std::cout << "DEBUG: Call " << argCount << " args. Func expects " << function->params.size() << "\n";
 		vector<Value> finalArgs;
 		finalArgs.resize(function->params.size());
 		size_t argIndex = 0;
@@ -7879,7 +8217,7 @@ private:
 			else if (p.isVariadic) {
 				vector<Value> tupleItems;
 				while (argIndex < providedArgs.size()) {
-					if (providedArgs[argIndex].type == ValueType::PAIRED) break; // Stop at kwargs
+					if (providedArgs[argIndex].type == ValueType::PAIRED) break;
 					Value v = providedArgs[argIndex];
 					if (p.mode == CopyMode::DEEP) v = deepCopy(v);
 					tupleItems.push_back(v);
@@ -7909,17 +8247,46 @@ private:
 					else throw ArgumentError("Missing required argument '" + p.name + "'", line, 0);
 				}
 				if (p.type != ValueType::NOTYPE && argVal.type != p.type) {
-					if (p.type == ValueType::FLOAT && argVal.type == ValueType::INT) argVal = Value::Float((double)argVal.asInt());
-					else throw TypeError("Type mismatch for '" + p.name + "'", line, 0);
+					bool mismatch = true;
+					if (p.type == ValueType::FLOAT && argVal.type == ValueType::INT){ 
+						argVal = Value::Float((double)argVal.asInt());
+						mismatch = false;
+					}
+					else if (p.type == ValueType::INT && argVal.type == ValueType::FLOAT){
+						argVal = Value::Int((long long)argVal.asFloat());
+						mismatch = false;
+					}
+					else if (p.type == ValueType::INT && argVal.type == ValueType::BIGINT) {
+						mismatch = false;
+					}
+					else if (p.type == ValueType::BIGINT && argVal.type == ValueType::INT) {
+						argVal = Value::BigInt(argVal.asInt());
+						mismatch = false;
+					}
+					if (mismatch) {
+						throw TypeError("Type mismatch for '" + p.name + "'. Expected " + std::to_string((int)p.type) + " got " +
+						std::to_string((int)argVal.type), line, 0);
+					}
 				}
 			}
 			finalArgs[i] = argVal;
 		}
-		frame->ip = ip;
+		if (function->isCached) {
+			if (function->cache.count(finalArgs)) {
+				stack.push_back(function->cache[finalArgs]);
+				return;
+			}
+		}
+		if (argIndex < providedArgs.size()) {
+			bool acceptsMore = !function->params.empty() && (function->params.back().isVariadic || function->params.back().isKwargs);
+			if (!acceptsMore) throw ArgumentError("Too many arguments passed to function.", line, 0);
+		}
+		if (frame) frame->ip = ip;
 		CallFrame newFrame;
 		newFrame.function = function;
 		newFrame.ip = function->chunk->code.data();
 		newFrame.basePointer = stack.size();
+		if (function->isCached) newFrame.cacheKey = finalArgs;
 		for (const auto& v : finalArgs) stack.push_back(v);
 		frames.push_back(newFrame);
 		frame = &frames.back();
