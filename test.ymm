@@ -1,4 +1,4 @@
-define function foo(): {return 1}
+define function foo()->int("123"): {print(1)}
 define function main(): {
 	print(foo())
 }
