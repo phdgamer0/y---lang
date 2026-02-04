@@ -39,6 +39,10 @@ int main() {
 			vm.methodResolver = [&](MethodCallExpr* m) {
 				return interp.Resolve_methods(m);
 			};
+			vm.importResolver = [&](std::string libName, std::vector<std::string> symbols) {
+				if (interp.modules.find(libName) != interp.modules.end()) interp.modules[libName](interp.env, symbols);
+				else throw ImportError("Unknown module '" + libName + "'", 0, 0);
+			};
 			vm.run(chunk);
 			if (vm.globals->exists("main")) {
 				Value mainVal = vm.globals->get("main");

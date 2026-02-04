@@ -1,11 +1,6 @@
-define cached function fib(n: int()) -> int(): {
-	if n is in [0,1]: return n
-	else : return (fib(n-1)+fib(n-2))
-}
-define cached function fac(n: int()) -> int(): {
-	if n is in [0, 1]: return 1
-	else: return n*fac(n-1)
-}
+import flatten_test from "Module.ymm"
 define function main(): {
-	print(2**63)
+	let x = [1, 2, 3, 4, [5, (6, {7})]]
+	print(flatten_test(x))
+	
 }

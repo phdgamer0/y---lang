@@ -1,3 +1,25 @@
-define function foo(str: string("hello")) -> string(): {
-   return str
+define cached function fib(n: int()) -> int(): {
+	if n is in [0, 1]: return n
+	else : return (fib(n - 1) + fib(n - 2))
+}
+define function fac(n: int()) -> int(): {
+	if n is in [0, 1]: return 1
+	else: return n * fac(n - 1)
+}
+define function flatten_test($arg): {
+	if typeof (arg) is not in "list set tuple".split(" "): {
+	return arg
+	}
+	let res = []
+	for small_args in arg do: {
+		if typeof (small_args) is in "list set tuple".split(" "): {
+			for smaller_args in flatten_test(small_args) do: { res.append(smaller_args) }
+		}
+		else: res.append(small_args)
+	}
+	switch (typeof (arg)):{
+		case "set" then do: { return set(res) }
+		case "tuple" do: { return tuple(res) }
+		default do: return res
+	}
 }
