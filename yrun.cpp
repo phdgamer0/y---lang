@@ -13,13 +13,14 @@ int main() {
 	std::stringstream ss;
 	ss << file.rdbuf();
 	string code = ss.str();
+	DEBUGGER_MODE_IS_ENABLED = false;
 	try {
 		auto tokens = tokenize(code);
 		Parser parser(tokens);
 		vector<Stmt*> program;
 		while (!parser.isAtEnd()) program.push_back(parser.parseStmt());
 		int useVM;
-		cout<<"Choose Compiler: AST:0 VM:1 :";
+		cout<<"Choose Compiler: AST:0 VM:1 DEBUG_VM:2 :";
 		cin>>useVM;
 		Interpreter interp;
 		if (!useVM) {
@@ -27,6 +28,7 @@ int main() {
 			std::cout<<"Program finished successfully with code 0";
 		}
 		else {
+			if (useVM == 2) DEBUGGER_MODE_IS_ENABLED = true;
 			Chunk chunk;
 			ByteCodeCompiler compiler(&chunk);
 			for (Stmt* stmt : program) compiler.compileStmt(stmt);

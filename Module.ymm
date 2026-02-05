@@ -1,3 +1,4 @@
+import Random
 define cached function fib(n: int()) -> int(): {
 	if n is in [0, 1]: return n
 	else : return (fib(n - 1) + fib(n - 2))
