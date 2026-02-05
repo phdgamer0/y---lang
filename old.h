@@ -40,7 +40,7 @@
 #include <ctime>
 #include <math.h>
 #include <intrin.h>
-
+bool DEBUGGER_MODE_IS_ENABLED = false;
 namespace fs = std::filesystem;
 using std::string;
 using std::vector;
@@ -1758,6 +1758,7 @@ struct ValueEqual {
 };
 struct Value {
 	ValueType type = ValueType::NOTYPE;
+	std::string __DEBUGGING__NAME__ = "";
 	long long iVal = 0;
 	double fVal = 0.0;
 	bool bVal = false;
@@ -1798,6 +1799,7 @@ struct Value {
 	bool sameType(const Value& other) const { return type == other.type; }
 };
 struct HeapObject {
+	std::string name = "";
 	ValueType type;
 	bool typeLocked = false;
 	HeapObject(ValueType t, bool locked = false) : type(t), typeLocked(locked) {}
@@ -2470,6 +2472,7 @@ struct Env {
 	void set(const string& n, Value v, bool locked, bool isConstVar = false) {
 		if (vars.count(n)) {
 			Var& existing = vars[n];
+			if (DEBUGGER_MODE_IS_ENABLED) existing.value.__DEBUGGING__NAME__=n;
 			if (existing.isLocked && existing.value.type != v.type) {
 				throw RuntimeError("Type mismatch: variable '" + n + "' is type-locked.", 0, 0);
 			}
@@ -2479,6 +2482,7 @@ struct Env {
 			v.isConst = existing.isConst;
 			return;
 		}
+		if (DEBUGGER_MODE_IS_ENABLED) v.__DEBUGGING__NAME__=n;
 		v.isLocked = locked;
 		v.isConst = isConstVar;
 		if (locked && v.ref) v.ref->typeLocked = true;
@@ -2610,6 +2614,37 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 	}
 	default: throw TypeError("Cannot implicitly convert this type to string", line, col);
 	}
+}
+static inline std::string PrintStackForDebug(const std::vector<Value>& stack) {
+	std::string result = "start -> [";
+	for (auto val = stack.begin(); val < stack.end(); val++) {
+		switch (val->type) {
+		case ValueType::NOTYPE:           result += "NoType"; break;
+		case ValueType::NONE:             result += "None"; break;
+		case ValueType::INT:              result += "Int"; break;
+		case ValueType::FLOAT:            result += "Float"; break;
+		case ValueType::STRING:           result += "String"; break;
+		case ValueType::BOOL:             result += "Bool"; break;
+		case ValueType::LIST:             result += "List"; break;
+		case ValueType::VECTOR:           result += "Vector"; break;
+		case ValueType::DICT:             result += "Dict"; break;
+		case ValueType::SLICE:            result += "Slice"; break;
+		case ValueType::BIGINT:           result += "BigInt"; break;
+		case ValueType::PAIRED:           result += "Paired"; break;
+		case ValueType::RANGE:            result += "Range"; break;
+		case ValueType::TUPLE:            result += "Tuple"; break;
+		case ValueType::SET:              result += "Set"; break;
+		case ValueType::FUNCTION:         result += "Func"; break;
+		case ValueType::NATIVE_FUNCTION:  result += "NFunc"; break;
+		case ValueType::FILE:             result += "File"; break;
+		case ValueType::OVERLOAD:         result += "Overload"; break;
+		case ValueType::OMIT_MARKER:      result += "OmitMarker"; break;
+		default:                          result += "Unknown"; break;
+		}
+		if (DEBUGGER_MODE_IS_ENABLED) result+=" "+val->__DEBUGGING__NAME__;
+		if (val != stack.end() - 1) result += ", ";
+	}
+	return result + "] <- end";
 }
 static inline bool lessValue(const Value& a, const Value& b) {
 	if (a.type != b.type) return a.type < b.type;
@@ -6742,8 +6777,93 @@ enum class OpCode : uint8_t {
 	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN, OP_TO_STREAM, OP_JUMP_IF_NOT_LT,
 	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER, OP_SKIP_ITER, OP_SWITCH_TABLE,
 	// Errors & Systems
-	OP_THROW, OP_ASSERT, OP_IMPORT, OP_POP
+	OP_THROW, OP_ASSERT, OP_IMPORT, OP_POP, OP_DEBUG_NAME
 };
+static inline std::string OpCodeToString(OpCode num){
+	switch (num){
+		case OpCode::OP_CONSTANT: return "OP_CONSTANT";
+		case OpCode::OP_TRUE: return "OP_TRUE";
+		case OpCode::OP_FALSE: return "OP_FALSE";
+		case OpCode::OP_NONE: return "OP_NONE";
+		case OpCode::OP_NOTYPE: return "OP_NOTYPE";
+		case OpCode::OP_DEFINE_VAR: return "OP_DEFINE_VAR";
+		case OpCode::OP_GET_VAR: return "OP_GET_VAR";
+		case OpCode::OP_SET_VAR: return "OP_SET_VAR";
+		case OpCode::OP_DEEP_COPY: return "OP_DEEP_COPY";
+		case OpCode::OP_DEFINE_REF: return "OP_DEFINE_REF";
+		case OpCode::OP_REF_VAR: return "OP_REF_VAR";
+		case OpCode::OP_REF_INDEX: return "OP_REF_INDEX";
+		case OpCode::OP_SET_REF: return "OP_SET_REF";
+		case OpCode::OP_MULTI_SET: return "OP_MULTI_LET";
+		case OpCode::OP_GET_LOCAL: return "OP_GET_LOCAL";
+		case OpCode::OP_SET_LOCAL: return "OP_SET_LOCAL";
+		case OpCode::OP_INC_LOCAL: return "OP_INC_LOCAL";
+		case OpCode::OP_ADD: return "OP_ADD";
+		case OpCode::OP_SUB: return "OP_SUB";
+		case OpCode::OP_MUL: return "OP_MUL";
+		case OpCode::OP_DIV: return "OP_DIV";
+		case OpCode::OP_FLOOR_DIV: return "OP_FLOOR_DIV";
+		case OpCode::OP_MOD: return "OP_MOD";
+		case OpCode::OP_POW: return "OP_POW";
+		case OpCode::OP_EQ: return "OP_EQ";
+		case OpCode::OP_NEQ: return "OP_NEQ";
+		case OpCode::OP_LT: return "OP_LT";
+		case OpCode::OP_GT: return "OP_GT";
+		case OpCode::OP_LTE: return "OP_LTE";
+		case OpCode::OP_GTE: return "OP_GTE";
+		case OpCode::OP_COLON: return "OP_COLON";
+		case OpCode::OP_STRICT_NEQ: return "OP_STRICT_NEQ";
+		case OpCode::OP_NOT: return "OP_NOT";
+		case OpCode::OP_AND: return "OP_AND";
+		case OpCode::OP_OR: return "OP_OR";
+		case OpCode::OP_XOR: return "OP_XOR";
+		case OpCode::OP_IS: return "OP_IS";
+		case OpCode::OP_IN: return "OP_IN";
+		case OpCode::OP_IS_NOT: return "OP_IS_NOT";
+		case OpCode::OP_STRICT_EQ: return "OP_STRICT_EQ";
+		case OpCode::OP_IS_IN: return "OP_IS_IN";
+		case OpCode::OP_IS_NOT_IN: return "OP_IS_NOT_IN";
+		case OpCode::OP_NXOR: return "OP_NXOR";
+		case OpCode::OP_NAND: return "OP_NAND";
+		case OpCode::OP_NOR: return "OP_NOR";
+		case OpCode::OP_NEGATE: return "OP_NEGATE";
+		case OpCode::OP_INCREMENT: return "OP_INCREMENT";
+		case OpCode::OP_DECREMENT: return "OP_DECREMENT";
+		case OpCode::OP_BUILD_LIST: return "OP_BUILD_LIST";
+		case OpCode::OP_BUILD_TUPLE: return "OP_BUILD_TUPLE";
+		case OpCode::OP_BUILD_SET: return "OP_BUILD_SET";
+		case OpCode::OP_BUILD_DICT: return "OP_BUILD_DICT";
+		case OpCode::OP_UNPACK_DICT: return "OP_UNPACK_DICT";
+		case OpCode::OP_BUILD_RANGE: return "OP_BUILD_RANGE";
+		case OpCode::OP_BUILD_VECTOR: return "OP_BUILD_VECTOR";
+		case OpCode::OP_BUILD_FSTRING: return "OP_BUILD_FSTRING";
+		case OpCode::OP_BUILD_FILE: return "OP_BUILD_FILE";
+		case OpCode::OP_BUILD_SLICE: return "OP_BUILD_SLICE";
+		case OpCode::OP_GET_INDEX: return "OP_GET_INDEX";
+		case OpCode::OP_SET_INDEX: return "OP_SET_INDEX";
+		case OpCode::OP_INVOKE: return "OP_INVOKE";
+		case OpCode::OP_CALL: return "OP_CALL";
+		case OpCode::OP_JUMP: return "OP_JUMP";
+		case OpCode::OP_JUMP_IF_FALSE: return "OP_JUMP_IF_FALSE";
+		case OpCode::OP_LOOP: return "OP_LOOP";
+		case OpCode::OP_RETURN: return "OP_RETURN";
+		case OpCode::OP_TO_STREAM: return "OP_TO_STREAM";
+		case OpCode::OP_JUMP_IF_NOT_LT: return "OP_JUMP_IF_NOT_LT";
+		case OpCode::OP_BREAK: return "OP_BREAK";
+		case OpCode::OP_CONTINUE: return "OP_CONTINUE";
+		case OpCode::OP_SKIP: return "OP_SKIP";
+		case OpCode::OP_OMIT: return "OP_OMIT";
+		case OpCode::OP_FOR_ITER: return "OP_FOR_ITER";
+		case OpCode::OP_SKIP_ITER: return "OP_SKIP_ITER";
+		case OpCode::OP_SWITCH_TABLE: return "OP_SWITCH_TABLE";
+		case OpCode::OP_THROW: return "OP_THROW";
+		case OpCode::OP_ASSERT: return "OP_ASSET";
+		case OpCode::OP_IMPORT: return "OP_IMPORT";
+		case OpCode::OP_POP: return "OP_POP";
+		case OpCode::OP_DEBUG_NAME: return "OP_DEBUG_NAME";
+		default: return "UNKNOWN";
+	}
+}
 struct Chunk {
 	vector<uint8_t> code;
 	vector<Value> constants;
@@ -6802,6 +6922,12 @@ struct ByteCodeCompiler {
 	void compile(Expr* e) {
 		if (!e) return;
 		switch (e->type) {
+		case ExprType::OMIT_MARKER_EXPR: {
+			auto o = static_cast<OmitExpr*>(e);
+			Value val = Value::Omit();
+			emitConstant(val,o->line,o->col);
+			break;
+		}
 		case ExprType::NUMBER: {
 			auto n = static_cast<NumberExpr*>(e);
 				Value val = n->isFloat ? Value::Float(n->val) : Value::Int((long long)n->val);
@@ -7065,17 +7191,19 @@ struct ByteCodeCompiler {
 			case StmtType::IMPORT: {
 				auto imp = static_cast<ImportStmt*>(s);
 				emitConstant(Value::String(imp->libName), imp->line, 0);
+				for (const auto& sym : imp->symbols) emitConstant(Value::String(sym), imp->line, 0);
 				emitByte(OpCode::OP_IMPORT, imp->line, 0);
 				chunk->write((uint8_t)imp->symbols.size(), imp->line, 0);
-				for (const auto& sym : imp->symbols) emitConstant(Value::String(sym), imp->line, 0);
 				if (imp->symbols.empty()) {
 					if (scopeDepth > 0) addLocal(imp->libName);
 					emitIdentifier(OpCode::OP_DEFINE_VAR, imp->libName, imp->line, 0);
+					chunk->write(0, imp->line, 0);
 				}
 				else {
 					for (const auto& sym : imp->symbols) {
 						if (scopeDepth > 0) addLocal(sym);
 						emitIdentifier(OpCode::OP_DEFINE_VAR, sym, imp->line, 0);
+						chunk->write(0, imp->line, 0);
 					}
 				}
 				break;
@@ -7099,7 +7227,10 @@ struct ByteCodeCompiler {
 				}
 				if (let->value) compile(let->value);
 				else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
-				if (scopeDepth>0) addLocal(let->name);
+				if (scopeDepth>0){
+					addLocal(let->name);
+					if (DEBUGGER_MODE_IS_ENABLED) emitIdentifier(OpCode::OP_DEBUG_NAME, let->name, let->line, let->col);
+				}
 				else {
 					emitIdentifier(OpCode::OP_DEFINE_VAR, let->name, let->line, let->col);
 					uint8_t flags = 0;
@@ -7304,9 +7435,11 @@ struct ByteCodeCompiler {
 				for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
 				subCompiler.emitByte(OpCode::OP_NOTYPE, f->line, f->col);
 				subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
-				auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs,f->returnsConst, f->body, nullptr, f->isCached, funcChunk);
+				auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs, f->returnsConst, f->body, nullptr, f->isCached, funcChunk);
+				funcObj->name= f->name;
 				Value funcVal;
-				funcVal.type = ValueType::FUNCTION;
+				funcVal.type = ValueType::FUNCTION; 
+				if (DEBUGGER_MODE_IS_ENABLED) funcVal.__DEBUGGING__NAME__=funcObj->name;
 				funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
 				emitConstant(funcVal, f->line, f->col);
 				emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line, f->col);
@@ -7593,15 +7726,19 @@ struct VM {
 		frames.push_back(mainFrame);
 		frame = &frames.back();
 		ip = frame->ip;
+		int line = 0;
 		while (true) {
 			Chunk* currentChunk = frame->function ? frame->function->chunk : &chunk;
 			// --- DEBUGGER START ---
-			//int currentOffset = (int)(ip - currentChunk->code.data());
-			//printf("IP: %d | OpCode: %d | StackSize: %d\n", currentOffset, *ip, (int)stack.size());
+			if(DEBUGGER_MODE_IS_ENABLED){
+				int currentOffset = (int)(ip - currentChunk->code.data());
+				std::cout << "LINE: " << std::left << std::setw(4) <<line<<" | ";
+				std::cout<< std::left<< std::setw(18)<<OpCodeToString((OpCode)*ip) <<" | "<< PrintStackForDebug(stack) << "\n";
+			}
 			// --- DEBUGGER END ---
 			OpCode instruction = static_cast<OpCode>(*ip++);
 			int offset = (int)(ip - currentChunk->code.data());
-			int line = currentChunk->lines[offset - 1];
+			line = currentChunk->lines[offset - 1];
 			switch (instruction) {
 			case OpCode::OP_IMPORT: {
 				uint8_t count = *ip++;
@@ -7676,6 +7813,12 @@ struct VM {
 					};
 					for (const auto& sym : symbols) stack.push_back(findVal(sym));
 				}
+				break;
+			}
+			case OpCode::OP_DEBUG_NAME: {
+				uint8_t nameIndex = *ip++;
+				string name = currentChunk->constants[nameIndex].asString();
+				stack.back().__DEBUGGING__NAME__ = name;
 				break;
 			}
 			case OpCode::OP_BUILD_FSTRING: {
@@ -7971,6 +8114,7 @@ struct VM {
 				uint8_t flags = *ip++;
 				string name = currentChunk->constants[nameIndex].asString();
 				Value val = pop();
+				if (DEBUGGER_MODE_IS_ENABLED) val.__DEBUGGING__NAME__=name;
 				bool isConst = (flags & 0x01) != 0;
 				bool isLocked = (flags & 0x02) != 0;
 				globals->set(name, val, isLocked, isConst);
@@ -8036,6 +8180,7 @@ struct VM {
 				uint8_t nameIndex = *ip++;
 				string name = currentChunk->constants[nameIndex].asString();
 				Value val = stack.back();
+				if (DEBUGGER_MODE_IS_ENABLED) val.__DEBUGGING__NAME__=name;
 				if (!globals->exists(name)) {
 					throw NameError("Undefined variable '" + name + "'", line, 0);
 				}
@@ -8630,6 +8775,9 @@ private:
 					}
 					else if (p.type == ValueType::BIGINT && argVal.type == ValueType::INT) {
 						argVal = Value::BigInt(argVal.asInt());
+						mismatch = false;
+					}
+					else if (argVal.type == ValueType::OMIT_MARKER) {
 						mismatch = false;
 					}
 					if (mismatch) {
