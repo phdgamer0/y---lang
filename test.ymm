@@ -1,6 +1,6 @@
-`define function greet(str:string("[NAME]")) -> string("test"): {
+define function greet(str:string("[NAME]")) -> string("test"): {
 	return f"Hello {str.capitalize()}!"
-}`
+}
 define function main(): {
 	let x =10
 	
