@@ -946,10 +946,16 @@ public:
 					consume(TokenType::IDENTIFIER, "Expected parameter name");
 					string pname = tokens[pos - 1].value;
 					ValueType ptype = ValueType::NOTYPE;
+					Expr* defaultExpr = nullptr;
 					if (match(TokenType::COLON)) {
-						consume(TokenType::IDENTIFIER, "Expected type name");
-						string t = tokens[pos - 1].value;
-						if (match(TokenType::LPAREN)) consume(TokenType::RPAREN, "Expected ')' after type");
+						string t;
+						if (match(TokenType::FUNCTION)) t = "function";
+						else if (match(TokenType::LAMBDA)) t = "lambda";
+						else {
+							consume(TokenType::IDENTIFIER, "Expected type name");
+							t = tokens[pos - 1].value;
+						}
+						
 						if (t == "int") ptype = ValueType::INT;
 						else if (t == "float") ptype = ValueType::FLOAT;
 						else if (t == "bool") ptype = ValueType::BOOL;
@@ -962,10 +968,13 @@ public:
 						else if (t == "vector") ptype = ValueType::VECTOR;
 						else if (t == "function") ptype = ValueType::FUNCTION;
 						else if (t == "lambda") ptype = ValueType::FUNCTION;
+						else if (t == "None") ptype = ValueType::NONE;
 						else throw SyntaxError("Unknown type '" + t + "'", tokens[pos - 1].line, tokens[pos - 1].col);
+						consume(TokenType::LPAREN, "Expected '(' after type definition");
+						if (peek().type != TokenType::RPAREN) defaultExpr = parseExpr();
+						consume(TokenType::RPAREN, "Expected ')' after type definition");
 					}
-					Expr* defaultExpr = nullptr;
-					if (match(TokenType::ASSIGN)) {
+					if (defaultExpr == nullptr && match(TokenType::ASSIGN)) {
 						if (isVariadic || isKwargs) error("Variadic/Kwargs cannot have default values.");
 						defaultExpr = parseExpr();
 						seenDefault = true;
@@ -977,15 +986,18 @@ public:
 				} while (match(TokenType::COMMA));
 			}
 			consume(TokenType::RPAREN, "Expected ')' after parameters");
-
 			ValueType retType = ValueType::NOTYPE;
 			bool retConst = false;
 			vector<Expr*> retArgs;
 			if (match(TokenType::ARROW)) {
 				if (match(TokenType::CONST)) retConst = true;
-				consume(TokenType::IDENTIFIER, "Expected return type");
-				string t = tokens[pos - 1].value;
-				//if (match(TokenType::LPAREN)) consume(TokenType::RPAREN, "Expected ')' after type");
+				string t;
+				if (match(TokenType::FUNCTION)) t = "function";
+				else if (match(TokenType::LAMBDA)) t = "lambda";
+				else {
+					consume(TokenType::IDENTIFIER, "Expected return type");
+					t = tokens[pos - 1].value;
+				}
 				if (t == "int") retType = ValueType::INT;
 				else if (t == "float") retType = ValueType::FLOAT;
 				else if (t == "string") retType = ValueType::STRING;
@@ -1003,7 +1015,13 @@ public:
 				if (match(TokenType::LPAREN)) {
 					if (peek().type != TokenType::RPAREN) {
 						do {
-							retArgs.push_back(parseExpr());
+							Expr* arg = parseExpr();
+							if (match(TokenType::COLON)) {
+								Token op = tokens[pos - 1];
+								Expr* val = parseExpr();
+								arg = setPos(new BinExpr(arg, val, TokenType::COLON), op);
+							}
+							retArgs.push_back(arg);
 						} while (match(TokenType::COMMA));
 					}
 					consume(TokenType::RPAREN, "Expected ')' after return type");
@@ -1440,8 +1458,13 @@ public:
 					ValueType ptype = ValueType::NOTYPE;
 					Expr* defaultExpr = nullptr;
 					if (match(TokenType::COLON)) {
-						consume(TokenType::IDENTIFIER, "Expected type name after ':'");
-						string t = tokens[pos - 1].value;
+						string t;
+						if (match(TokenType::FUNCTION)) t = "function";
+						else if (match(TokenType::LAMBDA)) t = "lambda";
+						else {
+							consume(TokenType::IDENTIFIER, "Expected type name");
+							t = tokens[pos - 1].value;
+						}
 						if (t == "int") ptype = ValueType::INT;
 						else if (t == "float") ptype = ValueType::FLOAT;
 						else if (t == "bool") ptype = ValueType::BOOL;
@@ -1452,6 +1475,7 @@ public:
 						else if (t == "tuple") ptype = ValueType::TUPLE;
 						else if (t == "dictionary" || t == "dict") ptype = ValueType::DICT;
 						else if (t == "vector") ptype = ValueType::VECTOR;
+						else if (t == "function" || t == "lambda" ) ptype = ValueType::FUNCTION;
 						else throw SyntaxError("Unknown type '" + t + "'", tokens[pos - 1].line, tokens[pos - 1].col);
 						consume(TokenType::LPAREN, "Expected '(' after type definition");
 						if (peek().type != TokenType::RPAREN) defaultExpr = parseExpr();
@@ -1473,8 +1497,13 @@ public:
 			vector<Expr*> retArgs;
 			if (match(TokenType::ARROW)) {
 				if (match(TokenType::CONST)) retConst = true;
-				consume(TokenType::IDENTIFIER, "Expected return type after '->'");
-				string t = tokens[pos - 1].value;
+				string t;
+				if (match(TokenType::FUNCTION)) t = "function";
+				else if (match(TokenType::LAMBDA)) t = "lambda";
+				else {
+					consume(TokenType::IDENTIFIER, "Expected return type");
+					t = tokens[pos - 1].value;
+				}
 				if (t == "int") retType = ValueType::INT;
 				else if (t == "float") retType = ValueType::FLOAT;
 				else if (t == "bool") retType = ValueType::BOOL;
@@ -1486,6 +1515,7 @@ public:
 				else if (t == "set") retType = ValueType::SET;
 				else if (t == "tuple") retType = ValueType::TUPLE;
 				else if (t == "dictionary" || t == "dict") retType = ValueType::DICT;
+				else if (t == "function" || t == "lambda") retType = ValueType::FUNCTION;
 				else if (t == "vector") retType = ValueType::VECTOR;
 				else throw SyntaxError("Unknown return type '" + t + "'", tokens[pos - 1].line, tokens[pos - 1].col);
 				consume(TokenType::LPAREN, "Expected '(' after return type");
@@ -1787,7 +1817,7 @@ struct Value {
 	static Value Omit();
 	static Value File(const string& path);
 	static Value Slice(Value s, Value e, Value p);
-	static Value Vector(const std::vector<double>& elems);
+	static Value Vector(const std::vector<Value>& elems);
 	bool isTruthy() const;
 	bool strictEquals(const Value& other) const;
 	bool looseEquals(const Value& other) const;
@@ -1865,8 +1895,8 @@ struct SliceObject : HeapObject {
 	SliceObject(Value s, Value e, Value p) : HeapObject(ValueType::SLICE), start(s), end(e), step(p) {}
 };
 struct VectorObject : HeapObject {
-	vector<double> elements;
-	VectorObject(const vector<double>& e) : HeapObject(ValueType::VECTOR), elements(e) {}
+	vector<Value> elements;
+	VectorObject(const vector<Value>& e) : HeapObject(ValueType::VECTOR), elements(e) {}
 };
 struct BigIntObject : HeapObject {
 	bool isNegative;
@@ -2174,7 +2204,7 @@ inline Value Value::Slice(Value s, Value e, Value p) {
 	x.ref = std::make_shared<SliceObject>(s, e, p);
 	return x;
 }
-inline Value Value::Vector(const std::vector<double>& elems) {
+inline Value Value::Vector(const std::vector<Value>& elems) {
 	Value x; x.type = ValueType::VECTOR;
 	x.ref = std::make_shared<VectorObject>(elems);
 	return x;
@@ -2222,7 +2252,7 @@ inline const string& Value::asString() const {
 	if (type == ValueType::STRING) return static_cast<StringObject*>(ref.get())->value;
 	return empty;
 }
-inline bool Value::isNumber() const { return type == ValueType::INT || type == ValueType::FLOAT; }
+inline bool Value::isNumber() const { return type == ValueType::INT || type == ValueType::FLOAT || type == ValueType::BIGINT; }
 inline bool Value::strictEquals(const Value& other) const {
 	if (type != other.type) return false;
 	switch (type) {
@@ -2232,6 +2262,9 @@ inline bool Value::strictEquals(const Value& other) const {
 	case ValueType::STRING: return asString() == other.asString();
 	case ValueType::NONE:
 	case ValueType::NOTYPE: return true;
+	case ValueType::BIGINT: {
+		return *static_cast<BigIntObject*>(ref.get())== *static_cast<BigIntObject*>(other.ref.get());
+	}
 	case ValueType::LIST: {
 		auto* l1 = static_cast<ListObject*>(ref.get());
 		auto* l2 = static_cast<ListObject*>(other.ref.get());
@@ -2278,7 +2311,7 @@ inline bool Value::strictEquals(const Value& other) const {
 		auto* v2 = static_cast<VectorObject*>(other.ref.get());
 		if (v1->elements.size() != v2->elements.size()) return false;
 		for (size_t i = 0; i < v1->elements.size(); i++) {
-			if (std::abs(v1->elements[i] - v2->elements[i]) > 1e-9) return false;
+			if (std::abs(v1->elements[i].asInt() - v2->elements[i].asInt()) > 1e-9) return false;
 		}
 		return true;
 	}
@@ -2323,9 +2356,9 @@ inline std::size_t ValueHash::operator()(const Value& v) const {
 		auto* vec = static_cast<VectorObject*>(v.ref.get());
 		std::size_t seed = vec->elements.size();
 		for (auto& elem : vec->elements) {
-			seed ^= std::hash<double>{}(elem)+0x9e3779b9 + (seed << 6) + (seed >> 2);
+			hash_combine(ValueHash{}(elem));
 		}
-		return seed;
+		break;
 	}
 	default:
 		hash_combine(std::hash<int>{}((int)v.type));
@@ -2602,7 +2635,7 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 		auto* vec = static_cast<VectorObject*>(v.ref.get());
 		string s = "<";
 		for (size_t i = 0; i < vec->elements.size(); i++) {
-			s += formatNumber(vec->elements[i]);
+			s += valueToString(vec->elements[i]);
 			if (i < vec->elements.size() - 1) s += ", ";
 		}
 		s += ">";
@@ -3308,12 +3341,12 @@ struct Interpreter {
 		modules["Vector"] = [&](std::shared_ptr<Env> env, const vector<string>& symbols) {
 			this->vectorEnabled = true;
 			auto vecConstructor = [](const vector<Value>& args, int l, int c) {
-				vector<double> elems;
-				if (args.empty()) elems = { 0.0, 0.0, 0.0 };
+				vector<Value> elems;
+				if (args.empty()) elems = { Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) };
 				else {
 					for (const auto& arg : args) {
 						if (!arg.isNumber()) throw TypeError("Vector arguments must be numbers", l, c);
-						elems.push_back(arg.asFloat());
+						elems.push_back(arg);
 					}
 				}
 				return Value::Vector(elems);
@@ -3372,6 +3405,7 @@ struct Interpreter {
 			case ValueType::SET: return Value::String(valueToString(v));
 			case ValueType::TUPLE: return Value::String(valueToString(v));
 			case ValueType::LIST: return Value::String(valueToString(v));
+			case ValueType::BIGINT: return Value::String(valueToString(v));
 			default: return Value::String("");
 			}
 		}), false);
@@ -3430,7 +3464,7 @@ struct Interpreter {
 			if (!args.empty() && args[0].type == ValueType::VECTOR) {
 				auto* v = static_cast<VectorObject*>(args[0].ref.get());
 				vector<Value> elems;
-				for (double d : v->elements) elems.push_back(Value::Float(d));
+				for (auto d : v->elements) elems.push_back(d);
 				return Value::List(elems);
 			}
 			vector<Value> vals;
@@ -3465,7 +3499,7 @@ struct Interpreter {
 			}
 			else if (src.type == ValueType::VECTOR) {
 				auto* v = static_cast<VectorObject*>(src.ref.get());
-				for (double d : v->elements) setAdd(elems, Value::Float(d));
+				for (auto d : v->elements) setAdd(elems, d);
 			}
 			else if (src.type == ValueType::STRING) {
 				for (char c : src.asString()) setAdd(elems, Value::String(string(1, c)));
@@ -3507,7 +3541,7 @@ struct Interpreter {
 				if (src.type == ValueType::VECTOR) {
 					auto* v = static_cast<VectorObject*>(src.ref.get());
 					vector<Value> elems;
-					for (double d : v->elements) elems.push_back(Value::Float(d));
+					for (auto d : v->elements) elems.push_back(d);
 					return Value::Tuple(elems);
 				}
 			}
@@ -3550,6 +3584,7 @@ struct Interpreter {
 			case ValueType::TUPLE: return Value::String("tuple");
 			case ValueType::DICT: return Value::String("dictionary");
 			case ValueType::FUNCTION: return Value::String("function");
+			case ValueType::VECTOR: return Value::String("vector");
 			case ValueType::NATIVE_FUNCTION: return Value::String("native function");
 			case ValueType::FILE: return Value::String("file");
 			case ValueType::PAIRED: return Value::String("pair");
@@ -3923,7 +3958,7 @@ struct Interpreter {
 			else if (target.type == ValueType::SET) elements = static_cast<SetObject*>(target.ref.get())->elements;
 			else if (target.type == ValueType::TUPLE) elements = static_cast<TupleObject*>(target.ref.get())->elements;
 			else if (target.type == ValueType::VECTOR) {
-				for (double d : static_cast<VectorObject*>(target.ref.get())->elements) elements.push_back(Value::Float(d));
+				for (auto d : static_cast<VectorObject*>(target.ref.get())->elements) elements.push_back(d);
 			}
 			else if (target.type == ValueType::DICT) {
 				auto* d = static_cast<DictObject*>(target.ref.get());
@@ -3988,11 +4023,11 @@ struct Interpreter {
 				if (target.type == ValueType::TUPLE) return Value::Tuple(src);
 				if (target.type == ValueType::SET) return Value::Set(src);
 				if (target.type == ValueType::VECTOR) {
-					vector<double> nums;
+					vector<Value> nums;
 					bool allNums = true;
 					for (auto& v : src) {
 						if (!v.isNumber()) { allNums = false; break; }
-						nums.push_back(v.asFloat());
+						nums.push_back(v);
 					}
 					if (allNums) return Value::Vector(nums);
 					return Value::List(src);
@@ -4769,9 +4804,27 @@ struct Interpreter {
 			}
 			if (m->method == "magnitude") {
 				if (!m->args.empty()) error("magnitude() takes no arguments", "ArgumentError");
-				double sum = 0;
-				for (double d : v->elements) sum += d * d;
-				return Value::Float(std::sqrt(sum));
+				Value sum = Value::Int(0);
+				for (const auto& d : v->elements) {
+					Value sq;
+					if (d.type == ValueType::INT) {
+						long long r = d.iVal * d.iVal;
+						bool ovf = (d.iVal != 0 && r / d.iVal != d.iVal);
+						if (ovf) sq = BigIntObject::mul(Value::BigInt(d.iVal), Value::BigInt(d.iVal));
+						else sq = Value::Int(r);
+					}
+					else if (d.type == ValueType::BIGINT) sq = BigIntObject::mul(d, d);
+					else sq = Value::Float(d.asFloat() * d.asFloat());
+					if (sum.type == ValueType::INT && sq.type == ValueType::INT) {
+						long long r = sum.iVal + sq.iVal;
+						bool ovf = ((sum.iVal ^ r) & (sq.iVal ^ r)) < 0;
+						if (ovf) sum = BigIntObject::add(Value::BigInt(sum.iVal), Value::BigInt(sq.iVal));
+						else sum = Value::Int(r);
+					}
+					else if (sum.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) sum = BigIntObject::add(sum, sq);
+					else sum = Value::Float(sum.asFloat() + sq.asFloat());
+				}
+				return Value::Float(std::sqrt(sum.asFloat()));
 			}
 			if (m->method == "reverse") {
 				checkConst();
@@ -4783,7 +4836,7 @@ struct Interpreter {
 				if (m->args.size() != 1) error("expand() takes 1 argument", "ArgumentError");
 				long long n = eval(m->args[0]).asInt();
 				if (n < 0) error("Cannot expand by negative amount", "ValueError");
-				for (int i = 0; i < n; i++) v->elements.push_back(0.0);
+				for (int i = 0; i < n; i++) v->elements.push_back(Value::Int(0));
 				return target;
 			}
 			if (m->method == "shrink") {
@@ -4796,12 +4849,31 @@ struct Interpreter {
 				return target;
 			}
 			if (m->method == "unitVec") {
-				double sum = 0;
-				for (double d : v->elements) sum += d * d;
-				double mag = std::sqrt(sum);
+				Value sum = Value::Int(0);
+				for (const auto& d : v->elements) {
+					Value sq;
+					if (d.type == ValueType::INT) {
+						long long r = d.iVal * d.iVal;
+						bool ovf = (d.iVal != 0 && r / d.iVal != d.iVal);
+						if (ovf) sq = BigIntObject::mul(Value::BigInt(d.iVal), Value::BigInt(d.iVal));
+						else sq = Value::Int(r);
+					}
+					else if (d.type == ValueType::BIGINT) sq = BigIntObject::mul(d, d);
+					else sq = Value::Float(d.asFloat() * d.asFloat());
+					if (sum.type == ValueType::INT && sq.type == ValueType::INT) {
+						long long r = sum.iVal + sq.iVal;
+						bool ovf = ((sum.iVal ^ r) & (sq.iVal ^ r)) < 0;
+						if (ovf) sum = BigIntObject::add(Value::BigInt(sum.iVal), Value::BigInt(sq.iVal));
+						else sum = Value::Int(r);
+					}
+					else if (sum.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) sum = BigIntObject::add(sum, sq);
+					else sum = Value::Float(sum.asFloat() + sq.asFloat());
+				}
+				double mag = std::sqrt(sum.asFloat());
 				if (mag == 0) error("Cannot get unit vector of zero vector", "MathError");
-				vector<double> res;
-				for (double d : v->elements) res.push_back(d / mag);
+				std::vector<Value> res;
+				res.reserve(v->elements.size());
+				for (auto d : v->elements) res.push_back(Value::Float(d.asFloat() / mag));
 				return Value::Vector(res);
 			}
 			if (m->method == "projectOnto") {
@@ -4811,17 +4883,126 @@ struct Interpreter {
 				auto* u = v;
 				auto* v2 = static_cast<VectorObject*>(other.ref.get());
 				if (u->elements.size() != v2->elements.size()) error("Dimension mismatch", "ValueError");
-				double dot = 0;
-				double mag2 = 0;
+				Value dot = Value::Int(0);
+				Value mag2 = Value::Int(0);
 				for (size_t i = 0; i < u->elements.size(); i++) {
-					dot += u->elements[i] * v2->elements[i];
-					mag2 += v2->elements[i] * v2->elements[i];
+					Value valU = u->elements[i];
+					Value valV = v2->elements[i];
+					Value prod;
+					if (valU.type == ValueType::INT && valV.type == ValueType::INT) {
+						long long r = valU.iVal * valV.iVal;
+						bool ovf = (valU.iVal != 0 && r / valU.iVal != valV.iVal);
+						if (ovf) prod = BigIntObject::mul(Value::BigInt(valU.iVal), Value::BigInt(valV.iVal));
+						else prod = Value::Int(r);
+					}
+					else if (valU.type == ValueType::BIGINT || valV.type == ValueType::BIGINT) prod = BigIntObject::mul(valU, valV);
+					else prod = Value::Float(valU.asFloat() * valV.asFloat());
+					if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
+						long long r = dot.iVal + prod.iVal;
+						bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
+						if (ovf) dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
+						else dot = Value::Int(r);
+					}
+					else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) dot = BigIntObject::add(dot, prod);
+					else dot = Value::Float(dot.asFloat() + prod.asFloat());
+					Value sq;
+					if (valV.type == ValueType::INT) {
+						long long r = valV.iVal * valV.iVal;
+						bool ovf = (valV.iVal != 0 && r / valV.iVal != valV.iVal);
+						if (ovf) sq = BigIntObject::mul(Value::BigInt(valV.iVal), Value::BigInt(valV.iVal));
+						else sq = Value::Int(r);
+					}
+					else if (valV.type == ValueType::BIGINT) sq = BigIntObject::mul(valV, valV);
+					else sq = Value::Float(valV.asFloat() * valV.asFloat());
+					if (mag2.type == ValueType::INT && sq.type == ValueType::INT) {
+						long long r = mag2.iVal + sq.iVal;
+						bool ovf = ((mag2.iVal ^ r) & (sq.iVal ^ r)) < 0;
+						if (ovf) mag2 = BigIntObject::add(Value::BigInt(mag2.iVal), Value::BigInt(sq.iVal));
+						else mag2 = Value::Int(r);
+					}
+					else if (mag2.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) mag2 = BigIntObject::add(mag2, sq);
+					else mag2 = Value::Float(mag2.asFloat() + sq.asFloat());
 				}
-				if (mag2 == 0) error("Cannot project onto zero vector", "MathError");
-				double scalar = dot / mag2;
-				vector<double> res;
-				for (double d : v2->elements) res.push_back(d * scalar);
+				if (mag2.asFloat() == 0) error("Cannot project onto zero vector", "MathError");
+				double scalar = dot.asFloat() / mag2.asFloat();
+				std::vector<Value> res;
+				res.reserve(v2->elements.size());
+				for (auto d : v2->elements) res.push_back(Value::Float(d.asFloat() * scalar));
 				return Value::Vector(res);
+			}
+			if (m->method == "dot") {
+				if (m->args.size() != 1) error("dot() takes 1 argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
+				auto* v2 = static_cast<VectorObject*>(other.ref.get());
+				if (v->elements.size() != v2->elements.size()) error("Dimension mismatch", "ValueError");
+				Value dot = Value::Int(0);
+				for (size_t i = 0; i < v->elements.size(); i++) {
+					Value x = v->elements[i];
+					Value y = v2->elements[i];
+					Value prod;
+					if (x.type == ValueType::INT && y.type == ValueType::INT) {
+						long long r = x.iVal * y.iVal;
+						bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
+						if (ovf) prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
+						else prod = Value::Int(r);
+					}
+					else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) prod = BigIntObject::mul(x, y);
+					else prod = Value::Float(x.asFloat() * y.asFloat());
+					if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
+						long long r = dot.iVal + prod.iVal;
+						bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
+						if (ovf) dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
+						else dot = Value::Int(r);
+					}
+					else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) dot = BigIntObject::add(dot, prod);
+					else dot = Value::Float(dot.asFloat() + prod.asFloat());
+				}
+				return dot;
+			}
+			if (m->method == "cross") {
+				if (m->args.size() != 1) error("cross() takes 1 argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
+				auto* v2 = static_cast<VectorObject*>(other.ref.get());
+				size_t dim = v->elements.size();
+				if (dim != v2->elements.size()) error("Dimension mismatch", "ValueError");
+				auto safeMul = [](const Value& a, const Value& b) -> Value {
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						long long r = a.iVal * b.iVal;
+						bool ovf = (a.iVal != 0 && r / a.iVal != b.iVal);
+						if (ovf) return BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
+						return Value::Int(r);
+					}
+					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) return BigIntObject::mul(a, b);
+					return Value::Float(a.asFloat() * b.asFloat());
+				};
+				auto safeSub = [](const Value& a, const Value& b) -> Value {
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						long long r = a.iVal - b.iVal;
+						bool ovf = ((a.iVal ^ b.iVal) & (a.iVal ^ r)) < 0;
+						if (ovf) return BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
+						return Value::Int(r);
+					}
+					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) return BigIntObject::sub(a, b);
+					return Value::Float(a.asFloat() - b.asFloat());
+				};
+				if (dim == 1) return Value::Int(0);
+				else if (dim == 2) {
+					Value term1 = safeMul(v->elements[0], v2->elements[1]);
+					Value term2 = safeMul(v->elements[1], v2->elements[0]);
+					return safeSub(term1, term2);
+				}
+				else if (dim == 3) {
+					Value x = safeSub(safeMul(v->elements[1], v2->elements[2]), safeMul(v->elements[2], v2->elements[1]));
+					Value y = safeSub(safeMul(v->elements[2], v2->elements[0]), safeMul(v->elements[0], v2->elements[2]));
+					Value z = safeSub(safeMul(v->elements[0], v2->elements[1]), safeMul(v->elements[1], v2->elements[0]));
+					std::vector<Value> res = { x, y, z };
+					return Value::Vector(res);
+				}
+				else {
+					error("Binary cross product is not defined for dimensions > 3", "ValueError");
+				}
 			}
 			error("Object '" + m->method + "' is not a vector method", "AttributeError");
 		}
@@ -4986,8 +5167,8 @@ struct Interpreter {
 						auto* v2 = static_cast<VectorObject*>(r.ref.get());
 						if (v1->elements.size() != v2->elements.size())
 							throw ValueError("Vector dimension mismatch in addition", e->line, e->col);
-						vector<double> res;
-						for (size_t i = 0; i < v1->elements.size(); i++) res.push_back(v1->elements[i] + v2->elements[i]);
+						vector<Value> res;
+						for (size_t i = 0; i < v1->elements.size(); i++) res.push_back(Value::Float(v1->elements[i].asFloat() + v2->elements[i].asFloat()));
 						return Value::Vector(res);
 					}
 					throw TypeError("Invalid operands for +", e->line, e->col);
@@ -5015,8 +5196,8 @@ struct Interpreter {
 						auto* v2 = static_cast<VectorObject*>(r.ref.get());
 						if (v1->elements.size() != v2->elements.size())
 							throw ValueError("Vector dimension mismatch in subtraction", e->line, e->col);
-						vector<double> res;
-						for (size_t i = 0; i < v1->elements.size(); i++) res.push_back(v1->elements[i] - v2->elements[i]);
+						vector<Value> res;
+						for (size_t i = 0; i < v1->elements.size(); i++) res.push_back(Value::Float(v1->elements[i].asFloat() - v2->elements[i].asFloat()));
 						return Value::Vector(res);
 					}
 					break;
@@ -5054,15 +5235,15 @@ struct Interpreter {
 					if (l.type == ValueType::VECTOR && r.isNumber()) {
 						auto* v = static_cast<VectorObject*>(l.ref.get());
 						double s = r.asFloat();
-						vector<double> res;
-						for (double val : v->elements) res.push_back(val * s);
+						vector<Value> res;
+						for (auto val : v->elements) res.push_back(Value::Float(val.asFloat() * s));
 						return Value::Vector(res);
 					}
 					if (l.isNumber() && r.type == ValueType::VECTOR) {
 						auto* v = static_cast<VectorObject*>(r.ref.get());
 						double s = l.asFloat();
-						vector<double> res;
-						for (double val : v->elements) res.push_back(val * s);
+						vector<Value> res;
+						for (auto val : v->elements) res.push_back(Value::Float(val.asFloat() * s));
 						return Value::Vector(res);
 					}
 					if (l.type == ValueType::VECTOR && r.type == ValueType::VECTOR) {
@@ -5070,8 +5251,8 @@ struct Interpreter {
 						auto* v2 = static_cast<VectorObject*>(r.ref.get());
 						if (v1->elements.size() != v2->elements.size())
 							throw ValueError("Vector dimension mismatch in multiplication", e->line, e->col);
-						vector<double> res;
-						for (size_t i = 0; i < v1->elements.size(); i++) res.push_back(v1->elements[i] * v2->elements[i]);
+						vector<Value> res;
+						for (size_t i = 0; i < v1->elements.size(); i++) res.push_back(Value::Float(v1->elements[i].asFloat() * v2->elements[i].asFloat()));
 						return Value::Vector(res);
 					}
 					break;
@@ -5430,11 +5611,11 @@ struct Interpreter {
 					size_t len = vec->elements.size();
 					if (index.type == ValueType::INT) {
 						long long i = normalize(index.asInt(), len);
-						return Value::Float(vec->elements[i]);
+						return Value::Float(vec->elements[i].asFloat());
 					}
 					else if (index.type == ValueType::SLICE) {
 						auto indices = getSliceIndices(len);
-						vector<double> newElems;
+						vector<Value> newElems;
 						for (long long i : indices) {
 							newElems.push_back(vec->elements[i]);
 						}
@@ -5538,7 +5719,7 @@ struct Interpreter {
 				}
 				else if (collection.type == ValueType::VECTOR) {
 					auto* v = static_cast<VectorObject*>(collection.ref.get());
-					for (double d : v->elements) items.push_back(Value::Float(d));
+					for (auto d : v->elements) items.push_back(d);
 				}
 				else throw TypeError("Comprehension 'in' target must be iterable", comp->line, comp->col);
 				vector<Value> results;
@@ -5588,11 +5769,11 @@ struct Interpreter {
 			case ExprType::VECTOR: {
 				auto ve = static_cast<VectorExpr*>(e);
 				if (!vectorEnabled) throw RuntimeError("Vector syntax <...> requires 'import Vector'", e->line, e->col);
-				vector<double> elems;
+				vector<Value> elems;
 				for (auto* el : ve->elements) {
 					Value v = eval(el);
 					if (!v.isNumber()) throw TypeError("Vector elements must be numbers", e->line, e->col);
-					elems.push_back(v.asFloat());
+					elems.push_back(v);
 				}
 				return Value::Vector(elems);
 			}
@@ -5828,25 +6009,25 @@ struct Interpreter {
 						if (rhs.type != ValueType::VECTOR) throw TypeError("+= requires a vector", s->line, s->col);
 						auto* v2 = static_cast<VectorObject*>(rhs.ref.get());
 						if (v->elements.size() != v2->elements.size()) throw ValueError("Dimension mismatch", s->line, s->col);
-						for (size_t i = 0; i < v->elements.size(); i++) v->elements[i] += v2->elements[i];
+						for (size_t i = 0; i < v->elements.size(); i++); //v->elements[i].asFloat() += v2->elements[i].asFloat();
 						return Value::None();
 					}
 					if (as->op == TokenType::MINUS_EQ) {
 						if (rhs.type != ValueType::VECTOR) throw TypeError("-= requires a vector", s->line, s->col);
 						auto* v2 = static_cast<VectorObject*>(rhs.ref.get());
 						if (v->elements.size() != v2->elements.size()) throw ValueError("Dimension mismatch", s->line, s->col);
-						for (size_t i = 0; i < v->elements.size(); i++) v->elements[i] -= v2->elements[i];
+						for (size_t i = 0; i < v->elements.size(); i++); //v->elements[i].asFloat() -= v2->elements[i].asFloat();
 						return Value::None();
 					}
 					if (as->op == TokenType::STAR_EQ) {
 						if (rhs.isNumber()) {
 							double scalar = rhs.asFloat();
-							for (double& val : v->elements) val *= scalar;
+							for (auto& val : v->elements); //val.asFloat() *= scalar;
 						}
 						else if (rhs.type == ValueType::VECTOR) {
 							auto* v2 = static_cast<VectorObject*>(rhs.ref.get());
 							if (v->elements.size() != v2->elements.size()) throw ValueError("Dimension mismatch", s->line, s->col);
-							for (size_t i = 0; i < v->elements.size(); i++) v->elements[i] *= v2->elements[i];
+							for (size_t i = 0; i < v->elements.size(); i++); //v->elements[i].asFloat() *= v2->elements[i].asFloat();
 						}
 						else throw TypeError("*= requires number or vector", s->line, s->col);
 						return Value::None();
@@ -6221,7 +6402,7 @@ struct Interpreter {
 					}
 					else if (collection.type == ValueType::VECTOR) {
 						auto* v = static_cast<VectorObject*>(collection.ref.get());
-						for (double d : v->elements) currentStream.push_back(Value::Float(d));
+						for (auto d : v->elements) currentStream.push_back(d);
 					}
 					else {
 						throw TypeError("Object is not iterable", s->line, s->col);
@@ -6928,6 +7109,22 @@ struct ByteCodeCompiler {
 			emitConstant(val,o->line,o->col);
 			break;
 		}
+		case ExprType::LAMBDA: {
+			auto lam = static_cast<LambdaExpr*>(e);
+			Chunk* funcChunk = new Chunk();
+			ByteCodeCompiler subCompiler(funcChunk);
+			subCompiler.beginScope();
+			for (const auto& param : lam->params) subCompiler.addLocal(param.name);
+			for (auto* stmt : lam->body) subCompiler.compileStmt(stmt);
+			subCompiler.emitByte(OpCode::OP_NOTYPE, lam->line, 0);
+			subCompiler.emitByte(OpCode::OP_RETURN, lam->line, 0);
+			auto* funcObj = new FunctionObject(lam->params, lam->returnType, lam->defaultRetArgs, lam->returnsConst, lam->body, nullptr, lam->isCached, funcChunk);
+			Value funcVal;
+			funcVal.type = ValueType::FUNCTION;
+			funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
+			emitConstant(funcVal, lam->line, 0);
+			break;
+		}
 		case ExprType::NUMBER: {
 			auto n = static_cast<NumberExpr*>(e);
 				Value val = n->isFloat ? Value::Float(n->val) : Value::Int((long long)n->val);
@@ -7002,7 +7199,12 @@ struct ByteCodeCompiler {
 		case ExprType::CALL: {
 			auto c = static_cast<CallExpr*>(e);
 			for (auto arg : c->args) compile(arg);
-			emitIdentifier(OpCode::OP_GET_VAR, c->name, c->line, c->col);
+			int arg = resolveLocal(c->name);
+			if (arg != -1) {
+				emitByte(OpCode::OP_GET_LOCAL, c->line, c->col);
+				chunk->write((uint8_t)arg, c->line, c->col);
+			}
+			else emitIdentifier(OpCode::OP_GET_VAR, c->name, c->line, c->col);
 			emitByte(OpCode::OP_CALL, c->line, c->col);
 			chunk->write(static_cast<uint8_t>(c->args.size()), c->line, c->col);
 			break;
@@ -7059,6 +7261,13 @@ struct ByteCodeCompiler {
 			if (r->step) compile(r->step);
 			else emitConstant(Value::Int(1), r->line, r->col);
 			emitByte(OpCode::OP_BUILD_RANGE, r->line, r->col);
+			break;
+		}
+		case ExprType::VECTOR: {
+			auto ve = static_cast<VectorExpr*>(e);
+			for (auto* el : ve->elements) compile(el);
+			emitByte(OpCode::OP_BUILD_VECTOR, ve->line, ve->col);
+			chunk->write((uint8_t)ve->elements.size(), ve->line, ve->col);
 			break;
 		}
 		case ExprType::METHOD_CALL: {
@@ -7907,13 +8116,34 @@ struct VM {
 				else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
 					stack.push_back(Value::String(valueToString(a) + valueToString(b)));
 				}
+				else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+					auto* v1 = static_cast<VectorObject*>(a.ref.get());
+					auto* v2 = static_cast<VectorObject*>(b.ref.get());
+					if (v1->elements.size() != v2->elements.size()) throw ValueError("Vector dimension mismatch", line, 0);
+					vector<Value> res;
+					res.reserve(v1->elements.size());
+					for (size_t i = 0; i < v1->elements.size(); i++) {
+						Value x = v1->elements[i];
+						Value y = v2->elements[i];
+						if (x.type == ValueType::INT && y.type == ValueType::INT) {
+							long long r = x.iVal + y.iVal;
+							bool ovf = ((x.iVal ^ r) & (y.iVal ^ r)) < 0;
+							if (ovf) res.push_back(BigIntObject::add(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
+							else res.push_back(Value::Int(r));
+						}
+						else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+							res.push_back(BigIntObject::add(x, y));
+						}
+						else res.push_back(Value::Float(x.asFloat() + y.asFloat()));
+					}
+					stack.push_back(Value::Vector(res));
+				}
 				else stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
 				break;
 			}
 			case OpCode::OP_SUB: {
 				Value b = pop();
 				Value a = pop();
-
 				if (a.type == ValueType::INT && b.type == ValueType::INT) {
 					long long res = a.iVal - b.iVal;
 					bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
@@ -7922,15 +8152,50 @@ struct VM {
 				}
 				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) stack.push_back(BigIntObject::sub(a, b));
 				else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
+				else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+					auto* v1 = static_cast<VectorObject*>(a.ref.get());
+					auto* v2 = static_cast<VectorObject*>(b.ref.get());
+					if (v1->elements.size() != v2->elements.size()) throw ValueError("Vector dimension mismatch", line, 0);
+					vector<Value> res;
+					res.reserve(v1->elements.size());
+					for (size_t i = 0; i < v1->elements.size(); i++) {
+						Value x = v1->elements[i];
+						Value y = v2->elements[i];
+						if (x.type == ValueType::INT && y.type == ValueType::INT) {
+							long long r = x.iVal - y.iVal;
+							bool ovf = ((x.iVal ^ y.iVal) & (x.iVal ^ r)) < 0;
+							if (ovf) res.push_back(BigIntObject::sub(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
+							else res.push_back(Value::Int(r));
+						}
+						else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+							res.push_back(BigIntObject::sub(x, y));
+						}
+						else res.push_back(Value::Float(x.asFloat() - y.asFloat()));
+					}
+					stack.push_back(Value::Vector(res));
+				}
 				else stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
 				break;
 			}
 			case OpCode::OP_DIV: {
 				Value b = pop();
 				Value a = pop();
-				double db = b.asFloat();
-				if (db == 0) throw DivisionByZeroError("Division by zero", line, 0);
-				stack.push_back(Value::Float(a.asFloat() / db));
+				if (a.type == ValueType::VECTOR) {
+					if (!b.isNumber()) throw TypeError("Vector can only be divided by a number", line, 0);
+					if (b.asFloat() == 0) throw DivisionByZeroError("Vector division by zero", line, 0);
+					auto* v = static_cast<VectorObject*>(a.ref.get());
+					vector<Value> res;
+					res.reserve(v->elements.size());
+					double s = b.asFloat();
+					for (const auto& elem : v->elements) res.push_back(Value::Float(elem.asFloat() / s));
+					stack.push_back(Value::Vector(res));
+				}
+				else if (b.type == ValueType::VECTOR) throw TypeError("Cannot divide by a vector", line, 0);
+				else {
+					double db = b.asFloat();
+					if (db == 0) throw DivisionByZeroError("Division by zero", line, 0);
+					stack.push_back(Value::Float(a.asFloat() / db));
+				}
 				break;
 			}
 			case OpCode::OP_MUL: {
@@ -7965,6 +8230,53 @@ struct VM {
 				}
 				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 					stack.push_back(BigIntObject::mul(a, b));
+				}
+				else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+					auto* v1 = static_cast<VectorObject*>(a.ref.get());
+					auto* v2 = static_cast<VectorObject*>(b.ref.get());
+					if (v1->elements.size() != v2->elements.size()) throw ValueError("Vector dimension mismatch", line, 0);
+					Value dot = Value::Int(0);
+					for (size_t i = 0; i < v1->elements.size(); i++) {
+						Value x = v1->elements[i];
+						Value y = v2->elements[i];
+						Value prod;
+						if (x.type == ValueType::INT && y.type == ValueType::INT) {
+							long long r = x.iVal * y.iVal;
+							bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
+							if (ovf) prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
+							else prod = Value::Int(r);
+						}
+						else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) prod = BigIntObject::mul(x, y);
+						else prod = Value::Float(x.asFloat() * y.asFloat());
+						if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
+							long long r = dot.iVal + prod.iVal;
+							bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
+							if (ovf) dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
+							else dot = Value::Int(r);
+						}
+						else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) dot = BigIntObject::add(dot, prod);
+						else dot = Value::Float(dot.asFloat() + prod.asFloat());
+					}
+					stack.push_back(dot);
+				}
+				else if ((a.type == ValueType::VECTOR && b.isNumber()) || (a.isNumber() && b.type == ValueType::VECTOR)) {
+					VectorObject* vec = (a.type == ValueType::VECTOR) ? static_cast<VectorObject*>(a.ref.get()) : static_cast<VectorObject*>(b.ref.get());
+					Value scalar = (a.type == ValueType::VECTOR) ? b : a;
+					vector<Value> res;
+					res.reserve(vec->elements.size());
+					for (const auto& elem : vec->elements) {
+						if (elem.type == ValueType::INT && scalar.type == ValueType::INT) {
+							long long r = elem.iVal * scalar.iVal;
+							bool ovf = (elem.iVal != 0 && r / elem.iVal != scalar.iVal);
+							if (ovf) res.push_back(BigIntObject::mul(Value::BigInt(elem.iVal), Value::BigInt(scalar.iVal)));
+							else res.push_back(Value::Int(r));
+						}
+						else if (elem.type == ValueType::BIGINT || scalar.type == ValueType::BIGINT) {
+							res.push_back(BigIntObject::mul(elem, scalar));
+						}
+						else res.push_back(Value::Float(elem.asFloat() * scalar.asFloat()));
+					}
+					stack.push_back(Value::Vector(res));
 				}
 				else stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
 				break;
@@ -8053,7 +8365,31 @@ struct VM {
 			}
 			case OpCode::OP_NEGATE: {
 				Value v = pop();
-				if (v.type == ValueType::INT) stack.push_back(Value::Int(-v.iVal));
+				if (v.type == ValueType::INT) {
+					if (v.iVal == LLONG_MIN) stack.push_back(BigIntObject::mul(Value::BigInt(v.iVal), Value::BigInt(-1)));
+					else stack.push_back(Value::Int(-v.iVal));
+				}
+				else if (v.type == ValueType::BIGINT) {
+					stack.push_back(BigIntObject::mul(v, Value::BigInt(-1)));
+				}
+				else if (v.type == ValueType::VECTOR) {
+					auto* vec = static_cast<VectorObject*>(v.ref.get());
+					vector<Value> res;
+					res.reserve(vec->elements.size());
+					for (const auto& el : vec->elements) {
+						if (el.type == ValueType::INT) {
+							if (el.iVal == LLONG_MIN) res.push_back(BigIntObject::mul(Value::BigInt(el.iVal), Value::BigInt(-1)));
+							else res.push_back(Value::Int(-el.iVal));
+						}
+						else if (el.type == ValueType::BIGINT) {
+							res.push_back(BigIntObject::mul(el, Value::BigInt(-1)));
+						}
+						else {
+							res.push_back(Value::Float(-el.asFloat()));
+						}
+					}
+					stack.push_back(Value::Vector(res));
+				}
 				else stack.push_back(Value::Float(-v.asFloat()));
 				break;
 			}
@@ -8271,7 +8607,7 @@ struct VM {
 					else if (stream.type == ValueType::VECTOR) {
 						auto* vec = static_cast<VectorObject*>(stream.ref.get());
 						if (stepCount >= (long long)vec->elements.size()) { valid = false; break; }
-						nextValues.push_back(Value::Float(vec->elements[stepCount]));
+						nextValues.push_back(vec->elements[stepCount]);
 					}
 					else if (stream.type == ValueType::RANGE) {
 						auto* r = static_cast<RangeObject*>(stream.ref.get());
@@ -8356,6 +8692,18 @@ struct VM {
 				vector<Value> elems(count);
 				for (int i = count - 1; i >= 0; i--) elems[i] = pop();
 				stack.push_back(Value::Tuple(elems));
+				break;
+			}
+			case OpCode::OP_BUILD_VECTOR: {
+				uint8_t count = *ip++;
+				vector<Value> elems;
+				elems.resize(count);
+				for (int i = count - 1; i >= 0; i--) {
+					Value v = pop();
+					if (!v.isNumber()) throw TypeError("Vector elements must be numbers", line, 0);
+					elems[i] = v;
+				}
+				stack.push_back(Value::Vector(elems));
 				break;
 			}
 			case OpCode::OP_BUILD_RANGE: {
@@ -8450,6 +8798,24 @@ struct VM {
 						}
 						break;
 					}
+					case ValueType::VECTOR: {
+						auto* vec = static_cast<VectorObject*>(base.ref.get());
+						if (index.type == ValueType::SLICE) {
+							auto indices = getSliceIndices(vec->elements.size());
+							std::vector<Value> newElems;
+							newElems.reserve(indices.size());
+							for (long long i : indices) newElems.push_back(vec->elements[i]);
+							stack.push_back(Value::Vector(newElems));
+						}
+						else {
+							if (!index.isNumber()) throw TypeError("Vector index must be int or slice", line, 0);
+							long long idx = index.asInt();
+							if (idx < 0) idx += vec->elements.size();
+							if (idx < 0 || idx >= (long long)vec->elements.size()) throw IndexError("Vector index out of range", line, 0);
+							stack.push_back(vec->elements[idx]);
+						}
+						break;
+					}
 					case ValueType::TUPLE: {
 						auto* tuple = static_cast<TupleObject*>(base.ref.get());
 						if (index.type == ValueType::SLICE) {
@@ -8502,7 +8868,7 @@ struct VM {
 								len = (long long)ceil((rng->end - rng->start) / rng->step);
 							else len = 0;
 						}
-						else len++; // rough approx, standard range math is tricky with floats
+						else len++;
 						if (idx < 0) throw IndexError("Range index cannot be negative", line, 0);
 						double val = rng->start + (idx * rng->step);
 						if (rng->step > 0 && val >= rng->end && !rng->endInclusive) throw IndexError("Range index out of range", line, 0);
