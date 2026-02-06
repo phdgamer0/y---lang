@@ -2592,6 +2592,16 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 		str += "}";
 		return str;
 	}
+	case ValueType::LIST: {
+		auto* s = static_cast<ListObject*>(v.ref.get());
+		string str = "[";
+		for (size_t i = 0; i < s->elements.size(); i++) {
+			str += valueToString(s->elements[i], line, col);
+			if (i + 1 < s->elements.size()) str += ", ";
+		}
+		str += "]";
+		return str;
+	}
 	case ValueType::RANGE: {
 		auto* r = static_cast<RangeObject*>(v.ref.get());
 		if (!r->isValid) return "(...)";
