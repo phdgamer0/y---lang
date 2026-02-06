@@ -1,7 +1,32 @@
-define function greet(str:string("[NAME]")) -> string("test"): {
-	return f"Hello {str.capitalize()}!"
+import Vector
+import Math
+import Random
+define function find_angle_between_2_vectors(v1:vector(),v2:vector())-> float(): {
+	if v1.dimension() !== v2.dimension(): return -1
+	let alpha = (v1 * v2) / (v1.magnitude() * v2.magnitude())
+	return (RadToDeg(Arccos(alpha)))
+}
+
+define function radix_sort(arr: list()) -> list(): {
+	let res = [[]] * 10
+	let exp, max_val = 1, arr.max() 
+	while max_val // exp > 0 do:{
+		while length(arr) > 0 do: {
+			let val = arr.pop()
+			res[val//exp % 10].append(val)
+		}
+		for lists in res do: {
+			while length(lists) > 0 do: {
+				let val = lists.pop()
+				arr.append(val)
+			}
+		}
+		exp*=10
+	}
+	return arr
 }
 define function main(): {
-	let x =10
+	let my_arr = [170, 45, 75, 90, 802, 24, 2, 66, 14]
+	print(f"{my_arr}\n{radix_sort(my_arr)}")
 	
 }
