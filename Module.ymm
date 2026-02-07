@@ -1,3 +1,5 @@
+import Vector
+import Math
 import Random
 define cached function fib(n: int()) -> int(): {
 	if n is in [0, 1]: return n
@@ -23,4 +25,28 @@ define function flatten_test($arg): {
 		case "tuple" do: { return tuple(res) }
 		default do: return res
 	}
+}
+define function find_angle_between_2_vectors(v1: vector(), v2: vector()) -> float(): {
+	if v1.dimension() !== v2.dimension(): return -1
+	let alpha = (v1 * v2) / (v1.magnitude() * v2.magnitude())
+	return (RadToDeg(Arccos(alpha)))
+}
+define function radix_sort(arr: list()) -> list(): {
+	let res = [[]] * 10
+	let exp, max_val = 1, arr.max()
+	while max_val // exp > 0 do:{
+		while length(arr) > 0 do: {
+			let val = arr.pop()
+			res[val//exp % 10].append(val)
+		}
+		print(res, arr)
+		for lists in res do: {
+		while length(lists) > 0 do: {
+			let wal = lists.pop()
+			arr.append(wal)
+		}
+		}
+		exp *= 10
+	}
+return arr
 }

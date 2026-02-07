@@ -1,36 +1,6 @@
-import Vector
-import Math
-import Random
-define function find_angle_between_2_vectors(v1:vector(),v2:vector())-> float(): {
-	if v1.dimension() !== v2.dimension(): return -1
-	let alpha = (v1 * v2) / (v1.magnitude() * v2.magnitude())
-	return (RadToDeg(Arccos(alpha)))
-}
-
-define function radix_sort($arr: list()) -> list(): {
-	let res = [[]] * 10
-	let exp, max_val = 1, arr.max()
-	let val = 0
-	let wal = 0
-	while max_val // exp > 0 do:{
-		while length(arr) > 0 do: {
-			~print(arr,res)
-			val = arr.pop()
-			res[val//exp % 10].append(val)
-		}
-		~print(arr, res, typeof(res), typeof(res[0]))
-		for lists in res do: {
-			while length(lists) > 0 do: {
-				wal = lists.pop()
-				arr.append(wal)
-			}
-		}
-		exp*=10
-	}
-	return arr
-}
+import FileStream
 define function main(): {
-	let my_arr = [170, 45, 75, 90, 802, 24, 2, 66]
-	print(f"{my_arr}\n{radix_sort(my_arr)}")
-	
+	let x = SafeOpen("./.gitignore")
+	for line in x.ReadLines() do: print(line)
+	x.Close()
 }
