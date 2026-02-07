@@ -372,7 +372,7 @@ struct DeprecationWarning : Warning { DeprecationWarning(string m, int l, int c)
 struct RuntimeWarning : Warning { RuntimeWarning(string m, int l, int c) : Warning("RuntimeWarning: " + m, l, c) {} };
 struct ImportWarning : Warning { ImportWarning(string m, int l, int c) : Warning("ImportWarning: " + m, l, c) {} };
 enum class ValueType { 
-	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE, BIGINT,
+	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE, BIGINT, REFERENCE,
 	PAIRED, RANGE, TUPLE, SET, FUNCTION, NATIVE_FUNCTION, FILE, OVERLOAD, OMIT_MARKER
 };
 enum class CopyMode { SHALLOW, DEEP, REF };
@@ -1795,7 +1795,11 @@ struct Value {
 	std::shared_ptr<HeapObject> ref;
 	bool isConst = false;
 	bool isLocked = false;
+	Value* ptr = nullptr;
+	void* adress = nullptr;
+	static Value Reference(Value* p);
 	static Value Int(long long v, bool locked = false, bool isConst = false);
+	static Value pInt(void* v, bool locked = false, bool isConst = false);
 	static Value BigInt(long long n);
 	static Value BigInt(std::vector<uint32_t> chunks, bool isNegative);
 	static Value BigInt(std::shared_ptr<BigIntObject> obj);
@@ -1823,6 +1827,7 @@ struct Value {
 	bool looseEquals(const Value& other) const;
 	bool isNumber() const;
 	long long asInt() const;
+	void* aspInt() const;
 	double asFloat() const;
 	bool asBool() const;
 	const string& asString() const;
@@ -2098,10 +2103,23 @@ struct BigIntObject : HeapObject {
 		return Value::BigInt(std::make_shared<BigIntObject>(res));
 	}
 };
+inline Value Value::Reference(Value* p) {
+	Value v;
+	v.type = ValueType::REFERENCE;
+	v.ptr = p;
+	return v;
+}
 inline Value Value::Int(long long v, bool locked, bool isConst) {
 	Value x;
 	x.type = ValueType::INT;
 	x.iVal = v;
+	x.isConst = isConst;
+	return x;
+}
+inline Value Value::pInt(void* v, bool locked, bool isConst) {
+	Value x;
+	x.type = ValueType::INT;
+	x.adress = v;
 	x.isConst = isConst;
 	return x;
 }
@@ -2234,6 +2252,9 @@ inline long long Value::asInt() const {
 	if (type == ValueType::FLOAT) return (long long)fVal;
 	if (type == ValueType::BOOL) return bVal ? 1 : 0;
 	return 0;
+}
+inline void* Value::aspInt() const {
+	return adress;
 }
 inline double Value::asFloat() const {
 	if (type == ValueType::FLOAT) return fVal;
@@ -2443,6 +2464,9 @@ Value deepCopy(const Value& v) {
 	}
 	case ValueType::VECTOR: {
 		auto* vec = static_cast<VectorObject*>(v.ref.get());
+		std::vector<Value> copied;
+		copied.reserve(vec->elements.size());
+		for (const auto& el : vec->elements) copied.push_back(deepCopy(el));
 		out = Value::Vector(vec->elements);
 		break;
 	}
@@ -2574,12 +2598,17 @@ static inline std::string formatNumber(double val) {
 	if (s.back() == '.') s.pop_back();
 	return s;
 }
+static inline std::string ptr_to_string(void* p) {
+	std::ostringstream oss;
+	oss << p;
+	return oss.str();
+}
 static inline std::string valueToString(const Value& v, int line = 0, int col = 0) {
 	switch (v.type) {
 	case ValueType::BOOL:   return v.asBool() ? "true" : "false";
 	case ValueType::NONE:   return "None";
 	case ValueType::FLOAT:  return formatNumber(v.asFloat());
-	case ValueType::INT:    return std::to_string(v.asInt());
+	case ValueType::INT:    return v.adress? ptr_to_string(v.adress):std::to_string(v.asInt());
 	case ValueType::STRING: return v.asString();
 	case ValueType::FUNCTION: return "<function>";
 	case ValueType::SET: {
@@ -2655,6 +2684,9 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 		auto* big = static_cast<BigIntObject*>(v.ref.get());
 		return bigIntToString(big);
 	}
+	case ValueType::REFERENCE:{
+		return valueToString(*v.ptr);
+	}
 	default: throw TypeError("Cannot implicitly convert this type to string", line, col);
 	}
 }
@@ -2682,6 +2714,7 @@ static inline std::string PrintStackForDebug(const std::vector<Value>& stack) {
 		case ValueType::FILE:             result += "File"; break;
 		case ValueType::OVERLOAD:         result += "Overload"; break;
 		case ValueType::OMIT_MARKER:      result += "OmitMarker"; break;
+		case ValueType::REFERENCE:        result += "Refrance"; break;
 		default:                          result += "Unknown"; break;
 		}
 		if (DEBUGGER_MODE_IS_ENABLED) result+=" "+val->__DEBUGGING__NAME__;
@@ -2761,7 +2794,7 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 	}
 	if (isContainer && v.ref) seen.insert(v.ref.get());
 	switch (v.type) {
-	case ValueType::INT: std::cout << v.asInt(); break;
+	case ValueType::INT: if (v.adress) std::cout << v.aspInt(); else std::cout << v.asInt(); break;
 	case ValueType::FLOAT: std::cout << v.asFloat(); break;
 	case ValueType::BOOL: std::cout << (v.asBool() ? "true" : "false"); break;
 	case ValueType::NONE: std::cout << "None"; break;
@@ -2851,6 +2884,11 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 		std::cout<< bigIntToString(big);
 		break;
 	}
+	case ValueType::REFERENCE: {
+		std::cout<<valueToString(*v.ptr);
+		break;
+	}
+	default: std::cout<<"<Object at "<<v.ref<<">"; break;
 	}
 }
 void printValue(const Value& v) {
@@ -3406,7 +3444,7 @@ struct Interpreter {
 			if (args.empty()) return Value::String("");
 			Value v = args[0];
 			switch (v.type) {
-			case ValueType::INT: return Value::String(std::to_string(v.asInt()));
+			case ValueType::INT: return Value::String(v.adress ? ptr_to_string(v.adress) : std::to_string(v.asInt()));
 			case ValueType::FLOAT: return Value::String(std::to_string(v.asFloat()));
 			case ValueType::BOOL: return Value::String(v.asBool() ? "true" : "false");
 			case ValueType::STRING: return Value::String(v.asString());
@@ -3838,6 +3876,16 @@ struct Interpreter {
 				error("Cannot call mutating method '" + m->method + "' on const object", "ConstError");
 			}
 		};
+		if (m->method == "adress") {
+			if (!m->args.empty()) error("adress() takes no arguments", "ArgumentError");
+			if (target.ref) {
+				return Value::pInt(target.ref.get());
+			}
+			if (dynamic_cast<VarExpr*>(m->object) || dynamic_cast<IndexExpr*>(m->object)) {
+				return Value::pInt(targetPtr);
+			}
+			return Value::pInt(nullptr);
+		}
 		if (m->method == "base") {
 			if (m->args.size() != 1) error("base() takes exactly one argument", "ArgumentError");
 			int base = eval(m->args[0]).asInt();
@@ -6951,8 +6999,8 @@ enum class OpCode : uint8_t {
 	// Literals & Constants
 	OP_CONSTANT, OP_TRUE, OP_FALSE, OP_NONE, OP_NOTYPE,
 	// Variables & Scope
-	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY,
-	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF,
+	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY, OP_REF_LOCAL,
+	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
 	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL,
 	// Arithmetic & Logic
 	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW,
@@ -6981,10 +7029,12 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_GET_VAR: return "OP_GET_VAR";
 		case OpCode::OP_SET_VAR: return "OP_SET_VAR";
 		case OpCode::OP_DEEP_COPY: return "OP_DEEP_COPY";
+		case OpCode::OP_REF_LOCAL: return "OP_REF_LOCAL";
 		case OpCode::OP_DEFINE_REF: return "OP_DEFINE_REF";
 		case OpCode::OP_REF_VAR: return "OP_REF_VAR";
 		case OpCode::OP_REF_INDEX: return "OP_REF_INDEX";
 		case OpCode::OP_SET_REF: return "OP_SET_REF";
+		case OpCode::OP_SHALLOW_COPY: return "OP_SHALLOW_COPY";
 		case OpCode::OP_MULTI_SET: return "OP_MULTI_LET";
 		case OpCode::OP_GET_LOCAL: return "OP_GET_LOCAL";
 		case OpCode::OP_SET_LOCAL: return "OP_SET_LOCAL";
@@ -7184,7 +7234,24 @@ struct ByteCodeCompiler {
 				emitByte(OpCode::OP_DEEP_COPY, o->line, o->col);
 			}
 			else if (o->mode == CopyMode::REF) {
-				compile(o->expr);
+				if (auto v = dynamic_cast<VarExpr*>(o->expr)) {
+					int local = resolveLocal(v->name);
+					if (local != -1) {
+						emitByte(OpCode::OP_REF_LOCAL, o->line, o->col); // New OpCode
+						chunk->write((uint8_t)local, o->line, o->col);
+					}
+					else {
+						emitIdentifier(OpCode::OP_REF_VAR, v->name, o->line, o->col); // New usage
+					}
+				}
+				else if (auto idx = dynamic_cast<IndexExpr*>(o->expr)) {
+					compile(idx->base);
+					compile(idx->index);
+					emitByte(OpCode::OP_REF_INDEX, o->line, o->col);
+				}
+				else {
+					throw RuntimeError("Cannot take reference of this expression", o->line, o->col);
+				}
 			}
 			break;
 		}
@@ -7394,9 +7461,20 @@ struct ByteCodeCompiler {
 				compile(o->expr);
 				emitByte(OpCode::OP_DEEP_COPY, line, col);
 			}
-			else if (o->mode == CopyMode::REF) compile(o->expr);
+			else if (o->mode == CopyMode::REF) {
+				compile(expr);
+			}
 		}
-		else compile(expr);
+		else {
+			compile(expr);
+			if (expr->type != ExprType::LIST && expr->type != ExprType::DICT &&
+				expr->type != ExprType::SET && expr->type != ExprType::VECTOR &&
+				expr->type != ExprType::LAMBDA && expr->type != ExprType::NUMBER &&
+				expr->type != ExprType::STRING && expr->type != ExprType::BOOL)
+			{
+				emitByte(OpCode::OP_SHALLOW_COPY, line, col);
+			}
+		}
 	}
 	void compileStmt(Stmt* s) {
 		if (!s) return;
@@ -7429,7 +7507,7 @@ struct ByteCodeCompiler {
 			}
 			case StmtType::LET: {
 				auto let = static_cast<LetStmt*>(s);
-				if (let->value && let->value->type == ExprType::OWNERSHIP) {
+				if (scopeDepth == 0 && let->value && let->value->type == ExprType::OWNERSHIP) {
 					auto o = static_cast<OwnershipExpr*>(let->value);
 					if (o->mode == CopyMode::REF) {
 						emitIdentifier(OpCode::OP_DEFINE_REF, let->name, let->line, let->col);
@@ -7444,7 +7522,16 @@ struct ByteCodeCompiler {
 						break;
 					}
 				}
-				if (let->value) compile(let->value);
+				if (let->value) {
+					compile(let->value);
+					if (let->value->type != ExprType::OWNERSHIP && let->value->type != ExprType::LIST &&
+						let->value->type != ExprType::DICT && let->value->type != ExprType::SET &&
+						let->value->type != ExprType::TUPLE && let->value->type != ExprType::VECTOR &&
+						let->value->type != ExprType::LAMBDA && let->value->type != ExprType::NUMBER &&
+						let->value->type != ExprType::STRING && let->value->type != ExprType::BOOL) {
+						emitByte(OpCode::OP_SHALLOW_COPY, let->line, let->col);
+					}
+				}
 				else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
 				if (scopeDepth>0){
 					addLocal(let->name);
@@ -7468,14 +7555,15 @@ struct ByteCodeCompiler {
 					}
 					compile(idx->base);
 					compile(idx->index);
-					compileWithMode(as->value, as->line, as->col);
+					//compileWithMode(as->value, as->line, as->col);
+					compile(as->value);
 					emitByte(OpCode::OP_SET_INDEX, as->line, as->col);
 					emitByte(OpCode::OP_POP, as->line, as->col);
 					break;
 				}
 				auto v = static_cast<VarExpr*>(as->target);
 				if (auto o = dynamic_cast<OwnershipExpr*>(as->value)) {
-					if (o->mode == CopyMode::REF) {
+					if (scopeDepth == 0 && o->mode == CopyMode::REF) {
 						emitIdentifier(OpCode::OP_SET_REF, v->name, as->line, as->col);
 						if (auto targetVar = dynamic_cast<VarExpr*>(o->expr)) {
 							emitIdentifier(OpCode::OP_REF_VAR, targetVar->name, as->line, as->col);
@@ -7508,7 +7596,7 @@ struct ByteCodeCompiler {
 						chunk->write((uint8_t)arg, as->line, as->col);
 					}
 					else emitIdentifier(OpCode::OP_GET_VAR, v->name, as->line, as->col);
-					compileWithMode(as->value, as->line, as->col);
+					compile(as->value);
 					switch (as->op) {
 						case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
 						case TokenType::MINUS_EQ: emitByte(OpCode::OP_SUB, as->line, as->col); break;
@@ -7755,7 +7843,9 @@ struct ByteCodeCompiler {
 					exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, w->line, w->col);
 					emitByte(OpCode::OP_POP, w->line, w->col);
 				}
+				beginScope();
 				for (auto stmt : w->body) compileStmt(stmt);
+				endScope(w->line, w->col);
 				emitLoop(startAddr, w->line, w->col);
 				patchJump(exitJump);
 				if (!optimized) emitByte(OpCode::OP_POP, w->line, w->col);
@@ -7770,7 +7860,9 @@ struct ByteCodeCompiler {
 				beginScope();
 				LoopContext loop = { startAddr, -1, {}, {}, false, locals.size(), -1 };
 				loopStack.push_back(loop);
+				beginScope();
 				for (auto stmt : dw->body) compileStmt(stmt);
+				endScope(dw->line, dw->col);
 				for (int jump : loopStack.back().continueJumps) patchJump(jump);
 				endScope(dw->line, dw->col);
 				compile(dw->condition);
@@ -7781,6 +7873,7 @@ struct ByteCodeCompiler {
 				emitByte(OpCode::OP_POP, dw->line, dw->col);
 				for (int b : loopStack.back().breakJumps) patchJump(b);
 				loopStack.pop_back();
+				endScope(dw->line, dw->col);
 				break;
 			}
 			case StmtType::FOR: {
@@ -7857,7 +7950,9 @@ struct ByteCodeCompiler {
 					}
 				}
 				loopStack.push_back({ startAddr, startAddr, {}, {}, true, (int)locals.size() - streamCount, iterSlot });
+				beginScope();
 				for (auto stmt : fe->body) compileStmt(stmt);
+				endScope(fe->line, fe->col);
 				for (int i = 0; i < streamCount; i++) {
 					emitByte(OpCode::OP_POP, fe->line, fe->col);
 				}
@@ -8054,17 +8149,60 @@ struct VM {
 			}
 			case OpCode::OP_GET_LOCAL: {
 				uint8_t slot = *ip++;
-				stack.push_back(stack[frame->basePointer + slot]);
+				Value val = stack[frame->basePointer + slot];
+				if (val.type == ValueType::REFERENCE) stack.push_back(*val.ptr);
+				else stack.push_back(val);
 				break;
 			}
 			case OpCode::OP_SET_LOCAL: {
 				uint8_t slot = *ip++;
-				stack[frame->basePointer + slot] = stack.back();
+				Value& slotVal = stack[frame->basePointer + slot];
+				Value newVal = stack.back();
+				if (slotVal.type == ValueType::REFERENCE) {
+					if (slotVal.isConst) throw RuntimeError("Cannot assign to const reference", line, 0);
+					*slotVal.ptr = newVal;
+				}
+				else slotVal = newVal;
+				break;
+			}
+			case OpCode::OP_REF_LOCAL: {
+				uint8_t slot = *ip++;
+				Value* ptr = &stack[frame->basePointer + slot];
+				if (ptr->type == ValueType::REFERENCE) ptr = ptr->ptr;
+				stack.push_back(Value::Reference(ptr));
+				break;
+			}
+			case OpCode::OP_REF_VAR: {
+				uint8_t nameIndex = *ip++;
+				string name = currentChunk->constants[nameIndex].asString();
+				Var& v = globals->lookup(name);
+				Value* ptr = v.alias ? v.alias : &v.value;
+				stack.push_back(Value::Reference(ptr));
+				break;
+			}
+			case OpCode::OP_REF_INDEX: {
+				Value index = pop();
+				Value base = pop();
+				Value* ptr = nullptr;
+				if (base.type == ValueType::LIST) {
+					auto* list = static_cast<ListObject*>(base.ref.get());
+					long long idx = index.asInt();
+					ptr = &list->elements[idx];
+				}
+				else if (base.type == ValueType::VECTOR) {
+					auto* vec = static_cast<VectorObject*>(base.ref.get());
+					long long idx = index.asInt();
+					ptr = &vec->elements[idx];
+				}
+				else throw TypeError("Cannot take reference of this type", line, 0);
+				stack.push_back(Value::Reference(ptr));
 				break;
 			}
 			case OpCode::OP_INC_LOCAL: {
 				uint8_t slot = *ip++;
-				if (stack[slot].type == ValueType::INT) stack[frame->basePointer + slot].iVal++;
+				int idx = frame->basePointer + slot;
+				if (stack[idx].type == ValueType::INT) stack[idx].iVal++;
+				else if (stack[idx].type == ValueType::FLOAT) stack[idx].fVal++;
 				else stack[slot].fVal++;
 				break;
 			}
@@ -8073,8 +8211,9 @@ struct VM {
 				uint8_t constIdx = *ip++;
 				uint16_t offset = (ip[0] << 8) | ip[1];
 				ip += 2;
-				if (stack[slot].type == ValueType::INT) {
-					 long long localVal = stack[slot].iVal;
+				int idx = frame->basePointer + slot;
+				if (stack[idx].type == ValueType::INT) {
+					 long long localVal = stack[idx].iVal;
 					 long long constVal = currentChunk->constants[constIdx].iVal;
 					 if (localVal >= constVal) ip += offset;
 				}
@@ -8340,12 +8479,21 @@ struct VM {
 			case OpCode::OP_STRICT_NEQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.strictEquals(b)))); break; }
 			case OpCode::OP_IS: {
 				Value b = pop(); Value a = pop();
-				stack.push_back(Value::Bool(a.type == b.type && a.ref.get() == b.ref.get()));
+				const Value& valA = (a.type == ValueType::REFERENCE && a.ptr) ? *a.ptr : a;
+				const Value& valB = (b.type == ValueType::REFERENCE && b.ptr) ? *b.ptr : b;
+				bool same = false;
+				if (valA.type == valB.type) same = (valA.ref.get() == valB.ref.get());
+				stack.push_back(Value::Bool(same));
 				break;
 			}
 			case OpCode::OP_IS_NOT: {
-				Value b = pop(); Value a = pop();
-				stack.push_back(Value::Bool(!(a.type == b.type && a.ref.get() == b.ref.get())));
+				Value b = pop(); 
+				Value a = pop();
+				const Value& valA = (a.type == ValueType::REFERENCE && a.ptr) ? *a.ptr : a;
+				const Value& valB = (b.type == ValueType::REFERENCE && b.ptr) ? *b.ptr : b;
+				bool same = false;
+				if (valA.type == valB.type) same = (valA.ref.get() == valB.ref.get());
+				stack.push_back(Value::Bool(!same));
 				break;
 			}
 			case OpCode::OP_XOR: {
@@ -8469,10 +8617,10 @@ struct VM {
 			case OpCode::OP_GET_VAR: {
 				uint8_t nameIndex = *ip++;
 				string name = currentChunk->constants[nameIndex].asString();
-				if (!globals->exists(name)) {
-					throw NameError("Undefined variable '" + name + "'", line, 0);
-				}
-				stack.push_back(globals->get(name));
+				if (!globals->exists(name)) throw NameError("Undefined variable '" + name + "'", line, 0);
+				Var& v = globals->lookup(name);
+				if (v.alias) stack.push_back(*v.alias);
+				else stack.push_back(v.value);
 				break;
 			}
 			case OpCode::OP_JUMP_IF_FALSE: {
@@ -8530,7 +8678,14 @@ struct VM {
 				if (!globals->exists(name)) {
 					throw NameError("Undefined variable '" + name + "'", line, 0);
 				}
-				globals->set(name, val, false, false);
+				Var& v = globals->lookup(name);
+
+				if (v.alias) *v.alias = val;
+				else {
+					if (v.isConst) throw RuntimeError("Cannot assign to const variable '" + name + "'", line, 0);
+					if (v.isLocked && v.value.type != val.type) throw TypeError("Cannot change type of locked variable '" + name + "'", line, 0);
+					v.value = val;
+				}
 				break;
 			}
 			case OpCode::OP_DEFINE_REF: {
@@ -8597,7 +8752,7 @@ struct VM {
 					if (stream.type == ValueType::LIST) {
 						auto* list = static_cast<ListObject*>(stream.ref.get());
 						if (stepCount >= (long long)list->elements.size()) { valid = false; break; }
-						nextValues.push_back(list->elements[stepCount]);
+						nextValues.push_back(Value::Reference(&list->elements[stepCount]));
 					}
 					else if (stream.type == ValueType::TUPLE) {
 						auto* tuple = static_cast<TupleObject*>(stream.ref.get());
@@ -8617,7 +8772,7 @@ struct VM {
 					else if (stream.type == ValueType::VECTOR) {
 						auto* vec = static_cast<VectorObject*>(stream.ref.get());
 						if (stepCount >= (long long)vec->elements.size()) { valid = false; break; }
-						nextValues.push_back(vec->elements[stepCount]);
+						nextValues.push_back(Value::Reference(&vec->elements[stepCount]));
 					}
 					else if (stream.type == ValueType::RANGE) {
 						auto* r = static_cast<RangeObject*>(stream.ref.get());
@@ -8722,6 +8877,11 @@ struct VM {
 				Value start = pop();
 				bool isFloat = (start.type == ValueType::FLOAT || end.type == ValueType::FLOAT || step.type == ValueType::FLOAT);
 				stack.push_back(Value::Range(start.asFloat(), end.asFloat(), step.asFloat(), true, false, isFloat));
+				break;
+			}
+			case OpCode::OP_SHALLOW_COPY: {
+				Value v = pop();
+				stack.push_back(shallowCopy(v));
 				break;
 			}
 			case OpCode::OP_DEEP_COPY: {
@@ -9204,6 +9364,9 @@ private:
 			collection.type == ValueType::TUPLE ||collection.type == ValueType::STRING ||
 			collection.type == ValueType::VECTOR ||collection.type == ValueType::RANGE) {
 			return collection;
+		}
+		if (collection.type == ValueType::REFERENCE) {
+			return *collection.ptr;
 		}
 		auto list = std::make_shared<ListObject>();
 		if (collection.type == ValueType::DICT) {
