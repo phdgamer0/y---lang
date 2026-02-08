@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+void printErrorContext(const std::string&, int, int);
 int main() {
 	string path = "C:\\Users\\Windows\\source\\repos\\phdgamer0\\y---lang\\test.ymm";
 	std::ifstream file(path);
@@ -62,16 +63,40 @@ int main() {
 				std::cout << "Program finished successfully with code 0";
 			}
 			if (!vm.stack.empty()) {
+				//for debugging only!
 				//std::cout << "\n--- Final Stack Top ---\n";
 				//std::cout << valueToString(vm.stack.back()) << "\n";
 			}
 		}
 	}
 	catch (const LangError& e) {
-		std::cerr << e.what() << "\n";
+		printErrorContext(code, e.line, e.col);
+		std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
+		std::cerr << "Program crashed with exit code " << e.code;
 	}
 	catch (const std::exception& e) {
 		std::cerr << "Internal C++ Error: " << e.what() << "\n";
 	}
 	return 0;
+}
+void printErrorContext(const string& source, int line, int col) {
+	if (line <= 0) return;
+	std::stringstream ss(source);
+	string currentLineText;
+	int currentLineNum = 1;
+	while (std::getline(ss, currentLineText)) {
+		if (currentLineNum == line) {
+			if (!currentLineText.empty() && currentLineText.back() == '\r') currentLineText.pop_back();
+			std::cerr << "Traceback (most recent call last):";
+			std::cerr << " File \"test.ymm\", [line: " << line << " | col: " << col << "]:" << "\n";
+			std::cerr << ::strip(currentLineText,"\t") << "\n";
+			for (int i = 0; i < col; i++) {
+				if (i < currentLineText.size() && currentLineText[i] == '\t') continue;
+				else std::cerr << " ";
+			}
+			std::cerr << "\033[1;31m^\033[0m\n";
+			break;
+		}
+		currentLineNum++;
+	}
 }

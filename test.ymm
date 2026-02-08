@@ -1,6 +1,4 @@
-import FileStream
+import "Module.ymm"
 define function main(): {
-	let x = SafeOpen("./.gitignore")
-	for line in x.ReadLines() do: print(line)
-	x.Close()
+	print(hash_helper(13))
 }

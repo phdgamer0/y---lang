@@ -11,7 +11,7 @@ define function fac(n: int()) -> int(): {
 }
 define function flatten_test($arg): {
 	if typeof (arg) is not in "list set tuple".split(" "): {
-	return arg
+		return arg
 	}
 	let res = []
 	for small_args in arg do: {
@@ -48,5 +48,19 @@ define function radix_sort(arr: list()) -> list(): {
 		}
 		exp *= 10
 	}
-return arr
+	return arr
+}
+define function hash_helper(arg) -> int(): {
+	print(arg)
+	let a = Abs(float(arg)) + 1.0
+	print(a)
+	let b = Log(a)
+	print(b)
+	let c = Sin(a * PI) + Cos(b * E)
+	print(c)
+	let d = c * Sqrt(2) * PHI
+	print(d)
+	let h = Abs(d) * (10**18)
+	print(h)
+	return int(h*(h+3)+17)
 }
