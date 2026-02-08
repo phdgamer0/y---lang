@@ -40,6 +40,8 @@
 #include <ctime>
 #include <math.h>
 #include <intrin.h>
+#include <deque>
+
 bool DEBUGGER_MODE_IS_ENABLED = false;
 namespace fs = std::filesystem;
 using std::string;
@@ -300,77 +302,80 @@ inline vector<Token> tokenize(const string& code) {
 struct LangError : public std::exception {
 	string type;
 	string message;
+	long long code;
 	int line;
 	int col;
 	string fullMessage;
-	LangError(string t, string m, int l, int c)
-		: type(t), message(m), line(l), col(c) {
-		fullMessage = type + " [Line " + std::to_string(line) + ":" + std::to_string(col) + "]: " + message;
+	LangError(string t, string m, long long c, int l, int col_)
+		: type(t), message(m), code(c), line(l), col(col_) {
+		fullMessage = type +" [Line " + std::to_string(line) + ":" + std::to_string(col) + "]: " + message;
 	}
-	const char* what() const noexcept override { return fullMessage.c_str(); }
+	const char* what() const noexcept override {
+		return fullMessage.c_str();
+	}
 };
 // Base Categories
-struct InternalError : LangError { InternalError(string m, int l, int c) : LangError("InternalError", m, l, c) {} };
-struct ControlFlowError : LangError { ControlFlowError(string m, int l, int c) : LangError("ControlFlowError", m, l, c) {} };
-struct ParseError : LangError { ParseError(string m, int l, int c) : LangError("ParseError", m, l, c) {} };
-struct RuntimeError : LangError { RuntimeError(string m, int l, int c) : LangError("RuntimeError", m, l, c) {} };
-struct Warning : LangError { Warning(string m, int l, int c) : LangError("Warning", m, l, c) {} };
+struct InternalError : LangError { InternalError(string m, int l, int c) :LangError("InternalError", m, -1100000, l, c) {} };
+struct ControlFlowError : LangError { ControlFlowError(string m, int l, int c) :LangError("ControlFlowError", m, -1200000, l, c) {} };
+struct ParseError : LangError { ParseError(string m, int l, int c) :LangError("ParseError", m, -2000000, l, c) {} };
+struct RuntimeError : LangError { RuntimeError(string m, int l, int c) :LangError("RuntimeError", m, -3000000, l, c) {} };
+struct Warning : LangError { Warning(string m, int l, int c) :LangError("Warning", m, -7000000, l, c) {} };
 // ControlFlowError subtree
-struct ReturnSignal : ControlFlowError {ReturnSignal(string m, int l, int c) : ControlFlowError("ReturnSignal: " + m, l, c) {}};
-struct BreakSignal : ControlFlowError { BreakSignal(string m, int l, int c) : ControlFlowError("BreakSignal: " + m, l, c) {} };
-struct ContinueSignal : ControlFlowError { ContinueSignal(string m, int l, int c) : ControlFlowError("ContinueSignal: " + m, l, c) {} };
+struct ReturnSignal : ControlFlowError { ReturnSignal(string m, int l, int c) :ControlFlowError("ReturnSignal: " + m, l, c) { code = -1200100; } };
+struct BreakSignal : ControlFlowError { BreakSignal(string m, int l, int c) :ControlFlowError("BreakSignal: " + m, l, c) { code = -1200200; } };
+struct ContinueSignal : ControlFlowError { ContinueSignal(string m, int l, int c) :ControlFlowError("ContinueSignal: " + m, l, c) { code = -1200300; } };
 // ParseError subtree
-struct SyntaxError : ParseError { SyntaxError(string m, int l, int c) : ParseError("SyntaxError: " + m, l, c) {} };
-struct IndentationError : ParseError { IndentationError(string m, int l, int c) : ParseError("IndentationError: " + m, l, c) {} };
-struct UnexpectedTokenError : ParseError { UnexpectedTokenError(string m, int l, int c) : ParseError("UnexpectedTokenError: " + m, l, c) {} };
-struct UnterminatedLiteralError : ParseError { UnterminatedLiteralError(string m, int l, int c) : ParseError("UnterminatedLiteralError: " + m, l, c) {} };
+struct SyntaxError : ParseError { SyntaxError(string m, int l, int c) :ParseError("SyntaxError: " + m, l, c) { code = -2000100; } };
+struct IndentationError : ParseError { IndentationError(string m, int l, int c) :ParseError("IndentationError: " + m, l, c) { code = -2000200; } };
+struct UnexpectedTokenError : ParseError { UnexpectedTokenError(string m, int l, int c) :ParseError("UnexpectedTokenError: " + m, l, c) { code = -2000300; } };
+struct UnterminatedLiteralError : ParseError { UnterminatedLiteralError(string m, int l, int c) :ParseError("UnterminatedLiteralError: " + m, l, c) { code = -2000400; } };
 // RuntimeError subtree
-struct NameError : RuntimeError { NameError(string m, int l, int c) : RuntimeError("NameError: " + m, l, c) {} };
-struct AttributeError : RuntimeError { AttributeError(string m, int l, int c) : RuntimeError("AttributeError: " + m, l, c) {} };
-struct TypeError : RuntimeError { TypeError(string m, int l, int c) : RuntimeError("TypeError: " + m, l, c) {} };
-struct ArgumentError : RuntimeError { ArgumentError(string m, int l, int c) : RuntimeError("ArgumentError: " + m, l, c) {} };
-struct ValueError : RuntimeError { ValueError(string m, int l, int c) : RuntimeError("ValueError: " + m, l, c) {} };
-struct ConstError : RuntimeError { ConstError(string m, int l, int c) : RuntimeError("ConstError: " + m, l, c) {} };
-struct OwnershipError : RuntimeError { OwnershipError(string m, int l, int c) : RuntimeError("OwnershipError: " + m, l, c) {} };
-struct IndexError : RuntimeError { IndexError(string m, int l, int c) : RuntimeError("IndexError: " + m, l, c) {} };
-struct KeyError : RuntimeError { KeyError(string m, int l, int c) : RuntimeError("KeyError: " + m, l, c) {} };
-struct RangeError : RuntimeError { RangeError(string m, int l, int c) : RuntimeError("RangeError: " + m, l, c) {} };
-struct AssertionError : RuntimeError { AssertionError(string m, int l, int c) : RuntimeError("AssertionError: " + m, l, c) {} };
-struct RecursionError : RuntimeError { RecursionError(string m, int l, int c) : RuntimeError("RecursionError: " + m, l, c) {} };
-struct ImportError : RuntimeError { ImportError(string m, int l, int c) : RuntimeError("ImportError: " + m, l, c) {} };
-struct IOError : RuntimeError { IOError(string m, int l, int c) : RuntimeError("IOError: " + m, l, c) {} };
-struct MathError : RuntimeError { MathError(string m, int l, int c) : RuntimeError("MathError: " + m, l, c) {} };
-struct CastError : RuntimeError { CastError(string m, int l, int c) : RuntimeError("CastError: " + m, l, c) {} };
-struct IteratorError : RuntimeError { IteratorError(string m, int l, int c) : RuntimeError("IteratorError: " + m, l, c) {} };
-struct TimeoutError : RuntimeError { TimeoutError(string m, int l, int c) : RuntimeError("TimeoutError: " + m, l, c) {} };
-struct MemoryError : RuntimeError { MemoryError(string m, int l, int c) : RuntimeError("MemoryError: " + m, l, c) {} };
-struct SystemError : RuntimeError { SystemError(string m, int l, int c) : RuntimeError("SystemError: " + m, l, c) {} };
+struct NameError : RuntimeError { NameError(string m, int l, int c) :RuntimeError("NameError: " + m, l, c) { code = -3010000; } };
+struct AttributeError : RuntimeError { AttributeError(string m, int l, int c) :RuntimeError("AttributeError: " + m, l, c) { code = -3020000; } };
+struct TypeError : RuntimeError { TypeError(string m, int l, int c) :RuntimeError("TypeError: " + m, l, c) { code = -3030000; } };
+struct ArgumentError : RuntimeError { ArgumentError(string m, int l, int c) :RuntimeError("ArgumentError: " + m, l, c) { code = -3040000; } };
+struct ValueError : RuntimeError { ValueError(string m, int l, int c) :RuntimeError("ValueError: " + m, l, c) { code = -3050000; } };
+struct ConstError : RuntimeError { ConstError(string m, int l, int c) :RuntimeError("ConstError: " + m, l, c) { code = -3060000; } };
+struct OwnershipError : RuntimeError { OwnershipError(string m, int l, int c) :RuntimeError("OwnershipError: " + m, l, c) { code = -3070000; } };
+struct IndexError : RuntimeError { IndexError(string m, int l, int c) :RuntimeError("IndexError: " + m, l, c) { code = -3080000; } };
+struct KeyError : RuntimeError { KeyError(string m, int l, int c) :RuntimeError("KeyError: " + m, l, c) { code = -3090000; } };
+struct RangeError : RuntimeError { RangeError(string m, int l, int c) :RuntimeError("RangeError: " + m, l, c) { code = -3100000; } };
+struct AssertionError : RuntimeError { AssertionError(string m, int l, int c) :RuntimeError("AssertionError: " + m, l, c) { code = -3110000; } };
+struct RecursionError : RuntimeError { RecursionError(string m, int l, int c) :RuntimeError("RecursionError: " + m, l, c) { code = -3120000; } };
+struct ImportError : RuntimeError { ImportError(string m, int l, int c) :RuntimeError("ImportError: " + m, l, c) { code = -3200000; } };
+struct IOError : RuntimeError { IOError(string m, int l, int c) :RuntimeError("IOError: " + m, l, c) { code = -3300000; } };
+struct MathError : RuntimeError { MathError(string m, int l, int c) :RuntimeError("MathError: " + m, l, c) { code = -3400000; } };
+struct CastError : RuntimeError { CastError(string m, int l, int c) :RuntimeError("CastError: " + m, l, c) { code = -3500000; } };
+struct IteratorError : RuntimeError { IteratorError(string m, int l, int c) :RuntimeError("IteratorError: " + m, l, c) { code = -3510000; } };
+struct TimeoutError : RuntimeError { TimeoutError(string m, int l, int c) :RuntimeError("TimeoutError: " + m, l, c) { code = -3520000; } };
+struct MemoryError : RuntimeError { MemoryError(string m, int l, int c) :RuntimeError("MemoryError: " + m, l, c) { code = -3600000; } };
+struct SystemError : RuntimeError { SystemError(string m, int l, int c) :RuntimeError("SystemError: " + m, l, c) { code = -3700000; } };
 // ValueError subtree
-struct EmptyContainerError : ValueError { EmptyContainerError(string m, int l, int c) : ValueError("EmptyContainerError: " + m, l, c) {} };
+struct EmptyContainerError : ValueError { EmptyContainerError(string m, int l, int c) :ValueError("EmptyContainerError: " + m, l, c) { code = -3050100; } };
 // ConstError subtree
-struct MutationError : ConstError { MutationError(string m, int l, int c) : ConstError("MutationError: " + m, l, c) {} };
+struct MutationError : ConstError { MutationError(string m, int l, int c) :ConstError("MutationError: " + m, l, c) { code = -3060100; } };
 // ImportError subtree
-struct ModuleNotFoundError : ImportError { ModuleNotFoundError(string m, int l, int c) : ImportError("ModuleNotFoundError: " + m, l, c) {} };
-struct CircularImportError : ImportError { CircularImportError(string m, int l, int c) : ImportError("CircularImportError: " + m, l, c) {} };
-struct InvalidImportError : ImportError { InvalidImportError(string m, int l, int c) : ImportError("InvalidImportError: " + m, l, c) {} };
+struct ModuleNotFoundError : ImportError { ModuleNotFoundError(string m, int l, int c) :ImportError("ModuleNotFoundError: " + m, l, c) { code = -3200100; } };
+struct CircularImportError : ImportError { CircularImportError(string m, int l, int c) :ImportError("CircularImportError: " + m, l, c) { code = -3200200; } };
+struct InvalidImportError : ImportError { InvalidImportError(string m, int l, int c) :ImportError("InvalidImportError: " + m, l, c) { code = -3200300; } };
 // IOError subtree
-struct FileNotFoundError : IOError { FileNotFoundError(string m, int l, int c) : IOError("FileNotFoundError: " + m, l, c) {} };
-struct PermissionError : IOError { PermissionError(string m, int l, int c) : IOError("PermissionError: " + m, l, c) {} };
-struct EOFError : IOError { EOFError(string m, int l, int c) : IOError("EOFError: " + m, l, c) {} };
-struct FileClosedError : IOError { FileClosedError(string m, int l, int c) : IOError("FileClosedError: " + m, l, c) {} };
+struct FileNotFoundError : IOError { FileNotFoundError(string m, int l, int c) :IOError("FileNotFoundError: " + m, l, c) { code = -3300100; } };
+struct PermissionError : IOError { PermissionError(string m, int l, int c) :IOError("PermissionError: " + m, l, c) { code = -3300200; } };
+struct EOFError : IOError { EOFError(string m, int l, int c) :IOError("EOFError: " + m, l, c) { code = -3300300; } };
+struct FileClosedError : IOError { FileClosedError(string m, int l, int c) :IOError("FileClosedError: " + m, l, c) { code = -3300400; } };
 // MathError subtree
-struct DivisionByZeroError : MathError { DivisionByZeroError(string m, int l, int c) : MathError("DivisionByZeroError: " + m, l, c) {} };
-struct OverflowError : MathError { OverflowError(string m, int l, int c) : MathError("OverflowError: " + m, l, c) {} };
-struct UnderflowError : MathError { UnderflowError(string m, int l, int c) : MathError("UnderflowError: " + m, l, c) {} };
-struct DomainError : MathError { DomainError(string m, int l, int c) : MathError("DomainError: " + m, l, c) {} };
+struct DivisionByZeroError : MathError { DivisionByZeroError(string m, int l, int c) :MathError("DivisionByZeroError: " + m, l, c) { code = -3400100; } };
+struct OverflowError : MathError { OverflowError(string m, int l, int c) :MathError("OverflowError: " + m, l, c) { code = -3400200; } };
+struct UnderflowError : MathError { UnderflowError(string m, int l, int c) :MathError("UnderflowError: " + m, l, c) { code = -3400300; } };
+struct DomainError : MathError { DomainError(string m, int l, int c) :MathError("DomainError: " + m, l, c) { code = -3400400; } };
 // SystemError subtree
-struct OSError : SystemError { OSError(string m, int l, int c) : SystemError("OSError: " + m, l, c) {} };
-struct EnvironmentError : SystemError { EnvironmentError(string m, int l, int c) : SystemError("EnvironmentError: " + m, l, c) {} };
-struct SignalError : SystemError { SignalError(string m, int l, int c) : SystemError("SignalError: " + m, l, c) {} };
+struct OSError : SystemError { OSError(string m, int l, int c) :SystemError("OSError: " + m, l, c) { code = -3700100; } };
+struct EnvironmentError : SystemError { EnvironmentError(string m, int l, int c) :SystemError("EnvironmentError: " + m, l, c) { code = -3700200; } };
+struct SignalError : SystemError { SignalError(string m, int l, int c) :SystemError("SignalError: " + m, l, c) { code = -3700300; } };
 // Warning subtree
-struct DeprecationWarning : Warning { DeprecationWarning(string m, int l, int c) : Warning("DeprecationWarning: " + m, l, c) {} };
-struct RuntimeWarning : Warning { RuntimeWarning(string m, int l, int c) : Warning("RuntimeWarning: " + m, l, c) {} };
-struct ImportWarning : Warning { ImportWarning(string m, int l, int c) : Warning("ImportWarning: " + m, l, c) {} };
+struct DeprecationWarning : Warning { DeprecationWarning(string m, int l, int c) :Warning("DeprecationWarning: " + m, l, c) { code = -7010000; } };
+struct RuntimeWarning : Warning { RuntimeWarning(string m, int l, int c) :Warning("RuntimeWarning: " + m, l, c) { code = -7020000; } };
+struct ImportWarning : Warning { ImportWarning(string m, int l, int c) :Warning("ImportWarning: " + m, l, c) { code = -7030000; } };
 enum class ValueType { 
 	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE, BIGINT, REFERENCE,
 	PAIRED, RANGE, TUPLE, SET, FUNCTION, NATIVE_FUNCTION, FILE, OVERLOAD, OMIT_MARKER
@@ -1335,7 +1340,7 @@ public:
 			vector<string> symbols;
 			if (peek().type == TokenType::IDENTIFIER) {
 				string firstWord = advance().value;
-				if (match(TokenType::COMMA) || peek().type == TokenType::FROM) {
+				if (peek().type == TokenType::COMMA || peek().type == TokenType::FROM) {
 					symbols.push_back(firstWord);
 					while (match(TokenType::COMMA)) {
 						consume(TokenType::IDENTIFIER, "Expected function name");
@@ -2607,10 +2612,12 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 	switch (v.type) {
 	case ValueType::BOOL:   return v.asBool() ? "true" : "false";
 	case ValueType::NONE:   return "None";
+	case ValueType::NOTYPE: return "Notype";
 	case ValueType::FLOAT:  return formatNumber(v.asFloat());
 	case ValueType::INT:    return v.adress? ptr_to_string(v.adress):std::to_string(v.asInt());
 	case ValueType::STRING: return v.asString();
 	case ValueType::FUNCTION: return "<function>";
+	case ValueType::NATIVE_FUNCTION: return "<native_function>"+v.__DEBUGGING__NAME__;
 	case ValueType::SET: {
 		auto* s = static_cast<SetObject*>(v.ref.get());
 		string str = "{";
@@ -2690,9 +2697,17 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 	default: throw TypeError("Cannot implicitly convert this type to string", line, col);
 	}
 }
-static inline std::string PrintStackForDebug(const std::vector<Value>& stack) {
+static inline std::string PrintProperty(const Value& v) {
+	if(v.isConst && v.isLocked) return "Locked Const ";
+	else if (v.isConst) return "Const ";
+	else if (v.isLocked) return "Locked ";
+	else return "";
+	return "failure";
+}
+static inline std::string PrintStackForDebug(const std::deque<Value>& stack) {
 	std::string result = "start -> [";
 	for (auto val = stack.begin(); val < stack.end(); val++) {
+		result+= PrintProperty(*val);
 		switch (val->type) {
 		case ValueType::NOTYPE:           result += "NoType"; break;
 		case ValueType::NONE:             result += "None"; break;
@@ -2717,7 +2732,7 @@ static inline std::string PrintStackForDebug(const std::vector<Value>& stack) {
 		case ValueType::REFERENCE:        result += "Refrance"; break;
 		default:                          result += "Unknown"; break;
 		}
-		if (DEBUGGER_MODE_IS_ENABLED) result+=" "+val->__DEBUGGING__NAME__;
+		if (DEBUGGER_MODE_IS_ENABLED) result+=" "+val->__DEBUGGING__NAME__+ (" " + valueToString(*val));
 		if (val != stack.end() - 1) result += ", ";
 	}
 	return result + "] <- end";
@@ -6574,7 +6589,7 @@ struct Interpreter {
 			case StmtType::THROW: {
 				auto ts = static_cast<ThrowStmt*>(s);
 				Value msgVal = eval(ts->message);
-				throw LangError(ts->errorType, valueToString(msgVal), s->line, s->col);
+				throw LangError(ts->errorType, valueToString(msgVal), -1000000, s->line, s->col);
 			}
 			case StmtType::ASSERT: {
 				auto a = static_cast<AssertStmt*>(s);
@@ -7001,7 +7016,7 @@ enum class OpCode : uint8_t {
 	// Variables & Scope
 	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY, OP_REF_LOCAL,
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
-	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL,
+	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
 	// Arithmetic & Logic
 	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW,
 	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
@@ -7010,6 +7025,8 @@ enum class OpCode : uint8_t {
 	// Containers
 	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT, OP_UNPACK_DICT,
 	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE, OP_BUILD_SLICE,
+	// Comprehension
+	OP_LIST_APPEND, OP_SET_ADD, OP_DICT_SET, OP_LIST_TO_TUPLE, OP_LIST_TO_VECTOR,
 	// Access & Calls
 	OP_GET_INDEX, OP_SET_INDEX, OP_INVOKE, OP_CALL,
 	// Control Flow
@@ -7039,6 +7056,7 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_GET_LOCAL: return "OP_GET_LOCAL";
 		case OpCode::OP_SET_LOCAL: return "OP_SET_LOCAL";
 		case OpCode::OP_INC_LOCAL: return "OP_INC_LOCAL";
+		case OpCode::OP_SET_FLAGS: return "OP_SET_FLAGS";
 		case OpCode::OP_ADD: return "OP_ADD";
 		case OpCode::OP_SUB: return "OP_SUB";
 		case OpCode::OP_MUL: return "OP_MUL";
@@ -7080,6 +7098,11 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_BUILD_FSTRING: return "OP_BUILD_FSTRING";
 		case OpCode::OP_BUILD_FILE: return "OP_BUILD_FILE";
 		case OpCode::OP_BUILD_SLICE: return "OP_BUILD_SLICE";
+		case OpCode::OP_LIST_APPEND: return "OP_LIST_APPEND";
+		case OpCode::OP_SET_ADD: return "OP_SET_ADD";
+		case OpCode::OP_DICT_SET: return "OP_DICT_SET";
+		case OpCode::OP_LIST_TO_TUPLE: return "OP_LIST_TO_TUPLE";
+		case OpCode::OP_LIST_TO_VECTOR: return "OP_LIST_TO_VECTOR";
 		case OpCode::OP_GET_INDEX: return "OP_GET_INDEX";
 		case OpCode::OP_SET_INDEX: return "OP_SET_INDEX";
 		case OpCode::OP_INVOKE: return "OP_INVOKE";
@@ -7163,6 +7186,83 @@ struct ByteCodeCompiler {
 	void compile(Expr* e) {
 		if (!e) return;
 		switch (e->type) {
+		case ExprType::COMPREHENSION: {
+			auto comp = static_cast<CompExpr*>(e);
+			beginScope();
+			bool isDict = (comp->typeToken == TokenType::LBRACE && comp->valueExpr != nullptr);
+			bool isSet = (comp->typeToken == TokenType::LBRACE && !isDict);
+			bool isTuple = (comp->typeToken == TokenType::LPAREN);
+			bool isVector = (comp->typeToken == TokenType::LT);
+			if (isDict) {
+				emitByte(OpCode::OP_BUILD_DICT, comp->line, comp->col);
+				chunk->write(0, comp->line, comp->col);
+			}
+			else if (isSet) {
+				emitByte(OpCode::OP_BUILD_SET, comp->line, comp->col);
+				chunk->write(0, comp->line, comp->col);
+			}
+			else {
+				emitByte(OpCode::OP_BUILD_LIST, comp->line, comp->col);
+				chunk->write(0, comp->line, comp->col);
+			}
+			int containerSlot = (int)locals.size();
+			addLocal("");
+			compile(comp->iterable);
+			emitByte(OpCode::OP_TO_STREAM, comp->line, comp->col);
+			addLocal("");
+			emitConstant(Value::Int(0), comp->line, comp->col);
+			addLocal("");
+			int startAddr = (int)chunk->code.size();
+			emitByte(OpCode::OP_FOR_ITER, comp->line, comp->col);
+			int exitJump = (int)chunk->code.size();
+			chunk->write(0xff, comp->line, comp->col);
+			chunk->write(0xff, comp->line, comp->col);
+			chunk->write(1, comp->line, comp->col);
+			beginScope();
+			addLocal(comp->varName);
+			int filterJump = -1;
+			if (comp->filter) {
+				compile(comp->filter);
+				filterJump = emitJump(OpCode::OP_JUMP_IF_FALSE, comp->line, comp->col);
+				emitByte(OpCode::OP_POP, comp->line, comp->col);
+			}
+			if (isDict) {
+				compile(comp->expression);
+				compile(comp->valueExpr);
+				emitByte(OpCode::OP_DICT_SET, comp->line, comp->col);
+				chunk->write((uint8_t)containerSlot, comp->line, comp->col);
+			}
+			else if (isSet) {
+				compile(comp->expression);
+				emitByte(OpCode::OP_SET_ADD, comp->line, comp->col);
+				chunk->write((uint8_t)containerSlot, comp->line, comp->col);
+			}
+			else {
+				compile(comp->expression);
+				emitByte(OpCode::OP_LIST_APPEND, comp->line, comp->col);
+				chunk->write((uint8_t)containerSlot, comp->line, comp->col);
+			}
+			if (filterJump != -1) {
+				int skipAppend = emitJump(OpCode::OP_JUMP, comp->line, comp->col);
+				patchJump(filterJump);
+				emitByte(OpCode::OP_POP, comp->line, comp->col);
+				patchJump(skipAppend);
+			}
+			endScope(comp->line, comp->col);
+			emitLoop(startAddr, comp->line, comp->col);
+			patchJump(exitJump);
+			emitByte(OpCode::OP_POP, comp->line, comp->col);
+			emitByte(OpCode::OP_POP, comp->line, comp->col);
+			emitByte(OpCode::OP_GET_LOCAL, comp->line, comp->col);
+			chunk->write((uint8_t)containerSlot, comp->line, comp->col);
+			if (isTuple) emitByte(OpCode::OP_LIST_TO_TUPLE, comp->line, comp->col);
+			else if (isVector) emitByte(OpCode::OP_LIST_TO_VECTOR, comp->line, comp->col);
+			locals.pop_back();
+			locals.pop_back();
+			locals.pop_back();
+			scopeDepth--;
+			break;
+		}
 		case ExprType::OMIT_MARKER_EXPR: {
 			auto o = static_cast<OmitExpr*>(e);
 			Value val = Value::Omit();
@@ -7204,7 +7304,7 @@ struct ByteCodeCompiler {
 		case ExprType::FSTRING: {
 			auto fs = static_cast<FStringExpr*>(e);
 			for (auto* part : fs->parts) compile(part);
-			if (fs->parts.size() > 255) throw RuntimeError("F-String has too many parts (limit 255)", fs->line, fs->col);
+			if (fs->parts.size() > 255) throw SyntaxError("F-String has too many parts (limit 255)", fs->line, fs->col);
 			emitByte(OpCode::OP_BUILD_FSTRING, fs->line, fs->col);
 			chunk->write((uint8_t)fs->parts.size(), fs->line, fs->col);
 			break;
@@ -7250,7 +7350,7 @@ struct ByteCodeCompiler {
 					emitByte(OpCode::OP_REF_INDEX, o->line, o->col);
 				}
 				else {
-					throw RuntimeError("Cannot take reference of this expression", o->line, o->col);
+					throw OwnershipError("Cannot take reference of this expression", o->line, o->col);
 				}
 			}
 			break;
@@ -7433,7 +7533,7 @@ struct ByteCodeCompiler {
 	void emitConstant(Value v, int line, int col) {
 		int index = chunk->addConstant(v);
 		if (index > 255) {
-			throw RuntimeError("Too many constants in one chunk", line, col);
+			throw MemoryError("Too many constants in one chunk", line, col);
 		}
 		emitByte(OpCode::OP_CONSTANT, line, col);
 		chunk->write(static_cast<uint8_t>(index), line, col);
@@ -7449,7 +7549,7 @@ struct ByteCodeCompiler {
 		int jump = (int)chunk->code.size() - offset - 2;
 
 		if (jump > 65535) {
-			throw RuntimeError("Too much code to jump over!", 0, 0);
+			throw RangeError("Too much code to jump over!", 0, 0);
 		}
 
 		chunk->code[offset] = (jump >> 8) & 0xff;
@@ -7534,6 +7634,13 @@ struct ByteCodeCompiler {
 				}
 				else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
 				if (scopeDepth>0){
+					if (let->isConst || let->isLocked) {
+						emitByte(OpCode::OP_SET_FLAGS, let->line, let->col);
+						uint8_t flags = 0;
+						if (let->isConst) flags |= 0x01;
+						if (let->isLocked) flags |= 0x02;
+						chunk->write(flags, let->line, let->col);
+					}
 					addLocal(let->name);
 					if (DEBUGGER_MODE_IS_ENABLED) emitIdentifier(OpCode::OP_DEBUG_NAME, let->name, let->line, let->col);
 				}
@@ -7916,7 +8023,7 @@ struct ByteCodeCompiler {
 				bool isDictUnpack = (colCount == 1 && varCount == 2);
 				bool isOneToOne = (colCount == varCount);
 				if (!isDictUnpack && !isOneToOne) {
-					throw RuntimeError("Mismatch between loop variables and collections.", fe->line, fe->col);
+					throw ValueError("Mismatch between loop variables and collections.", fe->line, fe->col);
 				}
 				int streamCount = isDictUnpack ? 2 : (int)colCount;
 				if (isDictUnpack) {
@@ -7971,14 +8078,14 @@ struct ByteCodeCompiler {
 				break;
 			}
 			case StmtType::BREAK: {
-				if (loopStack.empty()) throw RuntimeError("break outside of loop", s->line, s->col);
+				if (loopStack.empty()) throw ControlFlowError("break outside of loop", s->line, s->col);
 				int localsToPop = (int)locals.size() - loopStack.back().startLocalCount;
 				for (int i = 0; i < localsToPop; i++) emitByte(OpCode::OP_POP, s->line, s->col);
 				loopStack.back().breakJumps.push_back(emitJump(OpCode::OP_JUMP, s->line, s->col));
 				break;
 			}
 			case StmtType::CONTINUE: {
-				if (loopStack.empty()) throw RuntimeError("continue outside of loop", s->line, s->col);
+				if (loopStack.empty()) throw ControlFlowError("continue outside of loop", s->line, s->col);
 				int localsToPop = (int)locals.size() - loopStack.back().startLocalCount;
 				for (int i = 0; i < localsToPop; i++) emitByte(OpCode::OP_POP, s->line, s->col);
 				int target = loopStack.back().stepAddress;
@@ -7991,9 +8098,9 @@ struct ByteCodeCompiler {
 			}
 			case StmtType::SKIP: {
 				auto sk = static_cast<SkipStmt*>(s);
-				if (loopStack.empty()) throw RuntimeError("skip statement outside of loop", s->line, s->col);
+				if (loopStack.empty()) throw ControlFlowError("skip statement outside of loop", s->line, s->col);
 				if (!loopStack.back().isForEach) {
-					throw RuntimeError("skip statement is only valid in for-each loops.", s->line, s->col);
+					throw ControlFlowError("skip statement is only valid in for-each loops.", s->line, s->col);
 				}
 				compile(sk->count);
 				emitByte(OpCode::OP_SKIP_ITER, s->line, s->col);
@@ -8013,13 +8120,13 @@ struct ByteCodeCompiler {
 	void emitLoop(int loopStart, int line, int col) {
 		emitByte(OpCode::OP_LOOP, line, col);
 		int offset = (int)chunk->code.size() - loopStart + 2;
-		if (offset > 65535) throw RuntimeError("Loop body too large", line, col);
+		if (offset > 65535) throw RangeError("Loop body too large", line, col);
 		chunk->write((offset >> 8) & 0xff, line, col);
 		chunk->write(offset & 0xff, line, col);
 	}
 };
 struct VM {
-	std::vector<Value> stack;
+	std::deque<Value> stack;
 	std::shared_ptr<Env> globals;
 	std::function<Value(MethodCallExpr*)> methodResolver;
 	std::vector<CallFrame> frames;
@@ -8041,6 +8148,7 @@ struct VM {
 		frame = &frames.back();
 		ip = frame->ip;
 		int line = 0;
+		int col = 0;
 		while (true) {
 			Chunk* currentChunk = frame->function ? frame->function->chunk : &chunk;
 			// --- DEBUGGER START ---
@@ -8053,6 +8161,7 @@ struct VM {
 			OpCode instruction = static_cast<OpCode>(*ip++);
 			int offset = (int)(ip - currentChunk->code.data());
 			line = currentChunk->lines[offset - 1];
+			col = currentChunk->columns[offset - 1];
 			switch (instruction) {
 			case OpCode::OP_IMPORT: {
 				uint8_t count = *ip++;
@@ -8064,12 +8173,12 @@ struct VM {
 				if (libName.length() > 4 && libName.substr(libName.length() - 4) == ".ymm") {
 					namespace fs = std::filesystem;
 					fs::path p(libName);
-					if (!fs::exists(p)) throw ImportError("Module file not found: " + libName, line, 0);
+					if (!fs::exists(p)) throw ImportError("Module file not found: " + libName, line, col);
 					std::error_code ec;
 					std::string absPath = fs::absolute(p, ec).string();
-					if (importStack.count(absPath)) throw ImportError("Circular import detected: " + libName, line, 0);
+					if (importStack.count(absPath)) throw CircularImportError("Circular import detected: " + libName, line, col);
 					std::ifstream file(absPath);
-					if (!file) throw ImportError("Unable to read module: " + libName, line, 0);
+					if (!file) throw FileNotFoundError("Unable to read module: " + libName, line, col);
 					std::stringstream buffer;
 					buffer << file.rdbuf();
 					std::string source = buffer.str();
@@ -8094,6 +8203,11 @@ struct VM {
 						for (const auto& [key, var] : moduleVM.globals->vars) {
 							if (key == "None") continue;
 							exportDict->items[Value::String(key)] = var.value;
+							if (count == 0) {
+								if (!globals->exists(key)) {
+									globals->set(key, var.value, var.isLocked, var.isConst);
+								}
+							}
 						}
 						moduleResult = Value::Dict(exportDict->items);
 					}
@@ -8112,7 +8226,7 @@ struct VM {
 						}
 						else moduleResult = Value::None();
 					}
-					else throw RuntimeError("Import resolver not linked!", line, 0);
+					else throw EnvironmentError("Import resolver not linked!", line, col);
 				}
 				if (count == 0) stack.push_back(moduleResult);
 				else {
@@ -8123,7 +8237,7 @@ struct VM {
 							if (d->items.count(k)) return d->items.at(k);
 						}
 						if (globals->exists(key)) return globals->get(key);
-						throw ImportError("Module '" + libName + "' does not export '" + key + "'", line, 0);
+						throw InvalidImportError("Module '" + libName + "' does not export '" + key + "'", line, col);
 					};
 					for (const auto& sym : symbols) stack.push_back(findVal(sym));
 				}
@@ -8133,6 +8247,61 @@ struct VM {
 				uint8_t nameIndex = *ip++;
 				string name = currentChunk->constants[nameIndex].asString();
 				stack.back().__DEBUGGING__NAME__ = name;
+				break;
+			}
+			case OpCode::OP_SET_FLAGS: {
+				uint8_t flags = *ip++;
+				if (stack.empty()) throw UnderflowError("Stack underflow", line, col);
+				stack.back().isConst = (flags & 0x01);
+				stack.back().isLocked = (flags & 0x02);
+				break;
+			}
+			case OpCode::OP_LIST_APPEND: {
+				uint8_t slot = *ip++;
+				Value val = pop();
+				Value& listVal = stack[frame->basePointer + slot];
+				if (listVal.type != ValueType::LIST) throw TypeError("Append target is not a list", line, col);
+				auto* list = static_cast<ListObject*>(listVal.ref.get());
+				list->elements.push_back(val);
+				break;
+			}
+			case OpCode::OP_SET_ADD: {
+				uint8_t slot = *ip++;
+				Value val = pop();
+				Value& setVal = stack[frame->basePointer + slot];
+				if (setVal.type != ValueType::SET) throw TypeError("Add target is not a set", line, col);
+				auto* set = static_cast<SetObject*>(setVal.ref.get());
+				setAdd(set->elements,val);
+				break;
+			}
+			case OpCode::OP_DICT_SET: {
+				uint8_t slot = *ip++;
+				Value val = pop();
+				Value key = pop();
+				Value& dictVal = stack[frame->basePointer + slot];
+				if (dictVal.type != ValueType::DICT) throw TypeError("Target is not a dict", line, col);
+				auto* dict = static_cast<DictObject*>(dictVal.ref.get());
+				if (key.type == ValueType::LIST || key.type == ValueType::SET || key.type == ValueType::DICT) {
+					if (key.type == ValueType::DICT) throw TypeError("Dictionary cannot be used as a key", line, col);
+					key = deepCopy(key);
+					key.isConst = true;
+				}
+				dict->items[key] = val;
+				break;
+			}
+			case OpCode::OP_LIST_TO_TUPLE: {
+				Value v = pop();
+				if (v.type != ValueType::LIST) throw TypeError("Expected list for tuple conversion", line, col);
+				auto* list = static_cast<ListObject*>(v.ref.get());
+				stack.push_back(Value::Tuple(list->elements));
+				break;
+			}
+			case OpCode::OP_LIST_TO_VECTOR: {
+				Value v = pop();
+				if (v.type != ValueType::LIST) throw TypeError("Expected list for vector conversion", line, col);
+				auto* list = static_cast<ListObject*>(v.ref.get());
+				for (const auto& el : list->elements) if (!el.isNumber()) throw TypeError("Vector elements must be numbers", line, col);
+				stack.push_back(Value::Vector(list->elements));
 				break;
 			}
 			case OpCode::OP_BUILD_FSTRING: {
@@ -8159,10 +8328,29 @@ struct VM {
 				Value& slotVal = stack[frame->basePointer + slot];
 				Value newVal = stack.back();
 				if (slotVal.type == ValueType::REFERENCE) {
-					if (slotVal.isConst) throw RuntimeError("Cannot assign to const reference", line, 0);
-					*slotVal.ptr = newVal;
+					if (slotVal.isConst) throw OwnershipError("Cannot assign to const reference", line, col);
+					Value* target = slotVal.ptr;
+					if (target->isConst) throw ConstError("Cannot assign to const variable via reference", line, col);
+					if (target->isLocked && target->type != newVal.type) {
+						throw TypeError("Cannot change type of locked variable via reference", line, col);
+					}
+					bool wasConst = target->isConst;
+					bool wasLocked = target->isLocked;
+					*target = newVal;
+					target->isConst = wasConst;
+					target->isLocked = wasLocked;
 				}
-				else slotVal = newVal;
+				else {
+					if (slotVal.isConst) throw ConstError("Cannot assign to const variable", line, col);
+					if (slotVal.isLocked && slotVal.type != newVal.type) {
+						throw ConstError("Cannot change type of locked variable", line, col);
+					}
+					bool wasConst = slotVal.isConst;
+					bool wasLocked = slotVal.isLocked;
+					slotVal = newVal;
+					slotVal.isConst = wasConst;
+					slotVal.isLocked = wasLocked;
+				}
 				break;
 			}
 			case OpCode::OP_REF_LOCAL: {
@@ -8194,7 +8382,7 @@ struct VM {
 					long long idx = index.asInt();
 					ptr = &vec->elements[idx];
 				}
-				else throw TypeError("Cannot take reference of this type", line, 0);
+				else throw OwnershipError("Cannot take reference of this type", line, col);
 				stack.push_back(Value::Reference(ptr));
 				break;
 			}
@@ -8217,7 +8405,7 @@ struct VM {
 					 long long constVal = currentChunk->constants[constIdx].iVal;
 					 if (localVal >= constVal) ip += offset;
 				}
-				else throw RuntimeError("Optimized loop requires integer.", line, 0);
+				else throw TypeError("Optimized loop requires integer", line, col);
 				break;
 			}
 			case OpCode::OP_SWITCH_TABLE: {
@@ -8304,7 +8492,7 @@ struct VM {
 				else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
 					auto* v1 = static_cast<VectorObject*>(a.ref.get());
 					auto* v2 = static_cast<VectorObject*>(b.ref.get());
-					if (v1->elements.size() != v2->elements.size()) throw ValueError("Vector dimension mismatch", line, 0);
+					if (v1->elements.size() != v2->elements.size()) throw ValueError("Vector dimension mismatch", line, col);
 					vector<Value> res;
 					res.reserve(v1->elements.size());
 					for (size_t i = 0; i < v1->elements.size(); i++) {
@@ -8330,8 +8518,8 @@ struct VM {
 				Value b = pop();
 				Value a = pop();
 				if (a.type == ValueType::VECTOR) {
-					if (!b.isNumber()) throw TypeError("Vector can only be divided by a number", line, 0);
-					if (b.asFloat() == 0) throw DivisionByZeroError("Vector division by zero", line, 0);
+					if (!b.isNumber()) throw TypeError("Vector can only be divided by a number", line, col);
+					if (b.asFloat() == 0) throw DivisionByZeroError("Vector division by zero", line, col);
 					auto* v = static_cast<VectorObject*>(a.ref.get());
 					vector<Value> res;
 					res.reserve(v->elements.size());
@@ -8339,10 +8527,10 @@ struct VM {
 					for (const auto& elem : v->elements) res.push_back(Value::Float(elem.asFloat() / s));
 					stack.push_back(Value::Vector(res));
 				}
-				else if (b.type == ValueType::VECTOR) throw TypeError("Cannot divide by a vector", line, 0);
+				else if (b.type == ValueType::VECTOR) throw TypeError("Cannot divide by a vector", line, col);
 				else {
 					double db = b.asFloat();
-					if (db == 0) throw DivisionByZeroError("Division by zero", line, 0);
+					if (db == 0) throw DivisionByZeroError("Division by zero", line, col);
 					stack.push_back(Value::Float(a.asFloat() / db));
 				}
 				break;
@@ -8350,12 +8538,22 @@ struct VM {
 			case OpCode::OP_MUL: {
 				Value b = pop();
 				Value a = pop();
+				auto tryDemote = [&](Value v) -> Value {
+					if (v.type != ValueType::BIGINT) return v;
+					auto* big = static_cast<BigIntObject*>(v.ref.get());
+					if (big->chunks.empty()) return Value::Int(0);
+					if (big->chunks.size() == 1) {
+						long long val = (long long)big->chunks[0];
+						if (val >= 0) return Value::Int(big->isNegative ? -val : val);
+					}
+					return v;
+				};
 				if (a.type == ValueType::STRING && b.type == ValueType::INT) {
 					string res = "";
 					string base = a.asString();
 					long long count = b.asInt();
 					if (count < 0) count = 0;
-					if (count > 1000000) throw MemoryError("String repetition too large", line, 0);
+					if (count > 1000000) throw MemoryError("String repetition too large", line, col);
 					for (long long i = 0; i < count; i++) res += base;
 					stack.push_back(Value::String(res));
 				}
@@ -8365,25 +8563,18 @@ struct VM {
 					vector<Value> res;
 					if (count > 0) {
 						if (listObj->elements.size() * count > 1000000)
-							throw MemoryError("List repetition too large", line, 0);
+							throw MemoryError("List repetition too large", line, col);
 						res.reserve(listObj->elements.size() * count);
-						for (int i = 0; i < count; i++) {for (const auto& elem : listObj->elements) res.push_back(deepCopy(elem));}
+						for (int i = 0; i < count; i++) {
+							for (const auto& elem : listObj->elements) res.push_back(deepCopy(elem));
+						}
 					}
 					stack.push_back(Value::List(res));
-				}
-				else if (a.type == ValueType::INT && b.type == ValueType::INT) {
-					long long res = a.iVal * b.iVal;
-					bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
-					if (overflow) stack.push_back(BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
-					else stack.push_back(Value::Int(res));
-				}
-				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-					stack.push_back(BigIntObject::mul(a, b));
 				}
 				else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
 					auto* v1 = static_cast<VectorObject*>(a.ref.get());
 					auto* v2 = static_cast<VectorObject*>(b.ref.get());
-					if (v1->elements.size() != v2->elements.size()) throw ValueError("Vector dimension mismatch", line, 0);
+					if (v1->elements.size() != v2->elements.size()) throw ValueError("Vector dimension mismatch", line, col);
 					Value dot = Value::Int(0);
 					for (size_t i = 0; i < v1->elements.size(); i++) {
 						Value x = v1->elements[i];
@@ -8427,6 +8618,21 @@ struct VM {
 					}
 					stack.push_back(Value::Vector(res));
 				}
+				else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
+					Value demotedA = tryDemote(a);
+					Value demotedB = tryDemote(b);
+					if (demotedA.type == ValueType::BIGINT || demotedB.type == ValueType::BIGINT) {
+						throw TypeError("Cannot multiply Float by a generic BigInt (Conversion not implemented)", line, col);
+					}
+					stack.push_back(Value::Float(demotedA.asFloat() * demotedB.asFloat()));
+				}
+				else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+					long long res = a.iVal * b.iVal;
+					bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
+					if (overflow) stack.push_back(BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
+					else stack.push_back(Value::Int(res));
+				}
+				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) stack.push_back(BigIntObject::mul(a, b));
 				else stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
 				break;
 			}
@@ -8434,12 +8640,12 @@ struct VM {
 				Value b = pop();
 				Value a = pop();
 				if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-					if (b.asFloat() == 0) throw DivisionByZeroError("Division by zero", line, 0);
+					if (b.asFloat() == 0) throw DivisionByZeroError("Division by zero", line, col);
 					stack.push_back(BigIntObject::div(a, b));
 				}
 				else {
 					double db = b.asFloat();
-					if (db == 0) throw DivisionByZeroError("Division by zero", line, 0);
+					if (db == 0) throw DivisionByZeroError("Division by zero", line, col);
 					stack.push_back(Value::Int((long long)(a.asFloat() / db)));
 				}
 				break;
@@ -8448,12 +8654,12 @@ struct VM {
 				Value b = pop();
 				Value a = pop();
 				if (a.type == ValueType::INT && b.type == ValueType::INT) {
-					if (b.iVal == 0) throw DivisionByZeroError("Modulo by zero", line, 0);
+					if (b.iVal == 0) throw DivisionByZeroError("Modulo by zero", line, col);
 					stack.push_back(Value::Int(a.iVal % b.iVal));
 				}
 				else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) stack.push_back(BigIntObject::mod(a, b));
 				else {
-					if (b.asFloat() == 0) throw DivisionByZeroError("Modulo by zero", line, 0);
+					if (b.asFloat() == 0) throw DivisionByZeroError("Modulo by zero", line, col);
 					stack.push_back(Value::Float(fmod(a.asFloat(), b.asFloat())));
 				}
 				break;
@@ -8617,7 +8823,7 @@ struct VM {
 			case OpCode::OP_GET_VAR: {
 				uint8_t nameIndex = *ip++;
 				string name = currentChunk->constants[nameIndex].asString();
-				if (!globals->exists(name)) throw NameError("Undefined variable '" + name + "'", line, 0);
+				if (!globals->exists(name)) throw NameError("Undefined variable '" + name + "'", line, col);
 				Var& v = globals->lookup(name);
 				if (v.alias) stack.push_back(*v.alias);
 				else stack.push_back(v.value);
@@ -8651,13 +8857,13 @@ struct VM {
 					Value result = native->func(args, line, 0);
 						stack.push_back(result);
 				}
-				else callValue(callee, argCount, line);
+				else callValue(callee, argCount, line, col);
 				break;
 			}
 			case OpCode::OP_UNPACK_DICT: {
 				Value v = pop();
 				if (v.type != ValueType::DICT) {
-					throw RuntimeError("Cannot unpack non-dictionary", line, 0);
+					throw TypeError("Cannot unpack non-dictionary", line, col);
 				}
 				auto dict = static_cast<DictObject*>(v.ref.get());
 				auto keys = std::make_shared<ListObject>();
@@ -8675,15 +8881,23 @@ struct VM {
 				string name = currentChunk->constants[nameIndex].asString();
 				Value val = stack.back();
 				if (DEBUGGER_MODE_IS_ENABLED) val.__DEBUGGING__NAME__=name;
-				if (!globals->exists(name)) {
-					throw NameError("Undefined variable '" + name + "'", line, 0);
-				}
+				if (!globals->exists(name)) throw NameError("Undefined variable '" + name + "'", line, col);
 				Var& v = globals->lookup(name);
-
-				if (v.alias) *v.alias = val;
+				if (v.alias) {
+					Value* target = v.alias;
+					if (target->isConst) throw ConstError("Cannot assign to const variable '" + name + "' via reference", line, col);
+					if (target->isLocked && target->type != val.type) {
+						throw TypeError("Cannot change type of locked variable '" + name + "' via reference", line, col);
+					}
+					bool wasConst = target->isConst;
+					bool wasLocked = target->isLocked;
+					*target = val;
+					target->isConst = wasConst;
+					target->isLocked = wasLocked;
+				}
 				else {
-					if (v.isConst) throw RuntimeError("Cannot assign to const variable '" + name + "'", line, 0);
-					if (v.isLocked && v.value.type != val.type) throw TypeError("Cannot change type of locked variable '" + name + "'", line, 0);
+					if (v.isConst) throw ConstError("Cannot assign to const variable '" + name + "'", line, col);
+					if (v.isLocked && v.value.type != val.type) throw TypeError("Cannot change type of locked variable '" + name + "'", line, col);
 					v.value = val;
 				}
 				break;
@@ -8715,7 +8929,7 @@ struct VM {
 			case OpCode::OP_SET_REF: {
 				uint8_t nameIdx = *ip++;
 				string varName = currentChunk->constants[nameIdx].asString();
-				if (!globals->exists(varName)) throw NameError("Undefined variable", line, 0);
+				if (!globals->exists(varName)) throw NameError("Undefined variable"+ varName, line, col);
 				OpCode subOp = static_cast<OpCode>(*ip++);
 				if (subOp == OpCode::OP_REF_VAR) {
 					string target = currentChunk->constants[*ip++].asString();
@@ -8734,7 +8948,7 @@ struct VM {
 			}
 			case OpCode::OP_TO_STREAM: {
 				Value v = pop();
-				stack.push_back(prepareIterable(v, line));
+				stack.push_back(prepareIterable(v, line, col));
 				break;
 			}
 			case OpCode::OP_FOR_ITER: {
@@ -8783,7 +8997,7 @@ struct VM {
 						if (r->isFloat) nextValues.push_back(Value::Float(current));
 						else nextValues.push_back(Value::Int((long long)current));
 					}
-					else throw RuntimeError("Internal Error: Unsupported stream type in iterator", line, 0);
+					else throw TypeError("Unsupported stream type in iterator", line, col);
 				}
 				if (valid) {
 					for (const auto& val : nextValues) stack.push_back(val);
@@ -8795,10 +9009,10 @@ struct VM {
 			case OpCode::OP_SKIP_ITER: {
 				uint8_t slot = *ip++;
 				Value amount = pop();
-				if (!amount.isNumber()) throw RuntimeError("skip amount must be a number", line, 0);
+				if (!amount.isNumber()) throw TypeError("skip amount must be a number", line, col);
 				long long skipN = amount.asInt();
 				int absoluteSlot = frame->basePointer + slot;
-				if (absoluteSlot >= stack.size()) throw InternalError("Skip iterator slot out of bounds", line, 0);
+				if (absoluteSlot >= stack.size()) throw IndexError("Skip iterator slot out of bounds", line, col);
 				stack[absoluteSlot].iVal += skipN;
 				break;
 			}
@@ -8817,7 +9031,7 @@ struct VM {
 			case OpCode::OP_BUILD_LIST: {
 				uint8_t count = *ip++;
 				auto list = std::make_shared<ListObject>();
-				if (stack.size() < count) throw InternalError("Stack underflow during list build", line, 0);
+				if (stack.size() < count) throw EmptyContainerError("Stack underflow during list build", line, col);
 				list->elements.resize(count);
 				for (int i = count - 1; i >= 0; i--) {
 					list->elements[i] = pop();
@@ -8865,7 +9079,7 @@ struct VM {
 				elems.resize(count);
 				for (int i = count - 1; i >= 0; i--) {
 					Value v = pop();
-					if (!v.isNumber()) throw TypeError("Vector elements must be numbers", line, 0);
+					if (!v.isNumber()) throw TypeError("Vector elements must be numbers", line, col);
 					elems[i] = v;
 				}
 				stack.push_back(Value::Vector(elems));
@@ -8881,12 +9095,18 @@ struct VM {
 			}
 			case OpCode::OP_SHALLOW_COPY: {
 				Value v = pop();
-				stack.push_back(shallowCopy(v));
+				Value res = shallowCopy(v);
+				res.isConst = false;
+				res.isLocked = false;
+				stack.push_back(res);
 				break;
 			}
 			case OpCode::OP_DEEP_COPY: {
 				Value v = pop();
-				stack.push_back(deepCopy(v));
+				Value res = deepCopy(v);
+				res.isConst = false;
+				res.isLocked = false;
+				stack.push_back(res);
 				break;
 			}
 			case OpCode::OP_GET_INDEX: {
@@ -8897,7 +9117,7 @@ struct VM {
 					long long len = (long long)rawLen;
 					long long step = 1;
 					if (s->step.type == ValueType::INT) step = s->step.asInt();
-					if (step == 0) throw ValueError("Slice step cannot be zero", line, 0);
+					if (step == 0) throw ValueError("Slice step cannot be zero", line, col);
 					long long start, end;
 					if (step > 0) {
 						start = (s->start.type == ValueType::INT) ? s->start.asInt() : 0;
@@ -8943,10 +9163,10 @@ struct VM {
 							stack.push_back(Value::List(newList->elements));
 						}
 						else {
-							if (!index.isNumber()) throw TypeError("List index must be int or slice", line, 0);
+							if (!index.isNumber()) throw TypeError("List index must be int or slice", line, col);
 							long long idx = index.asInt();
 							if (idx < 0) idx += list->elements.size();
-							if (idx < 0 || idx >= (long long)list->elements.size()) throw IndexError("List index out of range", line, 0);
+							if (idx < 0 || idx >= (long long)list->elements.size()) throw IndexError("List index out of range", line, col);
 							stack.push_back(list->elements[idx]);
 						}
 						break;
@@ -8960,10 +9180,10 @@ struct VM {
 							stack.push_back(Value::Set(newSet->elements));
 						}
 						else {
-							if (!index.isNumber()) throw TypeError("Set index must be int or slice", line, 0);
+							if (!index.isNumber()) throw TypeError("Set index must be int or slice", line, col);
 							long long idx = index.asInt();
 							if (idx < 0) idx += s->elements.size();
-							if (idx < 0 || idx >= (long long)s->elements.size()) throw IndexError("Set index out of range", line, 0);
+							if (idx < 0 || idx >= (long long)s->elements.size()) throw IndexError("Set index out of range", line, col);
 							stack.push_back(s->elements[idx]);
 						}
 						break;
@@ -8978,10 +9198,10 @@ struct VM {
 							stack.push_back(Value::Vector(newElems));
 						}
 						else {
-							if (!index.isNumber()) throw TypeError("Vector index must be int or slice", line, 0);
+							if (!index.isNumber()) throw TypeError("Vector index must be int or slice", line, col);
 							long long idx = index.asInt();
 							if (idx < 0) idx += vec->elements.size();
-							if (idx < 0 || idx >= (long long)vec->elements.size()) throw IndexError("Vector index out of range", line, 0);
+							if (idx < 0 || idx >= (long long)vec->elements.size()) throw IndexError("Vector index out of range", line, col);
 							stack.push_back(vec->elements[idx]);
 						}
 						break;
@@ -8996,10 +9216,10 @@ struct VM {
 							stack.push_back(Value::Tuple(newElems));
 						}
 						else {
-							if (!index.isNumber()) throw TypeError("Tuple index must be int or slice", line, 0);
+							if (!index.isNumber()) throw TypeError("Tuple index must be int or slice", line, col);
 							long long idx = index.asInt();
 							if (idx < 0) idx += tuple->elements.size();
-							if (idx < 0 || idx >= (long long)tuple->elements.size()) throw IndexError("Tuple index out of range", line, 0);
+							if (idx < 0 || idx >= (long long)tuple->elements.size()) throw IndexError("Tuple index out of range", line, col);
 							stack.push_back(tuple->elements[idx]);
 						}
 						break;
@@ -9020,17 +9240,17 @@ struct VM {
 							stack.push_back(Value::String(newStr));
 						}
 						else {
-							if (!index.isNumber()) throw TypeError("String index must be int or slice", line, 0);
+							if (!index.isNumber()) throw TypeError("String index must be int or slice", line, col);
 							long long idx = index.asInt();
 							if (idx < 0) idx += s.length();
-							if (idx < 0 || idx >= (long long)s.length()) throw IndexError("String index out of range", line, 0);
+							if (idx < 0 || idx >= (long long)s.length()) throw IndexError("String index out of range", line, col);
 							stack.push_back(Value::String(string(1, s[idx])));
 						}
 						break;
 					}
 					case ValueType::RANGE: {
 						auto* rng = static_cast<RangeObject*>(base.ref.get());
-						if (!index.isNumber()) throw TypeError("Range index must be a number", line, 0);
+						if (!index.isNumber()) throw TypeError("Range index must be a number", line, col);
 						long long idx = index.asInt();
 						long long len = (long long)((rng->end - rng->start) / rng->step);
 						if (!rng->endInclusive) {
@@ -9039,13 +9259,13 @@ struct VM {
 							else len = 0;
 						}
 						else len++;
-						if (idx < 0) throw IndexError("Range index cannot be negative", line, 0);
+						if (idx < 0) throw IndexError("Range index cannot be negative", line, col);
 						double val = rng->start + (idx * rng->step);
-						if (rng->step > 0 && val >= rng->end && !rng->endInclusive) throw IndexError("Range index out of range", line, 0);
+						if (rng->step > 0 && val >= rng->end && !rng->endInclusive) throw IndexError("Range index out of range", line, col);
 						stack.push_back(rng->isFloat ? Value::Float(val) : Value::Int((long long)val));
 						break;
 					}
-					default: throw TypeError("Object is not subscriptable", line, 0); break;
+					default: throw TypeError("Object is not subscriptable", line, col); break;
 				}
 				break;
 			}
@@ -9055,10 +9275,10 @@ struct VM {
 				Value base = pop();
 				if (base.type == ValueType::LIST) {
 					auto* list = static_cast<ListObject*>(base.ref.get());
-					if (!index.isNumber()) throw TypeError("List index must be a number", line, 0);
+					if (!index.isNumber()) throw TypeError("List index must be a number", line, col);
 					long long idx = index.asInt();
 					if (idx < 0) idx += list->elements.size();
-					if (idx < 0 || idx >= (long long)list->elements.size()) throw IndexError("List assignment index out of range", line, 0);
+					if (idx < 0 || idx >= (long long)list->elements.size()) throw IndexError("List assignment index out of range", line, col);
 					list->elements[idx] = val;
 				}
 				else if (base.type == ValueType::DICT) {
@@ -9071,15 +9291,15 @@ struct VM {
 				}
 				else if (base.type == ValueType::STRING) {
 					auto* str = static_cast<StringObject*>(base.ref.get());
-					if (!index.isNumber()) throw TypeError("String index must be a number", line, 0);
+					if (!index.isNumber()) throw TypeError("String index must be a number", line, col);
 					long long idx = index.asInt();
 					if (idx < 0) idx += str->value.size();
-					if (idx < 0 || idx >= (long long)str->value.size()) throw IndexError("String assignment index out of range", line, 0);
+					if (idx < 0 || idx >= (long long)str->value.size()) throw IndexError("String assignment index out of range", line, col);
 					str->value[idx] = val.asString()[0];
 				}
 				else if (base.type == ValueType::TUPLE) 
-				throw TypeError("Tuple object does not support item assignment", line, 0);
-				else throw TypeError("Object does not support item assignment", line, 0);
+				throw MutationError("Tuple object does not support item assignment", line, col);
+				else throw MutationError("Object does not support item assignment", line, col);
 				stack.push_back(val);
 				break;
 			}
@@ -9088,15 +9308,15 @@ struct VM {
 				uint8_t nameIdx = *ip++;
 				uint8_t argCount = *ip++;
 				string methodName = currentChunk->constants[nameIdx].asString();
-				vector<Expr*> dummyArgs;
-				for (int i = 0; i < argCount; i++) {
-					dummyArgs.insert(dummyArgs.begin(), new ValueExpr(pop()));
+				vector<Expr*> dummyArgs(argCount);
+				for (int i = argCount - 1; i >= 0; i--) {
+					dummyArgs[i] = new ValueExpr(pop());
 				}
 				Value targetVal = pop();
 				Expr* dummyObject = new ValueExpr(targetVal);
 				MethodCallExpr mockAST(dummyObject, methodName, dummyArgs);
 				mockAST.line = line;
-				if (!methodResolver) throw InternalError("VM methodResolver bridge not initialized.", line, 0);
+				if (!methodResolver) throw EnvironmentError("VM methodResolver bridge not initialized.", line, col);
 				Value result = methodResolver(&mockAST);
 				delete dummyObject;
 				for (auto* a : dummyArgs) delete a;
@@ -9184,7 +9404,7 @@ struct VM {
 						}
 						if (!converted && result.type != ValueType::NONE) {
 							throw TypeError("Return type mismatch. Expected " + std::to_string((int)func->returnType) +
-								" Got " + std::to_string((int)result.type), line, 0);
+								" Got " + std::to_string((int)result.type), line, col);
 						}
 					}
 					if (func->returnsConst) result.isConst = true;
@@ -9202,12 +9422,12 @@ struct VM {
 				stack.push_back(result);
 				break;
 			}
-			default: throw InternalError("Unknown OpCode encountered", line, 0);
+			default: throw UnexpectedTokenError("Unknown OpCode encountered", line, col);
 			}
 		}
 	}
 private:
-	void callValue(Value callee, int argCount, int line) {
+	void callValue(Value callee, int argCount, int line, int col) {
 		FunctionObject* function = nullptr;
 		NativeFunctionObject* nativeObj = nullptr;
 		if (callee.type == ValueType::FUNCTION) {
@@ -9223,7 +9443,7 @@ private:
 			// ... (Copy your overload selection loop) ...
 			// function = candidate;
 		}
-		else throw TypeError("Object is not callable", line, 0);
+		else throw TypeError("Object is not callable", line, col);
 		if (nativeObj) {
 			vector<Value> args;
 			for (int i = 0; i < argCount; i++) args.push_back(pop());
@@ -9247,7 +9467,7 @@ private:
 				auto dict = std::make_shared<DictObject>();
 				while (argIndex < providedArgs.size()) {
 					Value v = providedArgs[argIndex];
-					if (v.type != ValueType::PAIRED) throw RuntimeError("Positional argument after keyword args.", line, 0);
+					if (v.type != ValueType::PAIRED) throw SyntaxError("Positional argument after keyword args", line, col);
 					auto* pairObj = static_cast<PairedObject*>(v.ref.get());
 					for (const auto& entry : pairObj->pairs) {
 						Value key = entry.first;
@@ -9282,7 +9502,7 @@ private:
 							argVal = executeDefault(p.defaultValue, line); // <--- EXECUTE AST
 							foundValue = true;
 						}
-						else throw ArgumentError("Argument '" + p.name + "' cannot be omitted.", line, 0);
+						else throw ArgumentError("Argument '" + p.name + "' cannot be omitted.", line, col);
 					}
 					else {
 						argVal = providedArgs[argIndex];
@@ -9294,7 +9514,7 @@ private:
 				}
 				if (!foundValue) {
 					if (p.defaultValue != nullptr) argVal = executeDefault(p.defaultValue, line);
-					else throw ArgumentError("Missing required argument '" + p.name + "'", line, 0);
+					else throw ArgumentError("Missing required argument '" + p.name + "'", line, col);
 				}
 				if (p.type != ValueType::NOTYPE && argVal.type != p.type) {
 					bool mismatch = true;
@@ -9318,7 +9538,7 @@ private:
 					}
 					if (mismatch) {
 						throw TypeError("Type mismatch for '" + p.name + "'. Expected " + std::to_string((int)p.type) + " got " +
-						std::to_string((int)argVal.type), line, 0);
+						std::to_string((int)argVal.type), line, col);
 					}
 				}
 			}
@@ -9332,7 +9552,7 @@ private:
 		}
 		if (argIndex < providedArgs.size()) {
 			bool acceptsMore = !function->params.empty() && (function->params.back().isVariadic || function->params.back().isKwargs);
-			if (!acceptsMore) throw ArgumentError("Too many arguments passed to function.", line, 0);
+			if (!acceptsMore) throw ArgumentError("Too many arguments passed to function.", line, col);
 		}
 		if (frame) frame->ip = ip;
 		CallFrame newFrame;
@@ -9347,7 +9567,6 @@ private:
 	}
 	Value executeDefault(Expr* expr, int line) {
 		if (!expr) return Value::None();
-
 		Chunk tempChunk;
 		ByteCodeCompiler compiler(&tempChunk);
 		compiler.compile(expr);
@@ -9359,7 +9578,7 @@ private:
 		if (tempVM.stack.empty()) return Value::None();
 		return tempVM.stack.back();
 	}
-	Value prepareIterable(Value collection, int line) {
+	Value prepareIterable(Value collection, int line, int col) {
 		if (collection.type == ValueType::LIST || collection.type == ValueType::SET ||
 			collection.type == ValueType::TUPLE ||collection.type == ValueType::STRING ||
 			collection.type == ValueType::VECTOR ||collection.type == ValueType::RANGE) {
@@ -9373,11 +9592,11 @@ private:
 			auto* dict = static_cast<DictObject*>(collection.ref.get());
 			for (const auto& pair : dict->items) list->elements.push_back(pair.first);
 		}
-		else throw TypeError("Object is not iterable", line, 0);
+		else throw TypeError("Object is not iterable", line, col);
 		return Value::List(list->elements);
 	}
 	Value pop() {
-		if (stack.empty()) throw InternalError("Stack underflow", 0, 0);
+		if (stack.empty()) throw UnderflowError("Stack underflow", 0, 0);
 		Value v = stack.back();
 		stack.pop_back();
 		return v;
