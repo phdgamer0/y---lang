@@ -50,17 +50,35 @@ define function radix_sort(arr: list()) -> list(): {
 	}
 	return arr
 }
-define function hash_helper(arg) -> int(): {
-	print(arg)
+define function hash_helper($arg) -> int(): {
+	switch (typeof (arg)):{
+		case "integer" then do: { break }
+		case "float" then do: { break }
+		case "boolean" do : {
+			arg = int(arg)
+			break
+		}
+		default do: {
+			return -1
+			break
+		}
+   }
 	let a = Abs(float(arg)) + 1.0
-	print(a)
 	let b = Log(a)
-	print(b)
 	let c = Sin(a * PI) + Cos(b * E)
-	print(c)
 	let d = c * Sqrt(2) * PHI
-	print(d)
 	let h = Abs(d) * (10**18)
-	print(h)
 	return int(h*(h+3)+17)
+}
+define function hash($arg)-> int():{
+	let res = hash_helper(arg)
+	if (res !== -1): return res
+	let i,H = 1, $PHI
+	for item in arg do: {
+		let h = hash(item)
+		H = H*Sin(h + i) + Cos(h / i)
+		H -= Floor(H)
+		i++
+	}
+	return int(Abs(H) * (10**18))
 }

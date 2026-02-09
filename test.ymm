@@ -1,4 +1,6 @@
-import "Module.ymm"
+~import "Module.ymm"
+print(11)
 define function main(): {
-	print(hash_helper(13))
+	
+	
 }
