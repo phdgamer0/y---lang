@@ -8617,7 +8617,7 @@ struct VM {
 						else res.push_back(Value::Float(elem.asFloat() * scalar.asFloat()));
 					}
 					stack.push_back(Value::Vector(res));
-				}
+				}//implementing later
 				else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
 					Value demotedA = tryDemote(a);
 					Value demotedB = tryDemote(b);
