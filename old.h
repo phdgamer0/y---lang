@@ -53,10 +53,10 @@ enum class TokenType {
 	LET, DEFINE, FUNCTION, RETURN, IF, ELSE_IF, ELSE, FOR, WHILE, DO, THEN, BREAK, CONTINUE, SKIP,
 	TRUE, FALSE, AT, DOLLAR, DOT_DOT, DOT_DOT_DOT, CONST, ASSERT, FSTRING, SWITCH, CASE, DEFAULT,
 	IDENTIFIER, NUMBER, STRING, INCREMENT, DECREMENT, TRY, THROW, CATCH, FINALLY, IMPORT, FROM,
-	ASSIGN, ARROW, LPAREN, RPAREN, COLON, COMMA, LBRACE, RBRACE, LBRACKET, RBRACKET, COLON_EQ,
+	ASSIGN, ARROW, LPAREN, RPAREN, COLON, COMMA, LBRACE, RBRACE, LBRACKET, RBRACKET, COLON_EQ, HASHTAG,
 	PLUS, MINUS, STAR, SLASH, DOT, PLUS_EQ, MINUS_EQ, STAR_EQ, DIV_EQ, FLOOR_DIV, FLOOR_DIV_EQ, MOD, MOD_EQ,
-	GT, LT, EQ, STRICT_EQ, STRICT_NEQ, GTE, LTE, NEQ, POW, POW_EQ, IS, IN, IS_IN, IS_NOT, IS_NOT_IN,
-	AND, OR, NOT, XOR, NAND, NOR, NXOR, AND_EQ, OR_EQ, XOR_EQ, CACHED, LAMBDA, OMIT,
+	GT, LT, EQ, STRICT_EQ, STRICT_NEQ, GTE, LTE, NEQ, POW, POW_EQ, IS, IN, IS_IN, IS_NOT, IS_NOT_IN, PROTECTED,
+	AND, OR, NOT, XOR, NAND, NOR, NXOR, AND_EQ, OR_EQ, XOR_EQ, CACHED, LAMBDA, OMIT, CLASS, INHERITS, PUBLIC, PRIVATE,
 	END
 };
 struct Token {
@@ -105,6 +105,11 @@ inline TokenType keywordType(const string& w) {
 	if (w == "default") return TokenType::DEFAULT;
 	if (w == "import") return TokenType::IMPORT;
 	if (w == "from") return TokenType::FROM;
+	if (w == "class") return TokenType::CLASS;
+	if (w == "inherits") return TokenType::INHERITS;
+	if (w == "public") return TokenType::PUBLIC;
+	if (w == "private") return TokenType::PRIVATE;
+	if (w == "protected") return TokenType::PROTECTED;
 	return TokenType::IDENTIFIER;
 }
 inline vector<Token> tokenize(const string& code) {
@@ -280,6 +285,7 @@ inline vector<Token> tokenize(const string& code) {
 		case '/': pushToken(TokenType::SLASH, "/"); break;
 		case '.': pushToken(TokenType::DOT, "."); break;
 		case '%': pushToken(TokenType::MOD, "%"); break;
+		case '#': pushToken(TokenType::HASHTAG, "#"); break;
 		case ':':
 			if (i + 1 < code.size() && code[i + 1] == '=') {
 				pushToken(TokenType::COLON_EQ, ":=");
@@ -378,19 +384,19 @@ struct RuntimeWarning : Warning { RuntimeWarning(string m, int l, int c) :Warnin
 struct ImportWarning : Warning { ImportWarning(string m, int l, int c) :Warning(m, l, c) { type = "ImportWarning"; code = -7030000; } };
 enum class ValueType { 
 	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE, BIGINT, REFERENCE, PAIRED,
-	RANGE, TUPLE, SET, FUNCTION, NATIVE_FUNCTION, FILE, OVERLOAD, OMIT_MARKER, ERROR
+	RANGE, TUPLE, SET, FUNCTION, NATIVE_FUNCTION, FILE, OVERLOAD, OMIT_MARKER, ERROR, CLASS, INSTANCE
 };
 enum class CopyMode { SHALLOW, DEEP, REF };
 // -------------------- AST --------------------
 enum class ExprType {
 	FSTRING, OWNERSHIP, BOOL, NUMBER, STRING, VAR, LIST, BINARY,
 	CALL, INDEX, METHOD_CALL, LAMBDA, RANGE, SET, DICT, TUPLE,
-	TERNARY, COMPREHENSION, SLICE, VECTOR, OMIT_MARKER_EXPR
+	TERNARY, COMPREHENSION, SLICE, VECTOR, OMIT_MARKER_EXPR, GET
 };
 enum class StmtType {
 	ASSIGN, LET, RETURN, FUNC, IF, EXPR, BREAK, CONTINUE, SKIP,
 	WHILE, DO_WHILE, FOR, FOR_EACH, TRY, THROW, ASSERT, SWITCH,
-	IMPORT, MULTI_LET, MULTI_ASSIGN
+	IMPORT, MULTI_LET, MULTI_ASSIGN, CLASS
 };
 struct Value;
 struct Stmt;
@@ -526,6 +532,11 @@ struct SliceExpr : Expr {
 };
 struct OmitExpr : Expr {
 	OmitExpr(int l, int c) : Expr(ExprType::OMIT_MARKER_EXPR) {}
+};
+struct GetExpr : Expr {
+	Expr* object;
+	string name;
+	GetExpr(Expr* object, string name) : Expr(ExprType::GET), object(object), name(name) {}
 };
 struct Stmt {
 	StmtType type;
@@ -668,9 +679,18 @@ struct MultiAssignStmt : Stmt {
 	MultiAssignStmt(const vector<Expr*>& t, const vector<Expr*>& v)
 		: Stmt(StmtType::MULTI_ASSIGN), targets(t), values(v) {}
 };
+struct ClassStmt : Stmt {
+	string name;
+	vector<string> parents;
+	vector<Stmt*> publicBody;
+	vector<Stmt*> privateBody;
+	vector<Stmt*> protectedBody;
+	ClassStmt(string n, const vector<string>& p, const vector<Stmt*>& pub, const vector<Stmt*>& priv, const vector<Stmt*>& prot)
+		: Stmt(StmtType::CLASS), name(n), parents(p), publicBody(pub), privateBody(priv), protectedBody(prot) {}
+};
 // -------------------- PARSER --------------------
 class Parser {
-	vector<Token>& tokens; size_t pos = 0; bool allowGT = true;
+	vector<Token>& tokens; size_t pos = 0; bool allowGT = true; int classDepth = 0;
 private:
 	[[noreturn]] void error(const string& message) {
 		Token t = peek();
@@ -973,6 +993,7 @@ public:
 						else if (t == "vector") ptype = ValueType::VECTOR;
 						else if (t == "function") ptype = ValueType::FUNCTION;
 						else if (t == "lambda") ptype = ValueType::FUNCTION;
+						else if (t == "object") ptype = ValueType::INSTANCE;
 						else if (t == "None") ptype = ValueType::NONE;
 						else throw SyntaxError("Unknown type '" + t + "'", tokens[pos - 1].line, tokens[pos - 1].col);
 						consume(TokenType::LPAREN, "Expected '(' after type definition");
@@ -1015,6 +1036,7 @@ public:
 				else if (t == "vector") retType = ValueType::VECTOR;
 				else if (t == "function") retType = ValueType::FUNCTION;
 				else if (t == "lambda") retType = ValueType::FUNCTION;
+				else if (t == "object") retType = ValueType::INSTANCE;
 				else if (t == "None") retType = ValueType::NONE;
 				else throw SyntaxError("Unknown return type '" + t + "'", tokens[pos - 1].line, tokens[pos - 1].col);
 				if (match(TokenType::LPAREN)) {
@@ -1260,11 +1282,14 @@ public:
 				consume(TokenType::IDENTIFIER, "Expected method name after '.'");
 				string method = tokens[pos - 1].value;
 				consume(TokenType::LPAREN, "Expected '(' after method name");
-				vector<Expr*> args;
-				if (peek().type != TokenType::RPAREN)
-					do { args.push_back(parseExpr()); } while (match(TokenType::COMMA));
-				match(TokenType::RPAREN);
-				expr = setPos(new MethodCallExpr(expr, method, args), dot);
+				if (match(TokenType::LPAREN)) {
+					vector<Expr*> args;
+					if (peek().type != TokenType::RPAREN)
+						do { args.push_back(parseExpr()); } while (match(TokenType::COMMA));
+					match(TokenType::RPAREN);
+					expr = setPos(new MethodCallExpr(expr, method, args), dot);
+				}
+				else expr = setPos(new GetExpr(expr, method), dot);
 			}
 			else break;
 		}
@@ -1368,7 +1393,21 @@ public:
 			do {
 				bool isConst = match(TokenType::CONST);
 				consume(TokenType::IDENTIFIER, "Expected variable name");
-				names.push_back(tokens[pos - 1].value);
+				std::string name = tokens[pos - 1].value;
+				if (match(TokenType::DOT)) {
+					consume(TokenType::IDENTIFIER, "Expected property name after '.'");
+					string prop = tokens[pos - 1].value;
+					if (classDepth == 0) {
+						if (name == "self" || name == "obj") {
+							throw SyntaxError("Cannot use '" + name + "' outside of a class definition.", t.line, t.col);
+						}
+					}
+					name += "." + prop;
+				}
+				else if (classDepth == 0 && (name == "self" || name == "obj")) {
+					throw SyntaxError("'" + name + "' is a reserved keyword inside classes.", t.line, t.col);
+				}
+				names.push_back(name);
 				consts.push_back(isConst);
 			} while (match(TokenType::COMMA));
 			bool isLocked = false;
@@ -1415,10 +1454,72 @@ public:
 			return setPos(new SkipStmt(count), t);
 		}
 		bool isNamedFunction = false;
+		bool isClass = false;
 		if (peek().type == TokenType::DEFINE) {
 			int offset = 1;
+			if (tokens[pos + offset].type == TokenType::CLASS) isClass = true;
+			else {
 			if (tokens[pos + offset].type == TokenType::CACHED) offset++;
 			if (tokens[pos + offset].type == TokenType::FUNCTION) isNamedFunction = true;
+			}
+		}
+		if (isClass) {
+			Token startTok = advance();
+			consume(TokenType::CLASS, "Expected 'class' keyword");
+			consume(TokenType::IDENTIFIER, "Expected class name");
+			string className = tokens[pos - 1].value;
+			consume(TokenType::COLON, "Expected ':' after class name");
+			vector<string> parents;
+			if (match(TokenType::INHERITS)) {
+				consume(TokenType::LPAREN, "Expected '(' after inherits");
+				do {
+					consume(TokenType::IDENTIFIER, "Expected parent class name");
+					parents.push_back(tokens[pos - 1].value);
+				} while (match(TokenType::COMMA));
+				consume(TokenType::RPAREN, "Expected ')' after parents");
+				consume(TokenType::COLON, "Expected ':' after inheritance declaration");
+			}
+			consume(TokenType::LBRACE, "Expected '{' to open class body");
+			classDepth++;
+			vector<Stmt*> publicBody;
+			vector<Stmt*> privateBody;
+			vector<Stmt*> protectedBody;
+			bool seenPublic = false;
+			bool seenPrivate = false;
+			bool seenProtected = false;
+			TokenType currentMode = TokenType::END;
+			while (!isAtEnd() && peek().type != TokenType::RBRACE) {
+				if (match(TokenType::HASHTAG)) {
+					if (match(TokenType::PUBLIC)) {
+						currentMode = TokenType::PUBLIC;
+						seenPublic = true;
+					}
+					else if (match(TokenType::PRIVATE)) {
+						currentMode = TokenType::PRIVATE;
+						seenPrivate = true;
+					}
+					else if (match(TokenType::PROTECTED)) {
+						currentMode = TokenType::PROTECTED;
+						seenProtected = true;
+					}
+					else error("Expected 'public', 'private', or 'protected' after '#'");
+					consume(TokenType::COLON, "Expected ':' after access modifier tag");
+					continue;
+				}
+				if (currentMode == TokenType::END) {
+					error("All class statements must be inside a #public, #private, or #protected block.");
+				}
+				Stmt* stmt = parseStmt();
+				if (currentMode == TokenType::PUBLIC) publicBody.push_back(stmt);
+				else if (currentMode == TokenType::PRIVATE) privateBody.push_back(stmt);
+				else if (currentMode == TokenType::PROTECTED) protectedBody.push_back(stmt);
+			}
+			consume(TokenType::RBRACE, "Expected '}' to close class body");
+			classDepth--;
+			if (!seenPublic || !seenPrivate || !seenProtected) {
+				throw SyntaxError("Class definition must contain #public, #private, and #protected blocks.", startTok.line, startTok.col);
+			}
+			return setPos(new ClassStmt(className, parents, publicBody, privateBody, protectedBody), startTok);
 		}
 		if (isNamedFunction) {
 			Token defTok = advance();
@@ -1481,6 +1582,7 @@ public:
 						else if (t == "dictionary" || t == "dict") ptype = ValueType::DICT;
 						else if (t == "vector") ptype = ValueType::VECTOR;
 						else if (t == "function" || t == "lambda" ) ptype = ValueType::FUNCTION;
+						else if (t == "object") ptype = ValueType::INSTANCE;
 						else throw SyntaxError("Unknown type '" + t + "'", tokens[pos - 1].line, tokens[pos - 1].col);
 						consume(TokenType::LPAREN, "Expected '(' after type definition");
 						if (peek().type != TokenType::RPAREN) defaultExpr = parseExpr();
@@ -1522,6 +1624,7 @@ public:
 				else if (t == "dictionary" || t == "dict") retType = ValueType::DICT;
 				else if (t == "function" || t == "lambda") retType = ValueType::FUNCTION;
 				else if (t == "vector") retType = ValueType::VECTOR;
+				else if (t == "object") retType = ValueType::INSTANCE;
 				else throw SyntaxError("Unknown return type '" + t + "'", tokens[pos - 1].line, tokens[pos - 1].col);
 				consume(TokenType::LPAREN, "Expected '(' after return type");
 				if (peek().type != TokenType::RPAREN) {
@@ -1781,10 +1884,13 @@ public:
 	}
 };
 // -------------------- RUNTIME -------------------
+enum class AccessLevel { PUBLIC, PRIVATE, PROTECTED };
 struct Env;
 struct HeapObject;
 struct BigIntObject;
 struct ErrorObject;
+struct ClassObject;
+struct InstanceObject;
 using NativeFunc = std::function<Value(const std::vector<Value>&, int, int)>;
 struct ValueHash {
 	std::size_t operator()(const Value& v) const;
@@ -1829,6 +1935,8 @@ struct Value {
 	static Value Slice(Value s, Value e, Value p);
 	static Value Vector(const std::vector<Value>& elems);
 	static Value Error(std::shared_ptr<ErrorObject> e);
+	static Value Class(const string& name, const vector<string>& parents);
+	static Value Instance(Value classObj);
 	bool isTruthy() const;
 	bool strictEquals(const Value& other) const;
 	bool looseEquals(const Value& other) const;
@@ -2121,6 +2229,32 @@ struct ErrorObject : HeapObject {
 		return errType + ": " + message;
 	}
 };
+struct ClassObject : HeapObject {
+	string name;
+	vector<string> parentNames;
+	unordered_map<string, Value> staticFields;
+	struct MethodInfo {
+		Value func;
+		AccessLevel access;
+	};
+	unordered_map<string, MethodInfo> methods;
+	ClassObject(const string& n, const vector<string>& p)
+		: HeapObject(ValueType::CLASS), name(n), parentNames(p) {
+	}
+	string toString() const {
+		return "<class '" + name + "'>";
+	}
+};
+struct InstanceObject : HeapObject {
+	ClassObject* klass;
+	unordered_map<string, Value> fields;
+	InstanceObject(ClassObject* k)
+		: HeapObject(ValueType::INSTANCE), klass(k) {
+	}
+	string toString() const {
+		return "<instance of '" + klass->name + "'>";
+	}
+};
 inline Value Value::Reference(Value* p) {
 	Value v;
 	v.type = ValueType::REFERENCE;
@@ -2248,6 +2382,21 @@ inline Value Value::Vector(const std::vector<Value>& elems) {
 inline Value Value::Error(std::shared_ptr<ErrorObject> e) {
 	Value v; v.type = ValueType::ERROR;
 	v.ref = e; v.__DEBUGGING__NAME__=e->errType;
+	return v;
+}
+inline Value Value::Class(const string& name, const vector<string>& parents) {
+	Value v; v.__DEBUGGING__NAME__= name;
+	v.type = ValueType::CLASS;
+	v.ref = make_shared<ClassObject>(name, parents);
+	return v;
+}
+inline Value Value::Instance(Value classDef) {
+	if (classDef.type != ValueType::CLASS) throw RuntimeError("Cannot create instance from non-class type", 0, 0);
+	Value v;
+	v.type = ValueType::INSTANCE;
+	auto* clsPtr = static_cast<ClassObject*>(classDef.ref.get());
+	v.__DEBUGGING__NAME__=clsPtr->name;
+	v.ref = make_shared<InstanceObject>(clsPtr);
 	return v;
 }
 inline bool Value::isTruthy() const {
@@ -2635,6 +2784,8 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 	case ValueType::STRING: return v.asString();
 	case ValueType::FUNCTION: return "<function>";
 	case ValueType::NATIVE_FUNCTION: return "<native_function>";
+	case ValueType::CLASS: return "<class>";
+	case ValueType::INSTANCE: return "<class-instance>";
 	case ValueType::ERROR: {
 		auto* err = static_cast<ErrorObject*>(v.ref.get());
 		return "<Error: " + err->errType + ": " + err->message + ">";
@@ -2752,6 +2903,8 @@ static inline std::string PrintStackForDebug(const std::deque<Value>& stack) {
 		case ValueType::OMIT_MARKER:      result += "OmitMarker"; break;
 		case ValueType::REFERENCE:        result += "Refrance"; break;
 		case ValueType::ERROR:            result += "Error"; break;
+		case ValueType::CLASS:            result += "Class"; break;
+		case ValueType::INSTANCE:            result += "Instance"; break;
 		default:                          result += "Unknown"; break;
 		}
 		if (DEBUGGER_MODE_IS_ENABLED) result+=" "+val->__DEBUGGING__NAME__+ (" " + valueToString(*val));
@@ -2836,6 +2989,7 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 	case ValueType::BOOL: std::cout << (v.asBool() ? "true" : "false"); break;
 	case ValueType::NONE: std::cout << "None"; break;
 	case ValueType::NOTYPE: std::cout << "NoType"; break;
+	case ValueType::CLASS: std::cout << "class: "+ v.__DEBUGGING__NAME__ ; break;
 	case ValueType::STRING:
 		if (quoteStrings) std::cout << "\"" << v.asString() << "\"";
 		else std::cout << v.asString();
@@ -2925,7 +3079,8 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 		std::cout<<valueToString(*v.ptr);
 		break;
 	}
-	default: std::cout<<"<Object at "<<v.ref<<">"; break;
+
+	default: std::cout<<"<"<<(v.type==ValueType::INSTANCE? static_cast<InstanceObject*>(v.ref.get())->name : "") << "Object at " << v.ref << ">"; break;
 	}
 }
 void printValue(const Value& v) {
@@ -7093,6 +7248,8 @@ enum class OpCode : uint8_t {
 	// Containers
 	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT, OP_UNPACK_DICT,
 	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE, OP_BUILD_SLICE,
+	// OOP
+	OP_CLASS, OP_METHOD, OP_GET_PROPERTY, OP_SET_PROPERTY,
 	// Comprehension
 	OP_LIST_APPEND, OP_SET_ADD, OP_DICT_SET, OP_LIST_TO_TUPLE, OP_LIST_TO_VECTOR,
 	// Access & Calls
@@ -7167,6 +7324,10 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_BUILD_FSTRING: return "OP_BUILD_FSTRING";
 		case OpCode::OP_BUILD_FILE: return "OP_BUILD_FILE";
 		case OpCode::OP_BUILD_SLICE: return "OP_BUILD_SLICE";
+		case OpCode::OP_CLASS: return "OP_CLASS";
+		case OpCode::OP_METHOD: return "OP_METHOD";
+		case OpCode::OP_GET_PROPERTY: return "OP_GET_PROPERTY";
+		case OpCode::OP_SET_PROPERTY: return "OP_SET_PROPERTY";
 		case OpCode::OP_LIST_APPEND: return "OP_LIST_APPEND";
 		case OpCode::OP_SET_ADD: return "OP_SET_ADD";
 		case OpCode::OP_DICT_SET: return "OP_DICT_SET";
@@ -7268,6 +7429,12 @@ struct ByteCodeCompiler {
 	void compile(Expr* e) {
 		if (!e) return;
 		switch (e->type) {
+		case ExprType::GET: {
+			auto g = static_cast<GetExpr*>(e);
+			compile(g->object);
+			emitIdentifier(OpCode::OP_GET_PROPERTY, g->name, g->line, g->col);
+			break;
+		}
 		case ExprType::COMPREHENSION: {
 			auto comp = static_cast<CompExpr*>(e);
 			beginScope();
@@ -7645,6 +7812,40 @@ struct ByteCodeCompiler {
 	void compileStmt(Stmt* s) {
 		if (!s) return;
 		switch (s->type) {
+		case StmtType::CLASS: {
+			auto c = static_cast<ClassStmt*>(s);
+			for (const auto& p : c->parents) emitConstant(Value::String(p), c->line, 0);
+			emitConstant(Value::String(c->name), c->line, 0);
+			emitByte(OpCode::OP_CLASS, c->line, 0);
+			chunk->write((uint8_t)c->parents.size(), c->line, 0);
+			auto compileClassBody = [&](const vector<Stmt*>& body, AccessLevel access) {
+				for (auto* stmt : body) {
+					if (stmt->type == StmtType::FUNC) {
+						//compileStmt(stmt);
+						emitFunction(static_cast<FuncStmt*>(stmt));
+						emitByte(OpCode::OP_METHOD, c->line, 0);
+						chunk->write((uint8_t)access, c->line, 0);
+					}
+					else if (stmt->type == StmtType::LET) {
+						auto let = static_cast<LetStmt*>(stmt);
+						if (let->name.rfind("self.", 0) == 0) continue;
+						compileStmt(stmt);
+					}
+				}
+			};
+			compileClassBody(c->publicBody, AccessLevel::PUBLIC);
+			compileClassBody(c->privateBody, AccessLevel::PRIVATE);
+			compileClassBody(c->protectedBody, AccessLevel::PROTECTED);
+			if (scopeDepth > 0) {
+				addLocal(c->name);
+				emitByte(OpCode::OP_SET_LOCAL, c->line, 0);
+				chunk->write((uint8_t)(locals.size() - 1), c->line, 0);
+			}
+			else {
+				emitIdentifier(OpCode::OP_DEFINE_VAR, c->name, c->line, 0);
+			}
+			break;
+		}
 			case StmtType::EXPR: {
 				auto es = static_cast<ExprStmt*>(s);
 				compile(es->expr);
@@ -7794,6 +7995,16 @@ struct ByteCodeCompiler {
 			}
 			case StmtType::ASSIGN: {
 				auto as = static_cast<AssignStmt*>(s);
+				if (auto get = dynamic_cast<GetExpr*>(as->target)) {
+					if (as->op != TokenType::ASSIGN) {
+						throw RuntimeError("Augmented assignment on properties not supported yet", as->line, as->col);
+					}
+					compile(get->object);
+					compile(as->value);
+					emitIdentifier(OpCode::OP_SET_PROPERTY, get->name, as->line, as->col);
+					emitByte(OpCode::OP_POP, as->line, as->col);
+					break;
+				}
 				if (auto idx = dynamic_cast<IndexExpr*>(as->target)) {
 					if (as->op != TokenType::ASSIGN) {
 						// Support for a[0] += 1 is skipped for now
@@ -7978,6 +8189,7 @@ struct ByteCodeCompiler {
 				endScope(sw->line, sw->col);
 				break;
 			}
+			/*
 			case StmtType::FUNC: {
 				auto f = static_cast<FuncStmt*>(s);
 				Chunk* funcChunk = new Chunk();
@@ -7994,6 +8206,14 @@ struct ByteCodeCompiler {
 				if (DEBUGGER_MODE_IS_ENABLED) funcVal.__DEBUGGING__NAME__=funcObj->name;
 				funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
 				emitConstant(funcVal, f->line, f->col);
+				emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line, f->col);
+				chunk->write((uint8_t)0, f->line, f->col);
+				break;
+			}
+			*/
+			case StmtType::FUNC: {
+				auto f = static_cast<FuncStmt*>(s);
+				emitFunction(f);
 				emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line, f->col);
 				chunk->write((uint8_t)0, f->line, f->col);
 				break;
@@ -8262,6 +8482,22 @@ struct ByteCodeCompiler {
 		chunk->write((offset >> 8) & 0xff, line, col);
 		chunk->write(offset & 0xff, line, col);
 	}
+	void emitFunction(FuncStmt* f) {
+		Chunk* funcChunk = new Chunk();
+		ByteCodeCompiler subCompiler(funcChunk);
+		subCompiler.beginScope();
+		for (const auto& param : f->params) subCompiler.addLocal(param.name);
+		for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
+		subCompiler.emitByte(OpCode::OP_NOTYPE, f->line, f->col);
+		subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
+		auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs, f->returnsConst, f->body, nullptr, f->isCached, funcChunk);
+		funcObj->name = f->name;
+		Value funcVal;
+		funcVal.type = ValueType::FUNCTION;
+		if (DEBUGGER_MODE_IS_ENABLED) funcVal.__DEBUGGING__NAME__ = funcObj->name;
+		funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
+		emitConstant(funcVal, f->line, f->col);
+	}
 };
 struct VM {
 	std::deque<Value> stack;
@@ -8306,6 +8542,110 @@ struct VM {
 				line = currentChunk->lines[offset - 1];
 				col = currentChunk->columns[offset - 1];
 				switch (instruction) {
+				case OpCode::OP_CLASS: {
+					uint8_t parentCount = *ip++;
+					string name = pop().asString();
+					vector<string> parents;
+					for (int i = 0; i < parentCount; i++) parents.push_back(pop().asString());
+					std::reverse(parents.begin(), parents.end());
+					Value classVal = Value::Class(name, parents);
+					stack.push_back(classVal);
+					break;
+				}
+				case OpCode::OP_METHOD: {
+					uint8_t accessByte = *ip++;
+					AccessLevel access = (AccessLevel)accessByte;
+					Value funcVal = pop();
+					Value classVal = stack.back();
+					if (classVal.type != ValueType::CLASS) throw RuntimeError("Cannot define method on non-class", line, col);
+					auto* cls = static_cast<ClassObject*>(classVal.ref.get());
+					auto* func = static_cast<FunctionObject*>(funcVal.ref.get());
+					cls->methods[func->name] = { funcVal, access };
+					// Don't pop the class! We might add more methods.
+					break;
+				}
+				case OpCode::OP_GET_PROPERTY: {
+					uint8_t nameIdx = *ip++;
+					string name = currentChunk->constants[nameIdx].asString();
+					Value obj = pop();
+					if (obj.type == ValueType::INSTANCE) {
+						auto* instance = static_cast<InstanceObject*>(obj.ref.get());
+						if (instance->fields.count(name)) stack.push_back(instance->fields[name]);
+						else {
+							// TODO: Add Inheritance (MRO) lookup here later
+							ClassObject* cls = instance->klass;
+							if (cls->methods.count(name)) {
+								// Note: We are returning the raw Function object.
+								// If you do 'f = obj.method', 'f()' will fail because 'self' isn't bound.
+								// For now, this is enough for direct calls.
+								stack.push_back(cls->methods[name].func);
+							}
+							else if (cls->staticFields.count(name)) {
+								// Optional: Allow accessing static fields via instance? (Java style)
+								stack.push_back(cls->staticFields[name]);
+							}
+							else throw AttributeError("Instance of '" + cls->name + "' has no attribute '" + name + "'", line, col);
+						}
+					}
+					else if (obj.type == ValueType::CLASS) {
+						auto* cls = static_cast<ClassObject*>(obj.ref.get());
+						if (cls->staticFields.count(name)) stack.push_back(cls->staticFields[name]);
+						else if (cls->methods.count(name)) stack.push_back(cls->methods[name].func);
+						else throw AttributeError("Class '" + cls->name + "' has no attribute '" + name + "'", line, col);
+					}
+					else throw AttributeError("Only instances and classes have properties", line, col);
+					break;
+				}
+				case OpCode::OP_SET_PROPERTY: {
+					uint8_t nameIdx = *ip++;
+					string name = currentChunk->constants[nameIdx].asString();
+					Value val = pop();
+					Value obj = pop();
+					if (obj.type == ValueType::INSTANCE) {
+						auto* instance = static_cast<InstanceObject*>(obj.ref.get());
+						instance->fields[name] = val;
+					}
+					else if (obj.type == ValueType::CLASS) {
+						auto* cls = static_cast<ClassObject*>(obj.ref.get());
+						cls->staticFields[name] = val;
+					}
+					else throw AttributeError("Cannot set property on non-object", line, col);
+					stack.push_back(val);
+					break;
+				}
+				case OpCode::OP_CALL: {
+					uint8_t argCount = *ip++;
+					Value callee = pop();
+					if (callee.type == ValueType::NATIVE_FUNCTION) {
+						vector<Value> args;
+						for (int i = 0; i < argCount; i++) args.insert(args.begin(), pop());
+						auto native = static_cast<NativeFunctionObject*>(callee.ref.get());
+						Value result = native->func(args, line, 0);
+						stack.push_back(result);
+					}
+					else if (callee.type == ValueType::CLASS) {
+						Value instance = Value::Instance(callee);
+						auto* cls = static_cast<ClassObject*>(callee.ref.get());
+						if (cls->methods.count("__init__")) {
+							Value initMethod = cls->methods["__init__"].func;
+							vector<Value> args;
+							for (int i = 0; i < argCount; i++) args.push_back(pop());
+							std::reverse(args.begin(), args.end());
+							stack.push_back(instance); // 'self'
+							stack.push_back(callee);
+							// Each function of class has access to both self and obj by default
+							// so we need to somehow add the obj as an arg as well...
+							for (auto& a : args) stack.push_back(a);
+							callValue(initMethod, argCount + 1, line, col);
+						}
+						else {
+							for (int i = 0; i < argCount; i++) pop();
+							stack.push_back(instance);
+						}
+					}
+					else callValue(callee, argCount, line, col);
+					break;
+				}
 				case OpCode::OP_IMPORT: {
 					uint8_t count = *ip++;
 					std::vector<std::string> symbols;
@@ -9023,21 +9363,6 @@ struct VM {
 					uint8_t lo = *ip++;
 					uint16_t offset = (hi << 8) | lo;
 					ip += offset;
-					break;
-				}
-				case OpCode::OP_CALL: {
-					uint8_t argCount = *ip++;
-					Value callee = pop();
-					if (callee.type == ValueType::NATIVE_FUNCTION) {
-						vector<Value> args;
-						for (int i = 0; i < argCount; i++) {
-							args.insert(args.begin(), pop());
-						}
-						auto native = static_cast<NativeFunctionObject*>(callee.ref.get());
-						Value result = native->func(args, line, 0);
-							stack.push_back(result);
-					}
-					else callValue(callee, argCount, line, col);
 					break;
 				}
 				case OpCode::OP_UNPACK_DICT: {
