@@ -1,5 +1,4 @@
 ~import "Module.ymm"
-print(11)
 define function main(): {
 	
 	
