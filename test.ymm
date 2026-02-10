@@ -1,5 +1,14 @@
-~import "Module.ymm"
+import "Module.ymm"
 define function main(): {
-	
-	
+	define class Human : {
+	#public:
+	define function __init__(names): {
+		let self.name = names
+   }
+	#private:
+		
+	#protected:
+		
+	}
+	print(fib(11))
 }
