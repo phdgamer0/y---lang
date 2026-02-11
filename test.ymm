@@ -1,14 +1,24 @@
-import "Module.ymm"
+~import "Module.ymm"
 define function main(): {
 	define class Human : {
 	#public:
-	define function __init__(names): {
+	let obj.population = 0
+	define function AddToHumans(): {obj.population = obj.population + 1
+	}
+	define function __init__(names, ages): {
 		let self.name = names
-   }
+		let self.age = ages
+		obj.AddToHumans()
+	}
+	define function print_human()-> string(): {
+		return f"{self.name.capitalize()} age: {self.age}"
+	}
 	#private:
-		
+	
 	#protected:
 		
 	}
-	print(fib(11))
+	let human1 = Human("Jack",21)
+	let human2 = Human("anna",34)
+	print(human1.population)
 }
