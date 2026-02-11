@@ -1281,7 +1281,6 @@ public:
 				Token dot = tokens[pos - 1];
 				consume(TokenType::IDENTIFIER, "Expected method name after '.'");
 				string method = tokens[pos - 1].value;
-				consume(TokenType::LPAREN, "Expected '(' after method name");
 				if (match(TokenType::LPAREN)) {
 					vector<Expr*> args;
 					if (peek().type != TokenType::RPAREN)
@@ -7249,7 +7248,7 @@ enum class OpCode : uint8_t {
 	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT, OP_UNPACK_DICT,
 	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE, OP_BUILD_SLICE,
 	// OOP
-	OP_CLASS, OP_METHOD, OP_GET_PROPERTY, OP_SET_PROPERTY,
+	OP_CLASS, OP_METHOD, OP_GET_PROPERTY, OP_SET_PROPERTY, OP_CLASS_FIELD,
 	// Comprehension
 	OP_LIST_APPEND, OP_SET_ADD, OP_DICT_SET, OP_LIST_TO_TUPLE, OP_LIST_TO_VECTOR,
 	// Access & Calls
@@ -7328,6 +7327,7 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_METHOD: return "OP_METHOD";
 		case OpCode::OP_GET_PROPERTY: return "OP_GET_PROPERTY";
 		case OpCode::OP_SET_PROPERTY: return "OP_SET_PROPERTY";
+		case OpCode::OP_CLASS_FIELD: return "OP_CLASS_FIELD";
 		case OpCode::OP_LIST_APPEND: return "OP_LIST_APPEND";
 		case OpCode::OP_SET_ADD: return "OP_SET_ADD";
 		case OpCode::OP_DICT_SET: return "OP_DICT_SET";
@@ -7809,43 +7809,57 @@ struct ByteCodeCompiler {
 				emitByte(OpCode::OP_SHALLOW_COPY, line, col);
 		}
 	}
-	void compileStmt(Stmt* s) {
+	void compileStmt(Stmt* s)	 {
 		if (!s) return;
 		switch (s->type) {
-		case StmtType::CLASS: {
-			auto c = static_cast<ClassStmt*>(s);
-			for (const auto& p : c->parents) emitConstant(Value::String(p), c->line, 0);
-			emitConstant(Value::String(c->name), c->line, 0);
-			emitByte(OpCode::OP_CLASS, c->line, 0);
-			chunk->write((uint8_t)c->parents.size(), c->line, 0);
-			auto compileClassBody = [&](const vector<Stmt*>& body, AccessLevel access) {
-				for (auto* stmt : body) {
-					if (stmt->type == StmtType::FUNC) {
-						//compileStmt(stmt);
-						emitFunction(static_cast<FuncStmt*>(stmt));
-						emitByte(OpCode::OP_METHOD, c->line, 0);
-						chunk->write((uint8_t)access, c->line, 0);
+			case StmtType::CLASS: {
+				auto c = static_cast<ClassStmt*>(s);
+				for (const auto& p : c->parents) emitConstant(Value::String(p), c->line, 0);
+				emitConstant(Value::String(c->name), c->line, 0);
+				emitByte(OpCode::OP_CLASS, c->line, 0);
+				chunk->write((uint8_t)c->parents.size(), c->line, 0);
+				auto compileClassBody = [&](const vector<Stmt*>& body, AccessLevel access) {
+					for (auto* stmt : body) {
+						if (stmt->type == StmtType::FUNC) {
+							emitFunction(static_cast<FuncStmt*>(stmt),true);
+							emitByte(OpCode::OP_METHOD, c->line, 0);
+							chunk->write((uint8_t)access, c->line, 0);
+						}
+						else if (stmt->type == StmtType::LET) {
+							auto let = static_cast<LetStmt*>(stmt);
+							if (let->name.rfind("self.", 0) == 0) continue;
+							string propName = let->name;
+							if (propName.rfind("obj.", 0) == 0) propName = propName.substr(4);
+							if (let->value) compile(let->value);
+							else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
+							emitIdentifier(OpCode::OP_CLASS_FIELD, propName, let->line, let->col);
+						}
+						else if (stmt->type == StmtType::MULTI_LET) {
+							auto mlet = static_cast<MultiLetStmt*>(stmt);
+							for (size_t i = 0; i < mlet->names.size(); i++) {
+								if (mlet->names[i].rfind("self.", 0) == 0) continue;
+								string propName = mlet->names[i];
+								if (propName.rfind("obj.", 0) == 0) propName = propName.substr(4);
+								if (mlet->values[i]) compile(mlet->values[i]);
+								else emitByte(OpCode::OP_NOTYPE, mlet->line, 0);
+								emitIdentifier(OpCode::OP_CLASS_FIELD, propName, mlet->line, 0);
+							}
+						}
 					}
-					else if (stmt->type == StmtType::LET) {
-						auto let = static_cast<LetStmt*>(stmt);
-						if (let->name.rfind("self.", 0) == 0) continue;
-						compileStmt(stmt);
-					}
+				};
+				compileClassBody(c->publicBody, AccessLevel::PUBLIC);
+				compileClassBody(c->privateBody, AccessLevel::PRIVATE);
+				compileClassBody(c->protectedBody, AccessLevel::PROTECTED);
+				if (scopeDepth > 0) {
+					addLocal(c->name);
+					emitByte(OpCode::OP_SET_LOCAL, c->line, 0);
+					chunk->write((uint8_t)(locals.size() - 1), c->line, 0);
 				}
-			};
-			compileClassBody(c->publicBody, AccessLevel::PUBLIC);
-			compileClassBody(c->privateBody, AccessLevel::PRIVATE);
-			compileClassBody(c->protectedBody, AccessLevel::PROTECTED);
-			if (scopeDepth > 0) {
-				addLocal(c->name);
-				emitByte(OpCode::OP_SET_LOCAL, c->line, 0);
-				chunk->write((uint8_t)(locals.size() - 1), c->line, 0);
+				else {
+					emitIdentifier(OpCode::OP_DEFINE_VAR, c->name, c->line, 0);
+				}
+				break;
 			}
-			else {
-				emitIdentifier(OpCode::OP_DEFINE_VAR, c->name, c->line, 0);
-			}
-			break;
-		}
 			case StmtType::EXPR: {
 				auto es = static_cast<ExprStmt*>(s);
 				compile(es->expr);
@@ -7949,6 +7963,20 @@ struct ByteCodeCompiler {
 			}
 			case StmtType::LET: {
 				auto let = static_cast<LetStmt*>(s);
+				bool isSelf = (let->name.rfind("self.", 0) == 0);
+				bool isObj = (let->name.rfind("obj.", 0) == 0);
+				if (isSelf || isObj) {
+					string propName = let->name.substr(isSelf ? 5 : 4);
+					int objSlot = resolveLocal(isSelf ? "self" : "obj");
+					if (objSlot == -1) throw NameError("Cannot use '" + string(isSelf ? "self" : "obj") + "' outside of a method.", let->line, let->col);
+					emitByte(OpCode::OP_GET_LOCAL, let->line, let->col);
+					chunk->write((uint8_t)objSlot, let->line, let->col);
+					if (let->value) compile(let->value);
+					else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
+					emitIdentifier(OpCode::OP_SET_PROPERTY, propName, let->line, let->col);
+					emitByte(OpCode::OP_POP, let->line, let->col);
+					break;
+				}
 				if (scopeDepth == 0 && let->value && let->value->type == ExprType::OWNERSHIP) {
 					auto o = static_cast<OwnershipExpr*>(let->value);
 					if (o->mode == CopyMode::REF) {
@@ -8482,15 +8510,21 @@ struct ByteCodeCompiler {
 		chunk->write((offset >> 8) & 0xff, line, col);
 		chunk->write(offset & 0xff, line, col);
 	}
-	void emitFunction(FuncStmt* f) {
+	void emitFunction(FuncStmt* f, bool isMethod = false) {
 		Chunk* funcChunk = new Chunk();
 		ByteCodeCompiler subCompiler(funcChunk);
 		subCompiler.beginScope();
-		for (const auto& param : f->params) subCompiler.addLocal(param.name);
+		vector<ParamSpec> actualParams;
+		if (isMethod) {
+			actualParams.push_back({ "self", CopyMode::SHALLOW, ValueType::NOTYPE, nullptr, false, false, false });
+			actualParams.push_back({ "obj", CopyMode::SHALLOW, ValueType::NOTYPE, nullptr, false, false, false });
+		}
+		for (const auto& param : f->params) actualParams.push_back(param);
+		for (const auto& param : actualParams) subCompiler.addLocal(param.name);
 		for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
 		subCompiler.emitByte(OpCode::OP_NOTYPE, f->line, f->col);
 		subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
-		auto* funcObj = new FunctionObject(f->params, f->returnType, f->defaultRetArgs, f->returnsConst, f->body, nullptr, f->isCached, funcChunk);
+		auto* funcObj = new FunctionObject(actualParams, f->returnType, f->defaultRetArgs, f->returnsConst, f->body, nullptr, f->isCached, funcChunk);
 		funcObj->name = f->name;
 		Value funcVal;
 		funcVal.type = ValueType::FUNCTION;
@@ -8613,6 +8647,16 @@ struct VM {
 					stack.push_back(val);
 					break;
 				}
+				case OpCode::OP_CLASS_FIELD: {
+					uint8_t nameIdx = *ip++;
+					string name = currentChunk->constants[nameIdx].asString();
+					Value val = pop();
+					Value classVal = stack.back();
+					if (classVal.type != ValueType::CLASS) throw RuntimeError("Cannot define static field on non-class", line, col);
+					auto* cls = static_cast<ClassObject*>(classVal.ref.get());
+					cls->staticFields[name] = val;
+					break;
+				}
 				case OpCode::OP_CALL: {
 					uint8_t argCount = *ip++;
 					Value callee = pop();
@@ -8636,7 +8680,7 @@ struct VM {
 							// Each function of class has access to both self and obj by default
 							// so we need to somehow add the obj as an arg as well...
 							for (auto& a : args) stack.push_back(a);
-							callValue(initMethod, argCount + 1, line, col);
+							callValue(initMethod, argCount + 2, line, col);
 						}
 						else {
 							for (int i = 0; i < argCount; i++) pop();
@@ -9813,6 +9857,40 @@ struct VM {
 					uint8_t nameIdx = *ip++;
 					uint8_t argCount = *ip++;
 					string methodName = currentChunk->constants[nameIdx].asString();
+					Value receiver = stack[stack.size() - 1 - argCount];
+					if (receiver.type == ValueType::INSTANCE || receiver.type == ValueType::CLASS) {
+						Value methodToCall;
+						Value selfVal = Value::None();
+						Value objVal = Value::None();
+						if (receiver.type == ValueType::INSTANCE) {
+							auto* instance = static_cast<InstanceObject*>(receiver.ref.get());
+							ClassObject* cls = instance->klass;
+							if (cls->methods.count(methodName)) {
+								methodToCall = cls->methods[methodName].func;
+								selfVal = receiver;
+								objVal.type = ValueType::CLASS;
+								objVal.ref = std::shared_ptr<HeapObject>(cls, [](HeapObject*) {});
+							}
+							else throw AttributeError("Instance has no method '" + methodName + "'", line, col);
+						}
+						else {
+							auto* cls = static_cast<ClassObject*>(receiver.ref.get());
+							if (cls->methods.count(methodName)) {
+								methodToCall = cls->methods[methodName].func;
+								selfVal = Value::None();
+								objVal = receiver;
+							}
+							else throw AttributeError("Class has no method '" + methodName + "'", line, col);
+						}
+						vector<Value> args(argCount);
+						for (int i = argCount - 1; i >= 0; i--) args[i] = pop();
+						pop();
+						stack.push_back(selfVal);
+						stack.push_back(objVal);
+						for (const auto& v : args) stack.push_back(v);
+						callValue(methodToCall, argCount + 2, line, col);
+						break;
+					}
 					vector<Expr*> dummyArgs(argCount);
 					for (int i = argCount - 1; i >= 0; i--) dummyArgs[i] = new ValueExpr(pop());
 					Value targetVal = pop();
@@ -9998,7 +10076,7 @@ struct VM {
 					}
 					break;
 				}
-				case OpCode::OP_RETURN: {
+					case OpCode::OP_RETURN: {
 				execute_return:
 					if (!frame->handlerStack.empty()) {
 						ExceptionHandler& h = frame->handlerStack.back();
@@ -10013,15 +10091,20 @@ struct VM {
 					Value result = pop();
 					FunctionObject* func = frame->function;
 					if (func) {
-						if (result.type == ValueType::NOTYPE) {
-							if (!func->defaultRetArgs.empty()) {
-								result = executeDefault(func->defaultRetArgs[0], line);
-							}
-							else if (func->returnType != ValueType::NOTYPE) {
-								result = Value::None();
-							}
-							else {
-								result = Value::None();
+						if (func->name == "__init__") {
+							result = stack[frame->basePointer];
+						}
+						else { 
+							if (result.type == ValueType::NOTYPE) {
+								if (!func->defaultRetArgs.empty()) {
+									result = executeDefault(func->defaultRetArgs[0], line);
+								}
+								else if (func->returnType != ValueType::NOTYPE) {
+									result = Value::None();
+								}
+								else {
+									result = Value::None();
+								}
 							}
 						}
 						if (func->returnType != ValueType::NOTYPE && result.type != func->returnType) {
