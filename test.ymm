@@ -1,24 +1,31 @@
 ~import "Module.ymm"
 define function main(): {
-	define class Human : {
+	define class Animal: {
 	#public:
-	let obj.population = 0
-	define function AddToHumans(): {obj.population = obj.population + 1
-	}
-	define function __init__(names, ages): {
+	define function __construct__(races: string(), names: string(), ages: int()): {
+		let self.race = races
 		let self.name = names
 		let self.age = ages
-		obj.AddToHumans()
 	}
-	define function print_human()-> string(): {
-		return f"{self.name.capitalize()} age: {self.age}"
-	}
+	define function __display__(): {
+		return f"{self.race} {self.name} {self.age}"
+   }
 	#private:
-	
 	#protected:
-		
 	}
-	let human1 = Human("Jack",21)
-	let human2 = Human("anna",34)
-	print(human1.population)
+	define class Human : inherits(Animal): {
+	#public:
+	define function __construct__(races: string(), names: string(), ages: int(), height:int()): {
+		super().__construct__(races, names, ages)
+		let self.height = height
+	}
+	define function __display__()-> string(): {
+		return super().__display__() + f" height {self.height}"
+   }
+	#private:
+	#protected:
+}
+	let doggo = Animal("dog", "wolfy", 2)
+	let mmd = Human("human", "mohammed", 22, 183)
+	print(mmd)
 }
