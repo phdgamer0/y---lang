@@ -383,7 +383,7 @@ struct DeprecationWarning : Warning { DeprecationWarning(string m, int l, int c)
 struct RuntimeWarning : Warning { RuntimeWarning(string m, int l, int c) :Warning(m, l, c) { type = "RuntimeWarning"; code = -7020000; } };
 struct ImportWarning : Warning { ImportWarning(string m, int l, int c) :Warning(m, l, c) { type = "ImportWarning"; code = -7030000; } };
 enum class ValueType { 
-	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE, BIGINT, REFERENCE, PAIRED,
+	NOTYPE, NONE, INT, FLOAT, STRING, BOOL, LIST, VECTOR, DICT, SLICE, BIGINT, REFERENCE, PAIRED, SUPER,
 	RANGE, TUPLE, SET, FUNCTION, NATIVE_FUNCTION, FILE, OVERLOAD, OMIT_MARKER, ERROR, CLASS, INSTANCE
 };
 enum class CopyMode { SHALLOW, DEEP, REF };
@@ -1864,14 +1864,14 @@ public:
 		}
 		if (match(TokenType::INCREMENT)) {
 			Token op = tokens[pos - 1];
-			if (!dynamic_cast<VarExpr*>(e) && !dynamic_cast<IndexExpr*>(e)) {
+			if (!dynamic_cast<VarExpr*>(e) && !dynamic_cast<IndexExpr*>(e) && !dynamic_cast<GetExpr*>(e)) {
 				throw SyntaxError("++ requires assignable expression", op.line, op.col);
 			}
 			return setPos(new AssignStmt(e, TokenType::PLUS_EQ, setPos(new NumberExpr(1, false), op)), op);
 		}
 		if (match(TokenType::DECREMENT)) {
 			Token op = tokens[pos - 1];
-			if (!dynamic_cast<VarExpr*>(e) && !dynamic_cast<IndexExpr*>(e)) {
+			if (!dynamic_cast<VarExpr*>(e) && !dynamic_cast<IndexExpr*>(e) && !dynamic_cast<GetExpr*>(e)) {
 				throw SyntaxError("-- requires assignable expression", op.line, op.col);
 			}
 			return setPos(new AssignStmt(e, TokenType::MINUS_EQ, setPos(new NumberExpr(1, false), op)), op);
@@ -1934,7 +1934,7 @@ struct Value {
 	static Value Slice(Value s, Value e, Value p);
 	static Value Vector(const std::vector<Value>& elems);
 	static Value Error(std::shared_ptr<ErrorObject> e);
-	static Value Class(const string& name, const vector<string>& parents);
+	static Value Class(const string& name);
 	static Value Instance(Value classObj);
 	bool isTruthy() const;
 	bool strictEquals(const Value& other) const;
@@ -2230,15 +2230,28 @@ struct ErrorObject : HeapObject {
 };
 struct ClassObject : HeapObject {
 	string name;
-	vector<string> parentNames;
+	vector<Value> parents;
+	vector<ClassObject*> mro;
 	unordered_map<string, Value> staticFields;
 	struct MethodInfo {
 		Value func;
 		AccessLevel access;
 	};
 	unordered_map<string, MethodInfo> methods;
-	ClassObject(const string& n, const vector<string>& p)
-		: HeapObject(ValueType::CLASS), name(n), parentNames(p) {
+	ClassObject(const string& n) : HeapObject(ValueType::CLASS), name(n) {
+		mro.push_back(this);
+	}
+	void computeMRO() {
+		for (auto& pVal : parents) {
+			if (pVal.type == ValueType::CLASS) {
+				auto* pClass = static_cast<ClassObject*>(pVal.ref.get());
+				for (auto* ancestor : pClass->mro) {
+					bool exists = false;
+					for (auto* existing : mro) if (existing == ancestor) { exists = true; break; }
+					if (!exists) mro.push_back(ancestor);
+				}
+			}
+		}
 	}
 	string toString() const {
 		return "<class '" + name + "'>";
@@ -2252,6 +2265,14 @@ struct InstanceObject : HeapObject {
 	}
 	string toString() const {
 		return "<instance of '" + klass->name + "'>";
+	}
+};
+struct SuperObject : HeapObject {
+	Value instance;
+	ClassObject* startClass;
+	SuperObject(Value inst, ClassObject* start) : HeapObject(ValueType::SUPER), instance(inst), startClass(start) {}
+	string toString() const {
+		return "<super: " + startClass->name + ">";
 	}
 };
 inline Value Value::Reference(Value* p) {
@@ -2383,10 +2404,10 @@ inline Value Value::Error(std::shared_ptr<ErrorObject> e) {
 	v.ref = e; v.__DEBUGGING__NAME__=e->errType;
 	return v;
 }
-inline Value Value::Class(const string& name, const vector<string>& parents) {
-	Value v; v.__DEBUGGING__NAME__= name;
+inline Value Value::Class(const string& name) {
+	Value v; v.__DEBUGGING__NAME__ = name;
 	v.type = ValueType::CLASS;
-	v.ref = make_shared<ClassObject>(name, parents);
+	v.ref = make_shared<ClassObject>(name);
 	return v;
 }
 inline Value Value::Instance(Value classDef) {
@@ -2952,6 +2973,7 @@ struct FunctionObject : HeapObject {
 	vector<Stmt*> body;
 	std::shared_ptr<Env> closure;
 	bool isCached;
+	ClassObject* owner = nullptr;
 	std::unordered_map<vector<Value>, Value, VectorHash, VectorEqual> cache;
 	FunctionObject(const vector<ParamSpec>& p, ValueType rt, vector<Expr*> dra,bool rc, const vector<Stmt*>& b, std::shared_ptr<Env> c, bool cached, Chunk* ch = nullptr): HeapObject(ValueType::FUNCTION), params(p), returnType(rt), defaultRetArgs(dra) ,returnsConst(rc), body(b), closure(c), isCached(cached), chunk(ch) {}
 	~FunctionObject() {
@@ -3091,6 +3113,321 @@ struct ValueExpr : public Expr {
 	Value* sourcePtr = nullptr;
 	ValueExpr(Value v, Value* src = nullptr) : Expr(ExprType::NUMBER), val(v), sourcePtr(src) {}
 };
+enum class Magic_Methods : uint8_t {
+
+	/*
+	================================================================
+	1. LIFECYCLE & IDENTITY
+	Distinct from Python's "init/del", using Constructor terminology
+	================================================================
+	*/
+	__construct__,     // (was __init__)   Called on creation
+	__destruct__,      // (was __del__)    Called on cleanup
+	__copy__,          // (was __scopy__)  Shallow copy
+	__clone__,        // (was __dcopy__)  Deep copy
+	__ref__,          // (was __rcopy__)  Reference copy
+	__mro__,           // Method Resolution Order 
+
+	/*
+	================================================================
+		2. REPRESENTATION & DEBUGGING
+		Focus on "Displaying" vs "Inspecting"
+	================================================================
+	*/
+	__display__,       // (was __show__)   User-friendly string representation
+	__inspect__,       // (was __debug__)  Programmer-focused raw representation
+
+	/*
+	================================================================
+		3. ARITHMETIC (VERBS OVER ABBREVIATIONS)
+		Using full words makes it feel less like C macros
+	================================================================
+	*/
+	// Standard           // Reverse (Right-hand side)
+	__plus__, __r_plus__,          // (was __add__)
+	__minus__, __r_minus__,         // (was __sub__)
+	__times__, __r_times__,         // (was __mul__)
+	__divide__, __r_divide__,        // (was __div__)
+	__int_divide__, __r_int_divide__,    // (was __div__)
+	__power__, __r_power__,         // (was __pow__)
+	__modulo__, __r_modulo__,        // (was __mod__ - added this, usually needed)
+
+	/*
+	================================================================
+		3.5 inplace assignment for arithmetic operators
+		Using full words makes it feel less like C macros
+	================================================================
+	*/
+	__plus_eq__,             // (was __iadd__)    obj1 += obj2
+	__minus_eq__,            // (was __isub__)    obj1 -= obj2
+	__times_eq__,            // (was __imul__)    obj1 *= obj2
+	__divide_eq__,           // (was __idiv__)    obj1 /= obj2
+	__int_divide_eq__,       // (was __idiv__)    obj1 //= obj2
+	__power_eq__,            // (was __ipow__)    obj1 **= obj
+	__modulo_eq__,           // (was __imod__)    obj1 %= obj2
+
+	/*
+	================================================================
+		4. UNARY & STATE MODIFIERS
+	================================================================
+	*/
+	__positive__,      // (was __pos__)    +x
+	__negative__,      // (was __neg__)    -x
+	__increment__,     // (was __inc__)    x++
+	__decrement__,     // (was __dec__)    x--
+	__invert__,        // (was __not__)    ~x (Bitwise not)
+
+	/*
+	================================================================
+		5. LOGIC & BITS
+		Explicit naming to separate Boolean logic from Bitwise logic
+	================================================================
+	*/
+	// Standard            // Reverse
+	__bit_and__, __r_bit_and__,       // (was __and__)
+	__bit_or__, __r_bit_or__,        // (was __or__)
+	__bit_xor__, __r_bit_xor__,       // (was __xor__)
+	__bit_nand__, __r_bit_nand__,      // (was __nand__)
+	__bit_nor__, __r_bit_nor__,       // (was __nor__)
+	__bit_nxor__, __r_bit_nxor__,      // (was __nxor__)
+
+	/*
+	================================================================
+		5.5 inplace assignment for bitwise operators
+		Explicit naming to separate Boolean logic from Bitwise logic
+	================================================================
+	*/
+	__and_equals__,          // (was __iand__)    obj1 &= obj2
+	__or_equals__,           // (was __ior__)     obj1 |= obj2	
+	__xor_equals__,          // (was __ixor__)    obj1 ^= obj2
+
+	/*
+	================================================================
+		6. COMPARISON (THE JUDGES)
+		Using "is" makes the intent readable
+	================================================================
+	*/
+	__equals__,        // (was __eq__)     ==
+	__differs__,       // (was __neq__)    !=
+	__identical__,     // (was __seq__)    === (Strict equality)
+	__distinct__,      // (was __sneq__)   !== (Strict inequality)
+	__less__,          // (was __lt__)     <
+	__less_eq__,       // (was __lte__)    <=
+	__greater__,       // (was __gt__)     >
+	__greater_eq__,    // (was __gte__)    >=
+
+	/*
+	================================================================
+		7. CONTAINER & ACCESS
+		Moving away from "getitem/setitem" to "at/put" style
+	================================================================
+	*/
+	__count__,         // (was __len__)    Size of container
+	__at__,            // (was __get__)    val = obj[key]
+	__put__,           // (was __set__)    obj[key] = val
+	__has__,           // (was __contains__) if x in obj
+	__missing__,       // (was __getattr__) Called when property lookup fails
+	__assign__,        // (was __setattr__) Called when setting a property
+
+	/*
+	================================================================
+		8. ITERATION (FLOW)
+	================================================================
+	*/
+	__traverse__,      // (was __iter__)   Returns the iterator object
+	__advance__,       // (was __next__)   Moves to next item
+
+	/*
+	================================================================
+		9. CASTING (TRANSFORMATION)
+		"to" prefix implies conversion
+	================================================================
+	*/
+	__to_int__,        // (was __int__)
+	__to_string__,     // (was __string__)
+	__to_bool__,       // (was __bool__)
+	__to_list__,       // (was __list__)
+	__to_set__,        // (was __set__)
+	__to_dict__,       // (was __dict__)
+	__to_tuple__,      // (was __tuple__)
+	__to_vector__,     // (was __vector__)
+
+	/*
+	================================================================
+		10. INFO
+	================================================================
+	*/
+	__var_count__,
+	__var_names__,
+	__function_count__,
+	__function_names__,
+	__all_count__,
+	__all_names__,
+};
+static inline std::string magic_methods_to_string(Magic_Methods Magic_method) {
+	switch (Magic_method) {
+	case Magic_Methods::__construct__: // creates the object and returns the instance
+		return "__construct__";
+	case Magic_Methods::__destruct__: // deletes the instance and returns None 
+		return "__destruct__";
+	case Magic_Methods::__copy__: // shallowley copies the instance
+		return "__copy__";
+	case Magic_Methods::__clone__: // deeply copies the instance
+		return "__clone__";
+	case Magic_Methods::__ref__: // creates an alias to the instance
+		return "__ref__";
+	case Magic_Methods::__mro__: // returns a list of meethod resolution order
+		return "__mro__";
+	case Magic_Methods::__display__: // called by the print() function
+		return "__display__";
+	case Magic_Methods::__inspect__: // used for debugging and printing nested objects
+		return "__inspect__";
+	case Magic_Methods::__plus__: // + operator overload for normal addition obj1 + obj2
+		return "__plus__";
+	case Magic_Methods::__r_plus__: // + opertaor overload for reverse addition obj2 + obj1
+		return "__r_plus__";
+	case Magic_Methods::__minus__: // - operator overload for normal subtraction obj1 - obj2
+		return "__minus__";
+	case Magic_Methods::__r_minus__: // - operator overload for reverse subtraction obj2 - obj1
+		return "__r_minus__";
+	case Magic_Methods::__times__: // * operator overload for normal multiplication obj1 * obj2
+		return "__times__";
+	case Magic_Methods::__r_times__: // * operator overload for reverse multiplication obj2 * obj1
+		return "__r_times__";
+	case Magic_Methods::__divide__: // / operator overload for normal division obj1 / obj2
+		return "__divide__";
+	case Magic_Methods::__r_divide__: // / operator overload for reverse division obj2 / obj1
+		return "__r_divide__";
+	case Magic_Methods::__int_divide__: // // operator overload for integer division obj1 // obj2
+		return "__int_divide__";
+	case Magic_Methods::__r_int_divide__: // // operator overload for reverse integre division obj2 // obj1
+		return "__r_int_divide__";
+	case Magic_Methods::__power__: // ** operator overload for normal exponentiation obj1 ** obj2
+		return "__power__";
+	case Magic_Methods::__r_power__: // ** operator overload for reverse exponentiation obj2 ** obj1
+		return "__r_power__";
+	case Magic_Methods::__modulo__: // % operator overlaod for normal modulation obj1 % obj2
+		return "__modulo__";
+	case Magic_Methods::__r_modulo__: // % operator overload for reverse modulation obj2 % obj1
+		return "__r_modulo__";
+	case Magic_Methods::__plus_eq__: // += operator overload for addition assignment obj1 += obj2
+		return "__plus_eq__";
+	case Magic_Methods::__minus_eq__: // -= operator overload for subtraction assignment obj1 -= obj2
+		return "__minus_eq__";
+	case Magic_Methods::__times_eq__: // *= operator overload for multiplication assignment obj1 *= obj2
+		return "__times_eq__";
+	case Magic_Methods::__divide_eq__: // /= operator overload for division assignment obj1 /= obj2
+		return "__divide_eq__";
+	case Magic_Methods::__int_divide_eq__: // //= operator overload for integer division assignment obj1 //= obj2
+		return "__int_divide_eq__";
+	case Magic_Methods::__power_eq__: // **= operator overload for exponentiation assignment obj1 **= obj2
+		return "__power_eq__";
+	case Magic_Methods::__modulo_eq__: // %= operator overload for modulation assignment obj1 %= obj2
+		return "__modulo_eq__";
+	case Magic_Methods::__positive__: // + operator overload for unary positive +obj
+		return "__positive__";
+	case Magic_Methods::__negative__: // - operator overload for unary negative -obj
+		return "__negative__";
+	case Magic_Methods::__increment__: // ++ operator overload for unary increment obj++
+		return "__increment__";
+	case Magic_Methods::__decrement__: // -- operator overload for unary decrement obj--
+		return "__decrement__";
+	case Magic_Methods::__invert__: // ~ operator overload for unary bitwise not ~obj
+		return "__invert__";
+	case Magic_Methods::__bit_and__: // and operator overload for normal bitwise and obj1 and obj2
+		return "__bit_and__";
+	case Magic_Methods::__r_bit_and__: // and operator overload for reverse bitwise and obj2 and obj1
+		return "__r_bit_and__";
+	case Magic_Methods::__bit_or__: // or operator overload for normal bitwise or obj1 or obj2
+		return "__bit_or__";
+	case Magic_Methods::__r_bit_or__: // or operator overload for reverse bitwise or obj2 or obj1
+		return "__r_bit_or__";
+	case Magic_Methods::__bit_xor__: // xor operator overload for normal bitwise xor obj1 xor obj2
+		return "__bit_xor__";
+	case Magic_Methods::__r_bit_xor__: // xor operator overload for reverse bitwise xor obj2 xor obj1
+		return "__r_bit_xor__";
+	case Magic_Methods::__bit_nand__: // nand operator overload for normal bitwise nand obj1 nand obj2
+		return "__bit_nand__";
+	case Magic_Methods::__r_bit_nand__: // nand operator overload for reverse bitwise nand obj2 nand obj1
+		return "__r_bit_nand__";
+	case Magic_Methods::__bit_nor__: // nor operator overload for normal bitwise nor obj1 nor obj2
+		return "__bit_nor__";
+	case Magic_Methods::__r_bit_nor__: // nor operator overload for reverse bitwise nor obj2 nor obj1
+		return "__r_bit_nor__";
+	case Magic_Methods::__bit_nxor__: // nxor operator overload for normal bitwise nxor obj1 nxor obj2
+		return "__bit_nxor__";
+	case Magic_Methods::__r_bit_nxor__: // nxor operator overload for reverse bitwise nxor obj2 nxor obj1
+		return "__r_bit_nxor__";
+	case Magic_Methods::__and_equals__: // &= operator overload for bitwise and assignment obj1 &= obj2
+		return "__and_equals__";
+	case Magic_Methods::__or_equals__: // |= operator overload for bitwise or assignment obj1 |= obj2
+		return "__or_equals__";
+	case Magic_Methods::__xor_equals__: // ^= operator overload for bitwise xor assignment obj1 ^= obj2
+		return "__xor_equals__";
+	case Magic_Methods::__equals__: // == operator overload for equality obj1 == obj2 
+		return "__equals__";
+	case Magic_Methods::__differs__: // != operator overload for inequality obj1 != obj2
+		return "__differs__";
+	case Magic_Methods::__identical__: // === operator overload for strict equality obj1 === obj2
+		return "__identical__";
+	case Magic_Methods::__distinct__: // !== operator overload for strict inequality obj1 !== obj2
+		return "__distinct__";
+	case Magic_Methods::__less__: // < operator overload for less than obj1 < obj2
+		return "__less__";
+	case Magic_Methods::__less_eq__: // <= operator overload for less than or equal to obj1 <= obj2
+		return "__less_eq__";
+	case Magic_Methods::__greater__: // > operator overload for greater than obj1 > obj2
+		return "__greater__";
+	case Magic_Methods::__greater_eq__: // >= operator overload for greater than or equal to obj1 >= obj2
+		return "__greater_eq__";
+	case Magic_Methods::__count__: // length() operator overload for counting items in a container length(obj)
+		return "__count__";
+	case Magic_Methods::__at__: // [] operator overload for getting an item from a container obj[key]
+		return "__at__";
+	case Magic_Methods::__put__: // [] operator overload for setting an item in a container obj[key] = val
+		return "__put__";
+	case Magic_Methods::__has__: // is in operator overload for checking if a container has an item if x is in obj
+		return "__has__";
+	case Magic_Methods::__missing__: // is not in operator overload for checking if a container is missing an item if x is not in obj
+		return "__missing__";
+	case Magic_Methods::__assign__: // . operator overload for setting an attribute obj.attr = val
+		return "__assign__";
+	case Magic_Methods::__traverse__: // iter() operator overload for getting an iterator from a container iter(obj)
+		return "__traverse__";
+	case Magic_Methods::__advance__: // next() operator overload for advancing an iterator to the next item next(obj)
+		return "__advance__";
+	case Magic_Methods::__to_int__: // int() operator overload for converting an object to an integer int(obj)
+		return "__to_int__";
+	case Magic_Methods::__to_string__: // string() operator overload for converting an object to a string string(obj)
+		return "__to_string__";
+	case Magic_Methods::__to_bool__: // bool() operator overload for converting an object to a boolean bool(obj)
+		return "__to_bool__";
+	case Magic_Methods::__to_list__: // list() operator overload for converting an object to a list list(obj)
+		return "__to_list__";
+	case Magic_Methods::__to_set__: // set() operator overload for converting an object to a set set(obj)
+		return "__to_set__";
+	case Magic_Methods::__to_dict__: // dict() operator overload for converting an object to a dictionary dict(obj)
+		return "__to_dict__";
+	case Magic_Methods::__to_tuple__: // tuple() operator overload for converting an object to a tuple tuple(obj)
+		return "__to_tuple__";
+	case Magic_Methods::__to_vector__: // vector() operator overload for converting an object to a vector vector(obj)
+		return "__to_vector__";
+	case Magic_Methods::__var_count__: // returns the number of variables in the class
+		return "__var_count__";
+	case Magic_Methods::__var_names__: // returns a list of variable names in the class
+		return "__var_names__";
+	case Magic_Methods::__function_count__: // returns the number of functions in the class
+		return "__function_count__";
+	case Magic_Methods::__function_names__: // returns a list of function names in the class
+		return "__function_names__";
+	case Magic_Methods::__all_count__: // returns the total number of variables and functions in the class
+		return "__all_count__";
+	case Magic_Methods::__all_names__: // returns a list of all variable and function names in the class
+		return "__all_names__";
+	default: // Should never happen, but just in case
+		return "_";
+	}
+}
 // ------------ AST WALKER -------------
 struct Interpreter {
 	std::shared_ptr<Env> env;
@@ -3110,7 +3447,9 @@ struct Interpreter {
 		env->set("None", Value::None(), true);
 		registerStdLib();
 	}
+	Value nativePrint(const vector<Value>& args, int l, int c);
 	void registerStdLib() {
+		
 		modules["FileStream"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
 			auto define = [&](string name, NativeFunc f) {
 				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
@@ -4021,12 +4360,7 @@ struct Interpreter {
 		}), false);
 		// ============ I/O ============
 		env->set("print", Value::Native([this](const vector<Value>& args, int l, int c) {
-			for (auto& v : args) {
-				printValue(v);
-				std::cout << " ";
-			}
-			std::cout << "\n";
-			return Value::None();
+			return this->nativePrint(args, l, c);
 		}), false);
 		env->set("input", Value::Native([this](const vector<Value>& args, int l, int c) {
 			string prompt = "";
@@ -7240,7 +7574,7 @@ enum class OpCode : uint8_t {
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
 	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
 	// Arithmetic & Logic
-	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW,
+	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_DUP,
 	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
 	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
 	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
@@ -7248,7 +7582,7 @@ enum class OpCode : uint8_t {
 	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT, OP_UNPACK_DICT,
 	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE, OP_BUILD_SLICE,
 	// OOP
-	OP_CLASS, OP_METHOD, OP_GET_PROPERTY, OP_SET_PROPERTY, OP_CLASS_FIELD,
+	OP_CLASS, OP_METHOD, OP_GET_PROPERTY, OP_SET_PROPERTY, OP_CLASS_FIELD, OP_SUPER,
 	// Comprehension
 	OP_LIST_APPEND, OP_SET_ADD, OP_DICT_SET, OP_LIST_TO_TUPLE, OP_LIST_TO_VECTOR,
 	// Access & Calls
@@ -7289,6 +7623,7 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_FLOOR_DIV: return "OP_FLOOR_DIV";
 		case OpCode::OP_MOD: return "OP_MOD";
 		case OpCode::OP_POW: return "OP_POW";
+		case OpCode::OP_DUP: return "OP_DUP";
 		case OpCode::OP_EQ: return "OP_EQ";
 		case OpCode::OP_NEQ: return "OP_NEQ";
 		case OpCode::OP_LT: return "OP_LT";
@@ -7328,6 +7663,7 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_GET_PROPERTY: return "OP_GET_PROPERTY";
 		case OpCode::OP_SET_PROPERTY: return "OP_SET_PROPERTY";
 		case OpCode::OP_CLASS_FIELD: return "OP_CLASS_FIELD";
+		case OpCode::OP_SUPER: return "OP_SUPER";
 		case OpCode::OP_LIST_APPEND: return "OP_LIST_APPEND";
 		case OpCode::OP_SET_ADD: return "OP_SET_ADD";
 		case OpCode::OP_DICT_SET: return "OP_DICT_SET";
@@ -7624,6 +7960,11 @@ struct ByteCodeCompiler {
 		}
 		case ExprType::CALL: {
 			auto c = static_cast<CallExpr*>(e);
+			if (c->name == "super") {
+				if (!c->args.empty()) throw ArgumentError("super() takes no arguments", c->line, c->col);
+				emitByte(OpCode::OP_SUPER, c->line, c->col);
+				break;
+			}
 			for (auto arg : c->args) compile(arg);
 			int arg = resolveLocal(c->name);
 			if (arg != -1) {
@@ -7814,7 +8155,14 @@ struct ByteCodeCompiler {
 		switch (s->type) {
 			case StmtType::CLASS: {
 				auto c = static_cast<ClassStmt*>(s);
-				for (const auto& p : c->parents) emitConstant(Value::String(p), c->line, 0);
+				for (const auto& p : c->parents) {
+					int arg = resolveLocal(p);
+					if (arg != -1) {
+						emitByte(OpCode::OP_GET_LOCAL, c->line, 0);
+						chunk->write((uint8_t)arg, c->line, 0);
+					}
+					else emitIdentifier(OpCode::OP_GET_VAR, p, c->line, 0);
+				}
 				emitConstant(Value::String(c->name), c->line, 0);
 				emitByte(OpCode::OP_CLASS, c->line, 0);
 				chunk->write((uint8_t)c->parents.size(), c->line, 0);
@@ -8024,11 +8372,23 @@ struct ByteCodeCompiler {
 			case StmtType::ASSIGN: {
 				auto as = static_cast<AssignStmt*>(s);
 				if (auto get = dynamic_cast<GetExpr*>(as->target)) {
-					if (as->op != TokenType::ASSIGN) {
-						throw RuntimeError("Augmented assignment on properties not supported yet", as->line, as->col);
-					}
 					compile(get->object);
-					compile(as->value);
+					if (as->op != TokenType::ASSIGN) {
+						emitByte(OpCode::OP_DUP, as->line, as->col);
+						emitIdentifier(OpCode::OP_GET_PROPERTY, get->name, as->line, as->col);
+						compile(as->value);
+						switch (as->op) {
+						case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
+						case TokenType::MINUS_EQ: emitByte(OpCode::OP_SUB, as->line, as->col); break;
+						case TokenType::STAR_EQ: emitByte(OpCode::OP_MUL, as->line, as->col); break;
+						case TokenType::DIV_EQ: emitByte(OpCode::OP_DIV, as->line, as->col); break;
+						case TokenType::MOD_EQ: emitByte(OpCode::OP_MOD, as->line, as->col); break;
+						case TokenType::POW_EQ: emitByte(OpCode::OP_POW, as->line, as->col); break;
+						
+						default: throw SyntaxError("Unknown/Unsupported augmented assignment operator", as->line, as->col);
+						}
+					}
+					else compile(as->value); // Stack: [obj, val]
 					emitIdentifier(OpCode::OP_SET_PROPERTY, get->name, as->line, as->col);
 					emitByte(OpCode::OP_POP, as->line, as->col);
 					break;
@@ -8036,7 +8396,7 @@ struct ByteCodeCompiler {
 				if (auto idx = dynamic_cast<IndexExpr*>(as->target)) {
 					if (as->op != TokenType::ASSIGN) {
 						// Support for a[0] += 1 is skipped for now
-						throw RuntimeError("Augmented assignment on index not supported yet", as->line, as->col);
+						throw SyntaxError("Augmented assignment on index not supported yet", as->line, as->col);
 					}
 					compile(idx->base);
 					compile(idx->index);
@@ -8579,11 +8939,42 @@ struct VM {
 				case OpCode::OP_CLASS: {
 					uint8_t parentCount = *ip++;
 					string name = pop().asString();
-					vector<string> parents;
-					for (int i = 0; i < parentCount; i++) parents.push_back(pop().asString());
-					std::reverse(parents.begin(), parents.end());
-					Value classVal = Value::Class(name, parents);
+					Value classVal = Value::Class(name);
+					auto* newClassObj = static_cast<ClassObject*>(classVal.ref.get());
+					for (int i = 0; i < parentCount; i++) {
+						Value pVal = pop();
+						if (pVal.type != ValueType::CLASS) throw RuntimeError("Superclass must be a class", line, col);
+						newClassObj->parents.push_back(pVal);
+					}
+					std::reverse(newClassObj->parents.begin(), newClassObj->parents.end());
+					newClassObj->computeMRO();
 					stack.push_back(classVal);
+					break;
+				}
+				case OpCode::OP_SUPER: {
+					Value self = stack[frame->basePointer];
+					if (self.type != ValueType::INSTANCE) throw RuntimeError("super() must be called on an instance", line, col);
+					FunctionObject* currentFunc = frame->function;
+					if (!currentFunc || !currentFunc->owner) {
+						throw RuntimeError("super() used in a function that is not a method.", line, col);
+					}
+					ClassObject* definingClass = currentFunc->owner;
+					auto* instance = static_cast<InstanceObject*>(self.ref.get());
+					ClassObject* trueClass = instance->klass;
+					ClassObject* superTarget = nullptr;
+					bool foundDefining = false;
+					for (auto* ancestor : trueClass->mro) {
+						if (foundDefining) {
+							superTarget = ancestor;
+							break;
+						}
+						if (ancestor == definingClass) foundDefining = true;
+					}
+					if (!superTarget) throw RuntimeError("super(): No superclass found (reached top of MRO).", line, col);
+					Value v;
+					v.type = ValueType::SUPER;
+					v.ref = make_shared<SuperObject>(self, superTarget);
+					stack.push_back(v);
 					break;
 				}
 				case OpCode::OP_METHOD: {
@@ -8594,6 +8985,7 @@ struct VM {
 					if (classVal.type != ValueType::CLASS) throw RuntimeError("Cannot define method on non-class", line, col);
 					auto* cls = static_cast<ClassObject*>(classVal.ref.get());
 					auto* func = static_cast<FunctionObject*>(funcVal.ref.get());
+					func->owner = cls;
 					cls->methods[func->name] = { funcVal, access };
 					// Don't pop the class! We might add more methods.
 					break;
@@ -8606,26 +8998,39 @@ struct VM {
 						auto* instance = static_cast<InstanceObject*>(obj.ref.get());
 						if (instance->fields.count(name)) stack.push_back(instance->fields[name]);
 						else {
-							// TODO: Add Inheritance (MRO) lookup here later
 							ClassObject* cls = instance->klass;
-							if (cls->methods.count(name)) {
-								// Note: We are returning the raw Function object.
-								// If you do 'f = obj.method', 'f()' will fail because 'self' isn't bound.
-								// For now, this is enough for direct calls.
-								stack.push_back(cls->methods[name].func);
+							bool found = false;
+							for (auto* ancestor : cls->mro) {
+								if (ancestor->methods.count(name)) {
+									stack.push_back(ancestor->methods[name].func);
+									found = true;
+									break;
+								}
+								if (ancestor->staticFields.count(name)) {
+									stack.push_back(ancestor->staticFields[name]);
+									found = true;
+									break;
+								}
 							}
-							else if (cls->staticFields.count(name)) {
-								// Optional: Allow accessing static fields via instance? (Java style)
-								stack.push_back(cls->staticFields[name]);
-							}
-							else throw AttributeError("Instance of '" + cls->name + "' has no attribute '" + name + "'", line, col);
+							if (!found) throw AttributeError("Instance of '" + cls->name + "' has no attribute '" + name + "'", line, col);
 						}
 					}
 					else if (obj.type == ValueType::CLASS) {
 						auto* cls = static_cast<ClassObject*>(obj.ref.get());
-						if (cls->staticFields.count(name)) stack.push_back(cls->staticFields[name]);
-						else if (cls->methods.count(name)) stack.push_back(cls->methods[name].func);
-						else throw AttributeError("Class '" + cls->name + "' has no attribute '" + name + "'", line, col);
+						bool found = false;
+						for (auto* ancestor : cls->mro) {
+							if (ancestor->staticFields.count(name)) {
+								stack.push_back(ancestor->staticFields[name]);
+								found = true;
+								break;
+							}
+							if (ancestor->methods.count(name)) {
+								stack.push_back(ancestor->methods[name].func);
+								found = true;
+								break;
+							}
+						}
+						if (!found) throw AttributeError("Class '" + cls->name + "' has no attribute '" + name + "'", line, col);
 					}
 					else throw AttributeError("Only instances and classes have properties", line, col);
 					break;
@@ -8657,6 +9062,10 @@ struct VM {
 					cls->staticFields[name] = val;
 					break;
 				}
+				case OpCode::OP_DUP: {
+					stack.push_back(stack.back());
+					break;
+				}
 				case OpCode::OP_CALL: {
 					uint8_t argCount = *ip++;
 					Value callee = pop();
@@ -8670,8 +9079,8 @@ struct VM {
 					else if (callee.type == ValueType::CLASS) {
 						Value instance = Value::Instance(callee);
 						auto* cls = static_cast<ClassObject*>(callee.ref.get());
-						if (cls->methods.count("__init__")) {
-							Value initMethod = cls->methods["__init__"].func;
+						if (cls->methods.count(magic_methods_to_string(Magic_Methods::__construct__))) {
+							Value initMethod = cls->methods[magic_methods_to_string(Magic_Methods::__construct__)].func;
 							vector<Value> args;
 							for (int i = 0; i < argCount; i++) args.push_back(pop());
 							std::reverse(args.begin(), args.end());
@@ -9858,30 +10267,63 @@ struct VM {
 					uint8_t argCount = *ip++;
 					string methodName = currentChunk->constants[nameIdx].asString();
 					Value receiver = stack[stack.size() - 1 - argCount];
-					if (receiver.type == ValueType::INSTANCE || receiver.type == ValueType::CLASS) {
+					if (receiver.type == ValueType::INSTANCE || receiver.type == ValueType::CLASS || receiver.type == ValueType::SUPER) {
 						Value methodToCall;
 						Value selfVal = Value::None();
 						Value objVal = Value::None();
-						if (receiver.type == ValueType::INSTANCE) {
+						ClassObject* startClass = nullptr;
+						if (receiver.type == ValueType::SUPER) {
+							auto* superObj = static_cast<SuperObject*>(receiver.ref.get());
+							startClass = superObj->startClass;
+							selfVal = superObj->instance;
+						}
+						else if (receiver.type == ValueType::INSTANCE) {
 							auto* instance = static_cast<InstanceObject*>(receiver.ref.get());
-							ClassObject* cls = instance->klass;
-							if (cls->methods.count(methodName)) {
-								methodToCall = cls->methods[methodName].func;
-								selfVal = receiver;
-								objVal.type = ValueType::CLASS;
-								objVal.ref = std::shared_ptr<HeapObject>(cls, [](HeapObject*) {});
-							}
-							else throw AttributeError("Instance has no method '" + methodName + "'", line, col);
+							startClass = instance->klass;
+							selfVal = receiver;
 						}
 						else {
-							auto* cls = static_cast<ClassObject*>(receiver.ref.get());
-							if (cls->methods.count(methodName)) {
-								methodToCall = cls->methods[methodName].func;
-								selfVal = Value::None();
-								objVal = receiver;
-							}
-							else throw AttributeError("Class has no method '" + methodName + "'", line, col);
+							startClass = static_cast<ClassObject*>(receiver.ref.get());
+							selfVal = Value::None();
 						}
+						ClassObject* methodOwner = nullptr;
+						ClassObject::MethodInfo* methodInfo = nullptr;
+						for (auto* ancestor : startClass->mro) {
+							if (ancestor->methods.count(methodName)) {
+								methodOwner = ancestor;
+								methodInfo = &ancestor->methods[methodName];
+								break;
+							}
+						}
+						if (!methodOwner || !methodInfo) {
+							throw AttributeError("'" + startClass->name + "' object has no attribute '" + methodName + "'", line, col);
+						}
+						if (methodInfo->access != AccessLevel::PUBLIC) {
+							bool allowed = false;
+							if (frame->basePointer + 1 < stack.size()) {
+								Value potentialCaller = stack[frame->basePointer + 1];
+								if (potentialCaller.type == ValueType::CLASS) {
+									auto* callerPtr = static_cast<ClassObject*>(potentialCaller.ref.get());
+									if (methodInfo->access == AccessLevel::PRIVATE) if (callerPtr == methodOwner) allowed = true;
+									else if (methodInfo->access == AccessLevel::PROTECTED) {
+										for (auto* ancestor : callerPtr->mro) {
+											if (ancestor == methodOwner) {
+												allowed = true;
+												break;
+											}
+										}
+									}
+								}
+							}
+							if (!allowed) {
+								throw RuntimeError("Cannot access " +
+									string(methodInfo->access == AccessLevel::PRIVATE ? "private" : "protected") +
+									" method '" + methodName + "' from this context.", line, col);
+							}
+						}
+						methodToCall = methodInfo->func;
+						objVal.type = ValueType::CLASS;
+						objVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject*) {});
 						vector<Value> args(argCount);
 						for (int i = argCount - 1; i >= 0; i--) args[i] = pop();
 						pop();
@@ -10091,7 +10533,7 @@ struct VM {
 					Value result = pop();
 					FunctionObject* func = frame->function;
 					if (func) {
-						if (func->name == "__init__") {
+						if (func->name == magic_methods_to_string(Magic_Methods::__construct__)) {
 							result = stack[frame->basePointer];
 						}
 						else { 
@@ -10397,3 +10839,73 @@ private:
 		return v;
 	}
 };
+Value Interpreter::nativePrint(const vector<Value>& args, int l, int c) {
+	for (size_t i = 0; i < args.size(); i++) {
+		Value v = args[i];
+		bool printedCustom = false;
+
+		// 1. Check if it is an Instance
+		if (v.type == ValueType::INSTANCE) {
+			auto* instance = static_cast<InstanceObject*>(v.ref.get());
+			auto* cls = instance->klass;
+			ClassObject* methodOwner = nullptr;
+			string magicName = "__display__";
+			for (auto* ancestor : cls->mro) {
+				if (ancestor->methods.count(magicName)) {
+					methodOwner = ancestor;
+					break;
+				}
+			}
+			if (methodOwner) {
+				Value method = methodOwner->methods[magicName].func;
+				VM tempVM;
+				tempVM.globals = this->env;
+				tempVM.methodResolver = [this](MethodCallExpr* m) {
+					return this->Resolve_methods(m);
+				};
+				tempVM.importResolver = [this](std::string libName, std::vector<std::string> symbols) {
+					if (this->modules.count(libName)) this->modules[libName](this->env, symbols);
+					else throw ImportError("Unknown module '" + libName + "'", 0, 0);
+				};
+				Chunk tempChunk;
+				int selfIdx = tempChunk.addConstant(v);
+				tempChunk.write(OpCode::OP_CONSTANT, l, c);
+				tempChunk.write((uint8_t)selfIdx, l, c);
+				Value objVal;
+				objVal.type = ValueType::CLASS;
+				objVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject*) {});
+				int objIdx = tempChunk.addConstant(objVal);
+				tempChunk.write(OpCode::OP_CONSTANT, l, c);
+				tempChunk.write((uint8_t)objIdx, l, c);
+				int methIdx = tempChunk.addConstant(method);
+				tempChunk.write(OpCode::OP_CONSTANT, l, c);
+				tempChunk.write((uint8_t)methIdx, l, c);
+				tempChunk.write(OpCode::OP_CALL, l, c);
+				tempChunk.write((uint8_t)2, l, c);
+				tempChunk.write(OpCode::OP_RETURN, l, c);
+				try {
+					tempVM.run(tempChunk);
+					if (!tempVM.stack.empty()) {
+						Value res = tempVM.stack.back();
+						std::cout << (res.type == ValueType::STRING ? res.asString() : valueToString(res));
+						printedCustom = true;
+					}
+				}
+				catch (const LangError& e) {
+					std::cout << "<Error in __display__: " << e.message << ">";
+					printedCustom = true;
+				}
+				catch (...) {
+					std::cout << "<Critical Error in __display__>";
+					printedCustom = true;
+				}
+			}
+		}
+		if (!printedCustom) {
+			printValue(v);
+		}
+		if (i < args.size() - 1) std::cout << " ";
+	}
+	std::cout << "\n";
+	return Value::None();
+}
