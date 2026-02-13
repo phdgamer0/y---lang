@@ -2,8 +2,22 @@
 #define _CRT_SECURE_NO_WARNINGS
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
-#define TokenType Win_TokenType 
-#include <windows.h>
+#define TokenType Win_TokenType
+#define Rectangle Win_Rectangle
+#define ShowCursor Win_ShowCursor
+#define CloseWindow Win_CloseWindow
+#define DrawText Win_DrawText
+#define DrawTextEx Win_DrawTextEx
+#define DrawTextW Win_DrawTextW
+#define LoadImageW Win_LoadImageW
+#include <windows.h> // My attacks have no effect on you?
+#undef Rectangle
+#undef ShowCursor
+#undef CloseWindow
+#undef DrawText
+#undef DrawTextW
+#undef DrawTextEx
+#undef LoadImageW
 #undef TokenType
 #undef TRUE
 #undef FALSE
@@ -13,7 +27,7 @@
 #undef _TOKEN_INFORMATION_CLASS
 #undef min
 #undef max
-#endif
+#endif // Who decided that?
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif // !ENABLE_VIRTUAL_TERMINAL_PROCESSING
@@ -42,6 +56,7 @@
 #include <math.h>
 #include <intrin.h>
 #include <deque>
+#include "raylib.h"
 
 bool DEBUGGER_MODE_IS_ENABLED = false;
 namespace fs = std::filesystem;
@@ -1891,6 +1906,7 @@ struct ErrorObject;
 struct ClassObject;
 struct InstanceObject;
 using NativeFunc = std::function<Value(const std::vector<Value>&, int, int)>;
+using Inspector = std::function<std::string(const Value&)>;
 struct ValueHash {
 	std::size_t operator()(const Value& v) const;
 };
@@ -2242,15 +2258,45 @@ struct ClassObject : HeapObject {
 		mro.push_back(this);
 	}
 	void computeMRO() {
+		mro.clear();
+		mro.push_back(this);
+		std::vector<std::vector<ClassObject*>> lists;
 		for (auto& pVal : parents) {
 			if (pVal.type == ValueType::CLASS) {
 				auto* pClass = static_cast<ClassObject*>(pVal.ref.get());
-				for (auto* ancestor : pClass->mro) {
-					bool exists = false;
-					for (auto* existing : mro) if (existing == ancestor) { exists = true; break; }
-					if (!exists) mro.push_back(ancestor);
+				lists.push_back(pClass->mro);
+			}
+		}
+		std::vector<ClassObject*> parentsList;
+		for (auto& pVal : parents) if (pVal.type == ValueType::CLASS) parentsList.push_back(static_cast<ClassObject*>(pVal.ref.get()));
+		if (!parentsList.empty()) lists.push_back(parentsList);
+		while (true) {
+			for (size_t i = 0; i < lists.size(); ) {
+				if (lists[i].empty()) lists.erase(lists.begin() + i);
+				else i++;
+			}
+			if (lists.empty()) break;
+			ClassObject* candidate = nullptr;
+			for (size_t i = 0; i < lists.size(); i++) {
+				ClassObject* head = lists[i][0];
+				bool valid = true;
+				for (size_t j = 0; j < lists.size(); j++) {
+					for (size_t k = 1; k < lists[j].size(); k++) {
+						if (lists[j][k] == head) {
+							valid = false;
+							break;
+						}
+					}
+					if (!valid) break;
+				}
+				if (valid) {
+					candidate = head;
+					break;
 				}
 			}
+			if (!candidate) break;
+			mro.push_back(candidate);
+			for (size_t i = 0; i < lists.size(); i++) if (lists[i].front() == candidate) lists[i].erase(lists[i].begin());
 		}
 	}
 	string toString() const {
@@ -2545,6 +2591,19 @@ inline std::size_t ValueHash::operator()(const Value& v) const {
 	case ValueType::BOOL: hash_combine(std::hash<bool>{}(v.asBool())); break;
 	case ValueType::STRING: hash_combine(std::hash<string>{}(v.asString())); break;
 	case ValueType::NONE: hash_combine(0); break;
+	case ValueType::INSTANCE: {
+		auto* inst = static_cast<InstanceObject*>(v.ref.get());
+		hash_combine(std::hash<string>{}(inst->klass->name));
+		size_t fieldsXor = 0;
+		for (const auto& [key, val] : inst->fields) {
+			size_t pairHash = std::hash<string>{}(key);
+			size_t valHash = ValueHash{}(val);
+			pairHash ^= valHash + 0x9e3779b9 + (pairHash << 6) + (pairHash >> 2);
+			fieldsXor ^= pairHash;
+		}
+		hash_combine(fieldsXor);
+		break;
+	}
 	case ValueType::TUPLE: {
 		auto* t = static_cast<TupleObject*>(v.ref.get());
 		for (const auto& elem : t->elements)
@@ -2567,7 +2626,7 @@ inline std::size_t ValueHash::operator()(const Value& v) const {
 	}
 	case ValueType::VECTOR: {
 		auto* vec = static_cast<VectorObject*>(v.ref.get());
-		std::size_t seed = vec->elements.size();
+		hash_combine(vec->elements.size());
 		for (auto& elem : vec->elements) {
 			hash_combine(ValueHash{}(elem));
 		}
@@ -2886,6 +2945,10 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 	case ValueType::REFERENCE:{
 		return valueToString(*v.ptr);
 	}
+	case ValueType::SUPER: {
+		auto* super = static_cast<SuperObject*>(v.ref.get());
+		return "<super"+(super->name.empty()?"": super->name) + ">";
+	}
 	default: throw TypeError("Cannot implicitly convert this type to string", line, col);
 	}
 }
@@ -2925,6 +2988,7 @@ static inline std::string PrintStackForDebug(const std::deque<Value>& stack) {
 		case ValueType::ERROR:            result += "Error"; break;
 		case ValueType::CLASS:            result += "Class"; break;
 		case ValueType::INSTANCE:            result += "Instance"; break;
+		case ValueType::SUPER:            result += "Super"; break;
 		default:                          result += "Unknown"; break;
 		}
 		if (DEBUGGER_MODE_IS_ENABLED) result+=" "+val->__DEBUGGING__NAME__+ (" " + valueToString(*val));
@@ -2996,12 +3060,19 @@ void enableColors() {
 	}
 #endif // _WIN32
 }
-void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, bool quoteStrings) {
+void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, bool quoteStrings, Inspector* inspect = nullptr) {
 	bool isContainer = (v.type == ValueType::LIST || v.type == ValueType::SET ||
 		v.type == ValueType::VECTOR || v.type == ValueType::DICT);
 	if (isContainer && v.ref && seen.count(v.ref.get())) {
 		std::cout << "<self>";
 		return;
+	}
+	if (v.type == ValueType::INSTANCE && inspect) {
+		std::string custom = (*inspect)(v);
+		if (!custom.empty()) {
+			std::cout << custom;
+			return;
+		}
 	}
 	if (isContainer && v.ref) seen.insert(v.ref.get());
 	switch (v.type) {
@@ -3019,7 +3090,7 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 		auto* list = static_cast<ListObject*>(v.ref.get());
 		std::cout << "[";
 		for (size_t i = 0; i < list->elements.size(); i++) {
-			printValue(list->elements[i], seen, true);
+			printValue(list->elements[i], seen, true, inspect);
 			if (i + 1 < list->elements.size()) std::cout << ", ";
 		}
 		std::cout << "]";
@@ -3043,7 +3114,7 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 		}
 		std::cout << "{";
 		for (size_t i = 0; i < list->elements.size(); i++) {
-			printValue(list->elements[i], seen, true);
+			printValue(list->elements[i], seen, true, inspect);
 			if (i + 1 < list->elements.size()) std::cout << ", ";
 		}
 		std::cout << "}";
@@ -3054,7 +3125,7 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 		if (t->elements.empty()) { std::cout << "(,)"; break; }
 		std::cout << "(";
 		for (size_t i = 0; i < t->elements.size(); i++) {
-			printValue(t->elements[i], seen, true);
+			printValue(t->elements[i], seen, true, inspect);
 			if (i + 1 < t->elements.size()) std::cout << ", ";
 			else if (t->elements.size() == 1) std::cout << ",";
 		}
@@ -3067,9 +3138,9 @@ void printValue(const Value& v, std::unordered_set<const HeapObject*>& seen, boo
 		std::cout << "{";
 		size_t i = 0;
 		for (const auto& [key, val] : dict->items) {
-			printValue(key, seen, true);
+			printValue(key, seen, true, inspect);
 			std::cout << " : ";
-			printValue(val, seen, true);
+			printValue(val, seen, true, inspect);
 			if (i + 1 < dict->items.size()) std::cout << ", ";
 			i++;
 		}
@@ -3449,7 +3520,6 @@ struct Interpreter {
 	}
 	Value nativePrint(const vector<Value>& args, int l, int c);
 	void registerStdLib() {
-		
 		modules["FileStream"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
 			auto define = [&](string name, NativeFunc f) {
 				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
@@ -3959,6 +4029,17 @@ struct Interpreter {
 			if (symbols.empty()) env->set("vector", Value::Native(vecConstructor), true);
 			else for (const auto& s : symbols) if (s == "vector") env->set("vector", Value::Native(vecConstructor), true);
 		};
+		modules["Raylib"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto define = [&](string name, NativeFunc f) {
+				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			define("InitWindow", [=](const vector<Value>& args, int l, int c) {
+				if(args.size()!=3) throw ArgumentError("InitWindow takes three arguments, (width, height, text)", l, c);
+				//InitWindow((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str());
+				return Value::None();
+			});
+		};
 		// ========= CASTING ==========
 		env->set("int", Value::Native([this](const vector<Value>& args, int l, int c) {
 			if (args.empty()) return Value::Int(0);
@@ -4213,6 +4294,10 @@ struct Interpreter {
 			case ValueType::FILE: return Value::String("file");
 			case ValueType::PAIRED: return Value::String("pair");
 			case ValueType::BIGINT: return Value::String("integer");
+			case ValueType::CLASS: return Value::String("class");
+			case ValueType::INSTANCE: return Value::String("instance");
+			case ValueType::SUPER: return Value::String("function");
+			case ValueType::ERROR: return Value::String("error");
 			case ValueType::NONE: return Value::String("None");
 			default: return Value::String("NoType");
 			}
@@ -8166,10 +8251,24 @@ struct ByteCodeCompiler {
 				emitConstant(Value::String(c->name), c->line, 0);
 				emitByte(OpCode::OP_CLASS, c->line, 0);
 				chunk->write((uint8_t)c->parents.size(), c->line, 0);
+				vector<Stmt*> instanceFields;
+				auto collectFields = [&](const vector<Stmt*>& body) {
+					for (auto* stmt : body) {
+						if (stmt->type == StmtType::LET) {
+							auto let = static_cast<LetStmt*>(stmt);
+							if (let->name.rfind("self.", 0) == 0) instanceFields.push_back(let);
+						}
+					}
+				};
+				collectFields(c->publicBody);
+				collectFields(c->privateBody);
+				collectFields(c->protectedBody);
 				auto compileClassBody = [&](const vector<Stmt*>& body, AccessLevel access) {
 					for (auto* stmt : body) {
 						if (stmt->type == StmtType::FUNC) {
-							emitFunction(static_cast<FuncStmt*>(stmt),true);
+							auto* func = static_cast<FuncStmt*>(stmt);
+							if (func->name == "__construct__") emitFunction(func, true, instanceFields);
+							else emitFunction(func, true);
 							emitByte(OpCode::OP_METHOD, c->line, 0);
 							chunk->write((uint8_t)access, c->line, 0);
 						}
@@ -8870,7 +8969,7 @@ struct ByteCodeCompiler {
 		chunk->write((offset >> 8) & 0xff, line, col);
 		chunk->write(offset & 0xff, line, col);
 	}
-	void emitFunction(FuncStmt* f, bool isMethod = false) {
+	void emitFunction(FuncStmt* f, bool isMethod = false, const vector<Stmt*>& fieldInits = {}) {
 		Chunk* funcChunk = new Chunk();
 		ByteCodeCompiler subCompiler(funcChunk);
 		subCompiler.beginScope();
@@ -8881,6 +8980,7 @@ struct ByteCodeCompiler {
 		}
 		for (const auto& param : f->params) actualParams.push_back(param);
 		for (const auto& param : actualParams) subCompiler.addLocal(param.name);
+		for (auto* init : fieldInits) subCompiler.compileStmt(init);
 		for (auto bodyStmt : f->body) subCompiler.compileStmt(bodyStmt);
 		subCompiler.emitByte(OpCode::OP_NOTYPE, f->line, f->col);
 		subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
@@ -10840,70 +10940,62 @@ private:
 	}
 };
 Value Interpreter::nativePrint(const vector<Value>& args, int l, int c) {
+	auto runMagic = [&](const Value& v, const std::string& method) -> std::string {
+		if (v.type != ValueType::INSTANCE) return "";
+		auto* instance = static_cast<InstanceObject*>(v.ref.get());
+		auto* cls = instance->klass;
+		ClassObject* methodOwner = nullptr;
+		for (auto* ancestor : cls->mro) {
+			if (ancestor->methods.count(method)) {
+				methodOwner = ancestor;
+				break;
+			}
+		}
+		if (methodOwner) {
+			VM tempVM;
+			tempVM.globals = this->env;
+			tempVM.methodResolver = [this](MethodCallExpr* m) { return this->Resolve_methods(m); };
+			tempVM.importResolver = [this](std::string lib, std::vector<std::string> sym) {
+				if (this->modules.count(lib)) this->modules[lib](this->env, sym);
+				else throw ImportError("Unknown module '" + lib + "'", 0, 0);
+			};
+			Chunk tempChunk;
+			int selfIdx = tempChunk.addConstant(v);
+			tempChunk.write(OpCode::OP_CONSTANT, l, c);
+			tempChunk.write((uint8_t)selfIdx, l, c);
+			Value objVal;
+			objVal.type = ValueType::CLASS;
+			objVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject*) {});
+			int objIdx = tempChunk.addConstant(objVal);
+			tempChunk.write(OpCode::OP_CONSTANT, l, c);
+			tempChunk.write((uint8_t)objIdx, l, c);
+			int methIdx = tempChunk.addConstant(methodOwner->methods[method].func);
+			tempChunk.write(OpCode::OP_CONSTANT, l, c);
+			tempChunk.write((uint8_t)methIdx, l, c);
+			tempChunk.write(OpCode::OP_CALL, l, c);
+			tempChunk.write((uint8_t)2, l, c);
+			tempChunk.write(OpCode::OP_RETURN, l, c);
+			try {
+				tempVM.run(tempChunk);
+				if (!tempVM.stack.empty()) {
+					Value res = tempVM.stack.back();
+					return (res.type == ValueType::STRING ? res.asString() : valueToString(res));
+				}
+			}
+			catch (...) { return ""; }
+		}
+		return "";
+	};
+	Inspector containerInspector = [&](const Value& v) -> std::string {
+		std::string res = runMagic(v, "__inspect__");
+		if (res.empty()) res = runMagic(v, "__display__");
+		return res;
+	};
+	std::unordered_set<const HeapObject*> seen;
 	for (size_t i = 0; i < args.size(); i++) {
-		Value v = args[i];
-		bool printedCustom = false;
-
-		// 1. Check if it is an Instance
-		if (v.type == ValueType::INSTANCE) {
-			auto* instance = static_cast<InstanceObject*>(v.ref.get());
-			auto* cls = instance->klass;
-			ClassObject* methodOwner = nullptr;
-			string magicName = "__display__";
-			for (auto* ancestor : cls->mro) {
-				if (ancestor->methods.count(magicName)) {
-					methodOwner = ancestor;
-					break;
-				}
-			}
-			if (methodOwner) {
-				Value method = methodOwner->methods[magicName].func;
-				VM tempVM;
-				tempVM.globals = this->env;
-				tempVM.methodResolver = [this](MethodCallExpr* m) {
-					return this->Resolve_methods(m);
-				};
-				tempVM.importResolver = [this](std::string libName, std::vector<std::string> symbols) {
-					if (this->modules.count(libName)) this->modules[libName](this->env, symbols);
-					else throw ImportError("Unknown module '" + libName + "'", 0, 0);
-				};
-				Chunk tempChunk;
-				int selfIdx = tempChunk.addConstant(v);
-				tempChunk.write(OpCode::OP_CONSTANT, l, c);
-				tempChunk.write((uint8_t)selfIdx, l, c);
-				Value objVal;
-				objVal.type = ValueType::CLASS;
-				objVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject*) {});
-				int objIdx = tempChunk.addConstant(objVal);
-				tempChunk.write(OpCode::OP_CONSTANT, l, c);
-				tempChunk.write((uint8_t)objIdx, l, c);
-				int methIdx = tempChunk.addConstant(method);
-				tempChunk.write(OpCode::OP_CONSTANT, l, c);
-				tempChunk.write((uint8_t)methIdx, l, c);
-				tempChunk.write(OpCode::OP_CALL, l, c);
-				tempChunk.write((uint8_t)2, l, c);
-				tempChunk.write(OpCode::OP_RETURN, l, c);
-				try {
-					tempVM.run(tempChunk);
-					if (!tempVM.stack.empty()) {
-						Value res = tempVM.stack.back();
-						std::cout << (res.type == ValueType::STRING ? res.asString() : valueToString(res));
-						printedCustom = true;
-					}
-				}
-				catch (const LangError& e) {
-					std::cout << "<Error in __display__: " << e.message << ">";
-					printedCustom = true;
-				}
-				catch (...) {
-					std::cout << "<Critical Error in __display__>";
-					printedCustom = true;
-				}
-			}
-		}
-		if (!printedCustom) {
-			printValue(v);
-		}
+		std::string output = runMagic(args[i], "__display__");
+		if (!output.empty()) std::cout << output;
+		else printValue(args[i], seen, false, &containerInspector);
 		if (i < args.size() - 1) std::cout << " ";
 	}
 	std::cout << "\n";
