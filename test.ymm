@@ -1,31 +1,31 @@
 ~import "Module.ymm"
 define function main(): {
-	define class Animal: {
-	#public:
-	define function __construct__(races: string(), names: string(), ages: int()): {
-		let self.race = races
-		let self.name = names
-		let self.age = ages
-	}
-	define function __display__(): {
-		return f"{self.race} {self.name} {self.age}"
-   }
+	define class Enum: {
 	#private:
+		let self.counter = 0
+		let self.data = dict()
+	#public:
+		define function __construct__(* args): {
+			for arg in args do: {
+			self.data[arg] = self.counter
+			self.counter++
+			}
+		}
+		define function __display__(): {
+			return self.data
+		}
+	
 	#protected:
 	}
-	define class Human : inherits(Animal): {
-	#public:
-	define function __construct__(races: string(), names: string(), ages: int(), height:int()): {
-		super().__construct__(races, names, ages)
-		let self.height = height
-	}
-	define function __display__()-> string(): {
-		return super().__display__() + f" height {self.height}"
-   }
-	#private:
-	#protected:
-}
-	let doggo = Animal("dog", "wolfy", 2)
-	let mmd = Human("human", "mohammed", 22, 183)
-	print(mmd)
+	let my_enum1 = Enum("A", "B", "C", "D")
+	let my_enum2 = Enum("E", "F", "G", "H")
+	let my_enum3 = Enum("I", "J", "K", "L")
+	let my_enum4 = Enum("M", "N", "O", "P")
+	let lis = [my_enum1, my_enum2, my_enum3, my_enum4]
+	let a = [10, 20]
+	let b = a
+	let c = @a
+	let d = $a
+	~delete(@c)
+	print(a.adress(),b.adress(),c.adress(),d.adress())
 }
