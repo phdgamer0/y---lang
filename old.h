@@ -3499,6 +3499,43 @@ static inline std::string magic_methods_to_string(Magic_Methods Magic_method) {
 		return "_";
 	}
 }
+static inline Color ValueToColor(const Value& v, int l, int c) {
+	if (v.type != ValueType::INSTANCE) throw TypeError("Expected Color object", l, c);
+	auto* inst = static_cast<InstanceObject*>(v.ref.get());
+	if (inst->klass->name != "Color") throw TypeError("Expected Color object", l, c);
+
+	return Color{
+		 (unsigned char)inst->fields["r"].asInt(),
+		 (unsigned char)inst->fields["g"].asInt(),
+		 (unsigned char)inst->fields["b"].asInt(),
+		 (unsigned char)inst->fields["a"].asInt()
+	};
+}
+static inline Rectangle ValueToRect(const Value& v, int l, int c) {
+	if (v.type != ValueType::INSTANCE) throw TypeError("Expected Rectangle object", l, c);
+	auto* inst = static_cast<InstanceObject*>(v.ref.get());
+	if (inst->klass->name != "Rectangle") throw TypeError("Expected Rectangle object", l, c);
+	return Rectangle{
+		 (float)inst->fields["x"].asInt(),
+		 (float)inst->fields["y"].asInt(),
+		 (float)inst->fields["width"].asInt(),
+		 (float)inst->fields["height"].asInt()
+	};
+}
+static inline Vector2 ValueToVector2(const Value& v, int l, int c) {
+	if (v.type != ValueType::VECTOR) throw TypeError("Expected Vector object", l, c);
+	auto* vec = static_cast<VectorObject*>(v.ref.get());
+	if (vec->elements.size() < 2) throw ValueError("Vector must have at least 2 elements for Vector2", l, c);
+	return Vector2{ (float)vec->elements[0].asFloat(), (float)vec->elements[1].asFloat() };
+}
+static inline std::vector<Vector2> ValueToVectorList(const Value& v, int l, int c) {
+	if (v.type != ValueType::LIST) throw TypeError("Expected List of Vectors", l, c);
+	auto* list = static_cast<ListObject*>(v.ref.get());
+	std::vector<Vector2> points;
+	points.reserve(list->elements.size());
+	for (const auto& el : list->elements) points.push_back(ValueToVector2(el, l, c));
+	return points;
+}
 // ------------ AST WALKER -------------
 struct Interpreter {
 	std::shared_ptr<Env> env;
@@ -3694,7 +3731,7 @@ struct Interpreter {
 				parts[Value::String("min")] = Value::Int(t->tm_min);
 				parts[Value::String("sec")] = Value::Int(t->tm_sec);
 				return Value::Dict(parts);
-				});
+			});
 		};
 		modules["System"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
 			auto define = [&](string name, NativeFunc f) {
@@ -4034,6 +4071,30 @@ struct Interpreter {
 				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
 				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
 			};
+			define("Color", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("Color(r, g, b, a)", l, c);
+				static auto colorClass = std::make_shared<ClassObject>("Color");
+				auto inst = std::make_shared<InstanceObject>(colorClass.get());
+				inst->fields["r"] = args[0];
+				inst->fields["g"] = args[1];
+				inst->fields["b"] = args[2];
+				inst->fields["a"] = args[3];
+				Value v;
+				v.type = ValueType::INSTANCE;
+				v.ref = inst;
+				return v;
+			});
+			define("Rectangle", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("Rectangle(x, y, w, h)", l, c);
+				static auto rectClass = std::make_shared<ClassObject>("Rectangle");
+				auto inst = std::make_shared<InstanceObject>(rectClass.get());
+				inst->fields["x"] = args[0];
+				inst->fields["y"] = args[1];
+				inst->fields["width"] = args[2];
+				inst->fields["height"] = args[3];
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			});
 			define("InitWindow", [=](const vector<Value>& args, int l, int c) {
 				if(args.size()!=3) throw ArgumentError("InitWindow() takes three arguments, (width, height, text)", l, c);
 				InitWindow((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str());
@@ -4057,22 +4118,147 @@ struct Interpreter {
 				return Value::None();
 			});
 			define("ClearBackground", [=](const vector<Value>& args, int l, int c) {
-				if (args.size()!=4) throw ArgumentError("ClearBackground() takes four arguments (r, g, b, a)", l, c);
-				Color bass={.r=(unsigned char)args[0].asInt(),.g = (unsigned char)args[1].asInt(),.b = (unsigned char)args[2].asInt(),.a = (unsigned char)args[3].asInt()};
-				ClearBackground(bass);
+				if (args.size() != 1) throw ArgumentError("ClearBackground(Color)", l, c);
+				ClearBackground(ValueToColor(args[0], l, c));
 				return Value::None();
 			});
 			define("SetTargetFPS", [=](const vector<Value>& args, int l, int c) {
 				if (args.size() != 1) throw ArgumentError("SetTargetFPS(fps)", l, c);
 				SetTargetFPS((int)args[0].asInt());
 				return Value::None();
-				});
-
+			});
 			define("DrawFPS", [=](const vector<Value>& args, int l, int c) {
 				if (args.size() != 2) throw ArgumentError("DrawFPS(x, y)", l, c);
 				DrawFPS((int)args[0].asInt(), (int)args[1].asInt());
 				return Value::None();
-				});
+			});
+			define("DrawText", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawText(str, x, y, size, color)", l, c);
+				DrawText(args[0].asString().c_str(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawPixel", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawPixel(x, y, color)", l, c);
+				DrawPixel((int)args[0].asInt(), (int)args[1].asInt(), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawPixelV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawPixelV(vec, color)", l, c);
+				DrawPixelV(ValueToVector2(args[0], l, c), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawLine", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawLine(x1, y1, x2, y2, color)", l, c);
+				DrawLine((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawLineV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawLineV(vec1, vec2, color)", l, c);
+				DrawLineV(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawLineEx", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawLineEx(vec1, vec2, thick, color)", l, c);
+				DrawLineEx(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawLineBezier", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawLineBezier(vec1, vec2, thick, color)", l, c);
+				DrawLineBezier(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawLineStrip", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawLineStrip(pointList, color)", l, c);
+				auto points = ValueToVectorList(args[0], l, c);
+				DrawLineStrip(points.data(), (int)points.size(), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawCircle", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawCircle(x, y, radius, color)", l, c);
+				DrawCircle((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawCircleV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawCircleV(centerVec, radius, color)", l, c);
+				DrawCircleV(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawCircleLines", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawCircleLines(x, y, radius, color)", l, c);
+				DrawCircleLines((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawCircleGradient", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawCircleGradient(x, y, radius, inner, outer)", l, c);
+				DrawCircleGradient((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawCircleSector", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("DrawCircleSector(center, radius, start, end, segs, color)", l, c);
+				DrawCircleSector(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (int)args[4].asInt(), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
+			define("DrawEllipse", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawEllipse(x, y, radH, radV, color)", l, c);
+				DrawEllipse((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawRing", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 7) throw ArgumentError("DrawRing(center, inner, outer, start, end, segs, color)", l, c);
+				DrawRing(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), (int)args[5].asInt(), ValueToColor(args[6], l, c));
+				return Value::None();
+			});
+			define("DrawRectangle", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawRectangle(x, y, w, h, color)", l, c);
+				DrawRectangle((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawRectangleV(posVec, sizeVec, color)", l, c);
+				DrawRectangleV(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleRec", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawRectangleRec(rect, color)", l, c);
+				DrawRectangleRec(ValueToRect(args[0], l, c), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawRectanglePro", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawRectanglePro(rect, originVec, rot, color)", l, c);
+				DrawRectanglePro(ValueToRect(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleGradientV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("DrawRectangleGradientV(x, y, w, h, topCol, botCol)", l, c);
+				DrawRectangleGradientV((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleRounded", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawRectangleRounded(rect, roundness, segs, color)", l, c);
+				DrawRectangleRounded(ValueToRect(args[0], l, c), (float)args[1].asFloat(), (int)args[2].asInt(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawTriangle", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawTriangle(v1, v2, v3, color)", l, c);
+				DrawTriangle(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawTriangleFan", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawTriangleFan(pointList, color)", l, c);
+				auto points = ValueToVectorList(args[0], l, c);
+				DrawTriangleFan(points.data(), (int)points.size(), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawPoly", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawPoly(center, sides, radius, rot, color)", l, c);
+				DrawPoly(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawPolyLinesEx", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("DrawPolyLinesEx(center, sides, radius, rot, thick, color)", l, c);
+				DrawPolyLinesEx(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
 		};
 		// ========= CASTING ==========
 		env->set("int", Value::Native([this](const vector<Value>& args, int l, int c) {
@@ -7665,6 +7851,8 @@ struct Interpreter {
 		catch (...) {throw;}
 	}
 private:
+	
+	//static auto rectClass = std::make_shared<ClassObject>("Rectangle");
 	bool canOptimizeScope(const vector<Stmt*>& body) {
 		for (auto* st : body) {
 			if (st->type == StmtType::LET || st->type == StmtType::MULTI_LET ||
@@ -7693,7 +7881,7 @@ enum class OpCode : uint8_t {
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
 	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
 	// Arithmetic & Logic
-	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_DUP,
+	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_DUP, OP_DUP_2,
 	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
 	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
 	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
@@ -7743,6 +7931,7 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_MOD: return "OP_MOD";
 		case OpCode::OP_POW: return "OP_POW";
 		case OpCode::OP_DUP: return "OP_DUP";
+		case OpCode::OP_DUP_2: return "OP_DUP_2";
 		case OpCode::OP_EQ: return "OP_EQ";
 		case OpCode::OP_NEQ: return "OP_NEQ";
 		case OpCode::OP_LT: return "OP_LT";
@@ -8014,8 +8203,10 @@ struct ByteCodeCompiler {
 			break;
 		}
 		case ExprType::BINARY: {
-			compileBinary(static_cast<BinExpr*>(e));
-				break;
+			auto b = static_cast<BinExpr*>(e);
+			if (b->op == TokenType::AND || b->op == TokenType::OR) compileLogical(b);
+			else compileBinary(b);
+			break;
 		}
 		case ExprType::VAR: {
 			auto v = static_cast<VarExpr*>(e);
@@ -8528,8 +8719,24 @@ struct ByteCodeCompiler {
 				}
 				if (auto idx = dynamic_cast<IndexExpr*>(as->target)) {
 					if (as->op != TokenType::ASSIGN) {
-						// Support for a[0] += 1 is skipped for now
-						throw SyntaxError("Augmented assignment on index not supported yet", as->line, as->col);
+						compile(idx->base);
+						compile(idx->index);
+						emitByte(OpCode::OP_DUP_2, as->line, as->col);
+						emitByte(OpCode::OP_GET_INDEX, as->line, as->col);
+						compile(as->value);
+						switch (as->op) {
+						case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
+						case TokenType::MINUS_EQ: emitByte(OpCode::OP_SUB, as->line, as->col); break;
+						case TokenType::STAR_EQ: emitByte(OpCode::OP_MUL, as->line, as->col); break;
+						case TokenType::DIV_EQ: emitByte(OpCode::OP_DIV, as->line, as->col); break;
+						case TokenType::FLOOR_DIV_EQ: emitByte(OpCode::OP_FLOOR_DIV, as->line, as->col); break;
+						case TokenType::MOD_EQ: emitByte(OpCode::OP_MOD, as->line, as->col); break;
+						case TokenType::POW_EQ: emitByte(OpCode::OP_POW, as->line, as->col); break;
+						default: throw SyntaxError("Unknown augmented assignment", as->line, as->col);
+						}
+						emitByte(OpCode::OP_SET_INDEX, as->line, as->col);
+						emitByte(OpCode::OP_POP, as->line, as->col);
+						break;
 					}
 					compile(idx->base);
 					compile(idx->index);
@@ -9198,6 +9405,14 @@ struct VM {
 				}
 				case OpCode::OP_DUP: {
 					stack.push_back(stack.back());
+					break;
+				}
+				case OpCode::OP_DUP_2: {
+					if (stack.size() < 2) throw UnderflowError("Stack underflow for DUP_2", line, col);
+					Value top = stack.back();
+					Value under = stack[stack.size() - 2];
+					stack.push_back(under);
+					stack.push_back(top);
 					break;
 				}
 				case OpCode::OP_CALL: {
@@ -10389,8 +10604,24 @@ struct VM {
 						if (idx < 0 || idx >= (long long)str->value.size()) throw IndexError("String assignment index out of range", line, col);
 						str->value[idx] = val.asString()[0];
 					}
-					else if (base.type == ValueType::TUPLE) 
-					throw MutationError("Tuple object does not support item assignment", line, col);
+					else if (base.type == ValueType::VECTOR) {
+						auto* vec = static_cast<VectorObject*>(base.ref.get());
+						if(!index.isNumber()) throw TypeError("Vector index must be a number", line, col);
+						long long idx = index.asInt();
+						if (idx < 0) idx += vec->elements.size();
+						if (idx < 0 || idx >= (long long)vec->elements.size())
+							throw IndexError("Vector assignment index out of range", line, col);
+						vec->elements[idx] = val;
+					}
+					else if (base.type == ValueType::SET) {
+						auto* st = static_cast<SetObject*>(base.ref.get());
+						long long idx = index.asInt();
+						if (idx < 0) idx += st->elements.size();
+						if (idx < 0 || idx >= (long long)st->elements.size())
+							throw IndexError("Set assignment index out of range", line, col);
+						st->elements[idx] = val;
+					}
+					else if (base.type == ValueType::TUPLE) throw MutationError("Tuple object does not support item assignment", line, col);
 					else throw MutationError("Object does not support item assignment", line, col);
 					stack.push_back(val);
 					break;
