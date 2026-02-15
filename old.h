@@ -4035,10 +4035,44 @@ struct Interpreter {
 				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
 			};
 			define("InitWindow", [=](const vector<Value>& args, int l, int c) {
-				if(args.size()!=3) throw ArgumentError("InitWindow takes three arguments, (width, height, text)", l, c);
-				//InitWindow((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str());
+				if(args.size()!=3) throw ArgumentError("InitWindow() takes three arguments, (width, height, text)", l, c);
+				InitWindow((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str());
 				return Value::None();
 			});
+			define("CloseWindow", [=](const vector<Value>& args, int l, int c) {
+				if(!args.empty()) throw ArgumentError("CloseWindow() takes no arguments", l, c);
+				CloseWindow();
+				return Value::None();
+			});
+			define("WindowShouldClose", [=](const vector<Value>& args, int l, int c) {
+				if (!args.empty()) throw ArgumentError("WindowShouldClose() takes no arguments", l, c);
+				return Value::Bool((bool)WindowShouldClose());
+			});
+			define("BeginDrawing", [=](const vector<Value>& args, int l, int c) {
+				BeginDrawing();
+				return Value::None();
+			});
+			define("EndDrawing", [=](const vector<Value>& args, int l, int c) {
+				EndDrawing();
+				return Value::None();
+			});
+			define("ClearBackground", [=](const vector<Value>& args, int l, int c) {
+				if (args.size()!=4) throw ArgumentError("ClearBackground() takes four arguments (r, g, b, a)", l, c);
+				Color bass={.r=(unsigned char)args[0].asInt(),.g = (unsigned char)args[1].asInt(),.b = (unsigned char)args[2].asInt(),.a = (unsigned char)args[3].asInt()};
+				ClearBackground(bass);
+				return Value::None();
+			});
+			define("SetTargetFPS", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("SetTargetFPS(fps)", l, c);
+				SetTargetFPS((int)args[0].asInt());
+				return Value::None();
+				});
+
+			define("DrawFPS", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawFPS(x, y)", l, c);
+				DrawFPS((int)args[0].asInt(), (int)args[1].asInt());
+				return Value::None();
+				});
 		};
 		// ========= CASTING ==========
 		env->set("int", Value::Native([this](const vector<Value>& args, int l, int c) {
