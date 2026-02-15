@@ -1,3 +1,5 @@
+import Raylib
+import Time
 import Vector
 import Math
 import Random
@@ -81,4 +83,37 @@ define function hash($arg)-> int():{
 		i++
 	}
 	return int(Abs(H) * (10**18))
+}
+define function draw_clock_body(center, clc_clor, dot_color): {
+	DrawCircleV(center, 202, dot_color)
+	DrawCircleV(center, 200, clc_clor)
+	DrawCircleV(center, 3, dot_color)
+	`v_begin = <400 + 160 * cosx, 300 + 160 * sinx>`
+	`v_end = <400 + 195 * cosx, 300 + 195 * sinx>`
+let angle = float()
+for i in 0...12...1 do: {
+	angle = float(i * PI / 6)
+	DrawLineEx(<400+ 160 * Cos(angle), 300 + 160 * Sin(angle) >, <400+ 195 * Cos(angle), 300 + 195 * Sin(angle) >, 2, dot_color)
+}
+}
+define function draw_hour(center, hour, minute, color): {
+	let angle = float((hour + minute / 60.0) * PI / 6.0 - PI / 2.0)
+DrawLineEx(center, <400+80 * Cos(angle), 300 + 80 * Sin(angle) >, 2, color)
+}
+define function draw_minute(center, minute, second, color): {
+	let smooth_min = float(minute) + (float(second) / 60.0)
+let angle = float(smooth_min * PI / 30.0 - PI / 2.0)
+DrawLineEx(center, <400 + 120 * Cos(angle), 300 + 120 * Sin(angle) >, 2, color)
+}
+define function draw_second(center, second, color): {
+	let angle = float(second * PI / 30.0 - PI / 2.0)
+DrawLineEx(center, <400 + 150 * Cos(angle), 300 + 150 * Sin(angle) >, 2, color)
+}
+define function draw_clock(center, clc_clor, dot_color): {
+	draw_clock_body(center, clc_clor, dot_color)
+	let time_format = Local(Now())
+DrawText(f'{time_format["hour"]} : {time_format["min"]} : {time_format["sec"]}', 350, 10, 20, dot_color)
+draw_hour(center, time_format["hour"], time_format["min"], dot_color)
+draw_minute(center, time_format["min"], time_format["sec"], dot_color)
+draw_second(center, time_format["sec"], Color(255, 0, 0, 255))
 }
