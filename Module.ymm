@@ -4,10 +4,10 @@ import Vector
 import Math
 import Random
 let const WIN_WIDTH = 800
-let const WIN_HEIGHT = 600
+let const WIN_HEIGHT = 800
 let const RADH = 58
 let const RADV = 28
-
+let const THICKNESS = 2
 define function draw_leaf(centerx, centery, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color): {
 	if has_shadow: {
 	DrawEllipse(centerx + radV, centery, radH + shadow_thickness, radV + shadow_thickness, shadow_color)
@@ -157,4 +157,23 @@ define function draw_clock(center, clc_clor, dot_color): {
 	draw_minute(center, time_format["min"], time_format["sec"], dot_color)
 	draw_second(center, time_format["sec"], Color(255, 0, 0, 255))
 	DrawCircleV(center, 3, dot_color)
+}
+define function foo(): {
+	InitWindow(WIN_WIDTH, WIN_HEIGHT,"Clock sim")
+	let pink = Color(255, 150, 170, 255)
+let yellow = Color(255, 255, 0, 255)
+let center = vector(400, 300)
+let gray = Color(230, 230, 230, 255)
+let black = Color(0, 0, 0, 255)
+let white = Color(255, 255, 255, 255)
+SetTargetFPS(60)
+while (not bool(WindowShouldClose())) do: {
+	BeginDrawing()
+	ClearBackground(pink)
+	~DrawFPS(10, 10)
+	~fill_with_flowers(WIN_WIDTH, WIN_HEIGHT, yellow, RADH, RADV, white, true, 1, black)
+	~draw_clock(center, white, black)
+	EndDrawing()
+}
+	CloseWindow()
 }

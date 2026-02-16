@@ -1,20 +1,32 @@
 import "Module.ymm"
-
+define function steup_axis(T,C): {
+	DrawLineEx(<0, WIN_HEIGHT/2>,<WIN_WIDTH,WIN_HEIGHT/2 >, T, C)
+	DrawLineEx(<WIN_WIDTH/2, 0>,<WIN_WIDTH/2,WIN_HEIGHT >, T, C)
+}
+define function coordinant(w,h,x,lam,color)->vector(): {
+	return <x+w/2,-lam(x)+h/2>
+}
+define function draw_function(w, h, lam, color): {
+	for let i = -w / 2 if i <= w / 2 then i++ do: {
+		DrawLineV(coordinant(w,h,(i),lam,color), coordinant(w,h,(i+1),lam,color),color)
+	}
+}
 define function main(): {
-	InitWindow(WIN_WIDTH,WIN_HEIGHT,"Clock sim")
+	InitWindow(WIN_WIDTH,WIN_HEIGHT,"drawing a function in y--")
 	let pink = Color(255, 150, 170, 255)
 	let yellow = Color(255,255,0,255)
 	let center = vector(400, 300)
 	let gray = Color(230, 230, 230, 255)
 	let black = Color(0, 0, 0, 255)
 	let white = Color(255, 255, 255, 255)
+	let quadratic = define lambda function(x: int())->float(): {return float(x*x + x + 1)}
 	SetTargetFPS(60)
 	while (not bool(WindowShouldClose())) do: {
 		BeginDrawing()
-		ClearBackground(pink)
-		~DrawFPS(10, 10)
-		fill_with_flowers(WIN_WIDTH, WIN_HEIGHT, yellow, RADH, RADV, white, true, 1, black)
-		draw_clock(center, white, black)
+		ClearBackground(black)
+		DrawFPS(10, 10)
+		steup_axis(THICKNESS-1,yellow)
+		draw_function(WIN_WIDTH,WIN_HEIGHT,quadratic,pink)
 		EndDrawing()
 	}
 	CloseWindow()
