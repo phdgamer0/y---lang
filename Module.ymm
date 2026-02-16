@@ -3,6 +3,35 @@ import Time
 import Vector
 import Math
 import Random
+let const WIN_WIDTH = 800
+let const WIN_HEIGHT = 600
+let const RADH = 58
+let const RADV = 28
+
+define function draw_leaf(centerx, centery, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color): {
+	if has_shadow: {
+	DrawEllipse(centerx + radV, centery, radH + shadow_thickness, radV + shadow_thickness, shadow_color)
+	DrawEllipse(centerx - radV, centery, radH + shadow_thickness, radV + shadow_thickness, shadow_color)
+	DrawEllipse(centerx, centery + radV, radV + shadow_thickness, radH + shadow_thickness, shadow_color)
+	DrawEllipse(centerx, centery - radV, radV + shadow_thickness, radH + shadow_thickness, shadow_color)
+}
+DrawEllipse(centerx + radV, centery, radH, radV, leaf_color)
+DrawEllipse(centerx - radV, centery, radH, radV, leaf_color)
+DrawEllipse(centerx, centery + radV, radV, radH, leaf_color)
+DrawEllipse(centerx, centery - radV, radV, radH, leaf_color)
+}
+define function draw_flower(centerx, centery, center_color, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color): {
+	draw_leaf(centerx, centery, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color)
+	if has_shadow: DrawCircle(centerx, centery, radV + shadow_thickness, shadow_color)
+DrawCircle(centerx, centery, radV, center_color)
+}
+define function fill_with_flowers(win_w, win_h, center_color, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color): {
+	for i in 40...win_w...80 do: {
+	for j in 40...win_h...80 do: {
+		draw_flower(i, j, center_color, radH / 3, radV / 3, leaf_color, has_shadow, shadow_thickness, shadow_color)
+	}
+	}
+}
 define cached function fib(n: int()) -> int(): {
 	if n is in [0, 1]: return n
 	else : return (fib(n - 1) + fib(n - 2))
@@ -85,9 +114,9 @@ define function hash($arg)-> int():{
 	return int(Abs(H) * (10**18))
 }
 define function draw_clock_body(center, clc_clor, dot_color): {
+	~DrawRectangle(WIN_WIDTH/2-200,WIN_HEIGHT/2 - 200, 400, 400, Color(255, 150, 170, 255) )
 	DrawCircleV(center, 202, dot_color)
 	DrawCircleV(center, 200, clc_clor)
-	DrawCircleV(center, 3, dot_color)
 	`v_begin = <400 + 160 * cosx, 300 + 160 * sinx>`
 	`v_end = <400 + 195 * cosx, 300 + 195 * sinx>`
 let angle = float()
@@ -98,22 +127,34 @@ for i in 0...12...1 do: {
 }
 define function draw_hour(center, hour, minute, color): {
 	let angle = float((hour + minute / 60.0) * PI / 6.0 - PI / 2.0)
-DrawLineEx(center, <400+80 * Cos(angle), 300 + 80 * Sin(angle) >, 2, color)
+DrawLineEx(center, <WIN_WIDTH / 2 + 80 * Cos(angle), WIN_HEIGHT / 2 + 80 * Sin(angle) >, 2, color)
 }
 define function draw_minute(center, minute, second, color): {
 	let smooth_min = float(minute) + (float(second) / 60.0)
 let angle = float(smooth_min * PI / 30.0 - PI / 2.0)
-DrawLineEx(center, <400 + 120 * Cos(angle), 300 + 120 * Sin(angle) >, 2, color)
+DrawLineEx(center, <WIN_WIDTH / 2 + 120 * Cos(angle), WIN_HEIGHT / 2 + 120 * Sin(angle) >, 2, color)
 }
 define function draw_second(center, second, color): {
 	let angle = float(second * PI / 30.0 - PI / 2.0)
-DrawLineEx(center, <400 + 150 * Cos(angle), 300 + 150 * Sin(angle) >, 2, color)
+DrawLineEx(center, <WIN_WIDTH / 2 + 150 * Cos(angle), WIN_HEIGHT / 2 + 150 * Sin(angle) >, 2, color)
+}
+define function draw_digital_time(time, x, y, size, text_color, has_bg, bg_color): {
+	let h = string(time["hour"]) if time["hour"] >= 10 else "0" + string(time["hour"])
+	let m = string(time["min"]) if time["min"] >= 10 else "0" + string(time["min"])
+	let s = string(time["sec"]) if time["sec"] >= 10 else "0" + string(time["sec"])
+	if has_bg: {
+		DrawRectangle(x - 6, y-2, 112, 22, text_color)
+		DrawRectangle(x - 5, y - 1, 110, 20, bg_color)
+		
+	}
+	DrawText(f'{h} : {m} : {s}', x, y, size, text_color)
 }
 define function draw_clock(center, clc_clor, dot_color): {
 	draw_clock_body(center, clc_clor, dot_color)
 	let time_format = Local(Now())
-DrawText(f'{time_format["hour"]} : {time_format["min"]} : {time_format["sec"]}', 350, 10, 20, dot_color)
-draw_hour(center, time_format["hour"], time_format["min"], dot_color)
-draw_minute(center, time_format["min"], time_format["sec"], dot_color)
-draw_second(center, time_format["sec"], Color(255, 0, 0, 255))
+	draw_digital_time(time_format,WIN_WIDTH/2-50,10,20,dot_color,true,clc_clor)
+	draw_hour(center, time_format["hour"], time_format["min"], dot_color)
+	draw_minute(center, time_format["min"], time_format["sec"], dot_color)
+	draw_second(center, time_format["sec"], Color(255, 0, 0, 255))
+	DrawCircleV(center, 3, dot_color)
 }

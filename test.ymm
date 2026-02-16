@@ -1,8 +1,7 @@
 import "Module.ymm"
-let const RADH = 70
-let const RADV = 40
+
 define function main(): {
-	InitWindow(800,600,"Clock sim")
+	InitWindow(WIN_WIDTH,WIN_HEIGHT,"Clock sim")
 	let pink = Color(255, 150, 170, 255)
 	let yellow = Color(255,255,0,255)
 	let center = vector(400, 300)
@@ -13,19 +12,9 @@ define function main(): {
 	while (not bool(WindowShouldClose())) do: {
 		BeginDrawing()
 		ClearBackground(pink)
-		DrawFPS(10, 10)
-		~draw_clock(center, gray, black)
-		~DrawEllipse(400+RADV, 300, RADH + 1, RADV+1, black)
-		DrawEllipse(400+RADV, 300, RADH, RADV, white)
-		~DrawEllipse(400, 300+RADV, RADV + 1, RADH + 1, black)
-		DrawEllipse(400, 300 + RADV, RADV, RADH, white)
-		~DrawEllipse(400 - RADV, 300, RADH + 1, RADV + 1, black)
-		DrawEllipse(400 - RADV, 300, RADH, RADV, white)
-		~DrawEllipse(400, 300 - RADV, RADV + 1, RADH + 1, black)
-		DrawEllipse(400, 300 - RADV, RADV, RADH, white)
-		~DrawCircle(400, 300, RADV + 1, black)
-		DrawCircle(400, 300, RADV,yellow)
-		
+		~DrawFPS(10, 10)
+		fill_with_flowers(WIN_WIDTH, WIN_HEIGHT, yellow, RADH, RADV, white, true, 1, black)
+		draw_clock(center, white, black)
 		EndDrawing()
 	}
 	CloseWindow()
