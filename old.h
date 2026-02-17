@@ -3528,6 +3528,13 @@ static inline Vector2 ValueToVector2(const Value& v, int l, int c) {
 	if (vec->elements.size() < 2) throw ValueError("Vector must have at least 2 elements for Vector2", l, c);
 	return Vector2{ (float)vec->elements[0].asFloat(), (float)vec->elements[1].asFloat() };
 }
+static inline auto Vector2ToValue = [&](Vector2 v) -> Value {
+	std::vector<Value> elems;
+	elems.reserve(2);
+	elems.push_back(Value::Float(v.x));
+	elems.push_back(Value::Float(v.y));
+	return Value::Vector(elems);
+};
 static inline std::vector<Vector2> ValueToVectorList(const Value& v, int l, int c) {
 	if (v.type != ValueType::LIST) throw TypeError("Expected List of Vectors", l, c);
 	auto* list = static_cast<ListObject*>(v.ref.get());
@@ -4071,9 +4078,48 @@ struct Interpreter {
 				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
 				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
 			};
+			static auto colorClass = std::make_shared<ClassObject>("Color");
+			auto MakeColor = [&](int r, int g, int b, int a) -> Value {
+				auto inst = std::make_shared<InstanceObject>(colorClass.get());
+				inst->fields["r"] = Value::Int(r);
+				inst->fields["g"] = Value::Int(g);
+				inst->fields["b"] = Value::Int(b);
+				inst->fields["a"] = Value::Int(a);
+
+				Value v;
+				v.type = ValueType::INSTANCE;
+				v.ref = inst;
+				v.isConst = true; // Important: Make default colors constant!
+				return v;
+			};
+			env->set("LIGHTGRAY", MakeColor(200, 200, 200, 255), true, true);
+			env->set("GRAY", MakeColor(130, 130, 130, 255), true, true);
+			env->set("DARKGRAY", MakeColor(80, 80, 80, 255), true, true);
+			env->set("YELLOW", MakeColor(253, 249, 0, 255), true, true);
+			env->set("GOLD", MakeColor(255, 203, 0, 255), true, true);
+			env->set("ORANGE", MakeColor(255, 161, 0, 255), true, true);
+			env->set("PINK", MakeColor(255, 109, 194, 255), true, true);
+			env->set("RED", MakeColor(230, 41, 55, 255), true, true);
+			env->set("MAROON", MakeColor(190, 33, 55, 255), true, true);
+			env->set("GREEN", MakeColor(0, 228, 48, 255), true, true);
+			env->set("LIME", MakeColor(0, 158, 47, 255), true, true);
+			env->set("DARKGREEN", MakeColor(0, 117, 44, 255), true, true);
+			env->set("SKYBLUE", MakeColor(102, 191, 255, 255), true, true);
+			env->set("BLUE", MakeColor(0, 121, 241, 255), true, true);
+			env->set("DARKBLUE", MakeColor(0, 82, 172, 255), true, true);
+			env->set("PURPLE", MakeColor(200, 122, 255, 255), true, true);
+			env->set("VIOLET", MakeColor(135, 60, 190, 255), true, true);
+			env->set("DARKPURPLE", MakeColor(112, 31, 126, 255), true, true);
+			env->set("BEIGE", MakeColor(211, 176, 131, 255), true, true);
+			env->set("BROWN", MakeColor(127, 106, 79, 255), true, true);
+			env->set("DARKBROWN", MakeColor(76, 63, 47, 255), true, true);
+			env->set("WHITE", MakeColor(255, 255, 255, 255), true, true);
+			env->set("BLACK", MakeColor(0, 0, 0, 255), true, true);
+			env->set("BLANK", MakeColor(0, 0, 0, 0), true, true);
+			env->set("MAGENTA", MakeColor(255, 0, 255, 255), true, true);
+			env->set("RAYWHITE", MakeColor(245, 245, 245, 255), true, true);
 			define("Color", [=](const vector<Value>& args, int l, int c) {
 				if (args.size() != 4) throw ArgumentError("Color(r, g, b, a)", l, c);
-				static auto colorClass = std::make_shared<ClassObject>("Color");
 				auto inst = std::make_shared<InstanceObject>(colorClass.get());
 				inst->fields["r"] = args[0];
 				inst->fields["g"] = args[1];
@@ -4083,7 +4129,7 @@ struct Interpreter {
 				v.type = ValueType::INSTANCE;
 				v.ref = inst;
 				return v;
-			});
+				});
 			define("Rectangle", [=](const vector<Value>& args, int l, int c) {
 				if (args.size() != 4) throw ArgumentError("Rectangle(x, y, w, h)", l, c);
 				static auto rectClass = std::make_shared<ClassObject>("Rectangle");
@@ -4257,6 +4303,91 @@ struct Interpreter {
 			define("DrawPolyLinesEx", [](const vector<Value>& args, int l, int c) {
 				if (args.size() != 6) throw ArgumentError("DrawPolyLinesEx(center, sides, radius, rot, thick, color)", l, c);
 				DrawPolyLinesEx(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
+			define("IsKeyPressed", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyPressed(key)", l, c);
+				return Value::Bool(IsKeyPressed((int)args[0].asInt()));
+			});
+			define("IsKeyPressedRepeat", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyPressedRepeat(key)", l, c);
+				return Value::Bool(IsKeyPressedRepeat((int)args[0].asInt()));
+			});
+			define("IsKeyDown", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyDown(key)", l, c);
+				return Value::Bool(IsKeyDown((int)args[0].asInt()));
+			});
+			define("IsKeyReleased", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyReleased(key)", l, c);
+				return Value::Bool(IsKeyReleased((int)args[0].asInt()));
+			});
+			define("IsKeyUp", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyUp(key)", l, c);
+				return Value::Bool(IsKeyUp((int)args[0].asInt()));
+			});
+			define("GetKeyPressed", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetKeyPressed());
+			});
+			define("GetCharPressed", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetCharPressed());
+			});
+			define("SetExitKey", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("SetExitKey(key)", l, c);
+				SetExitKey((int)args[0].asInt());
+				return Value::None();
+			});
+			define("IsMouseButtonPressed", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonPressed(button)", l, c);
+				return Value::Bool(IsMouseButtonPressed((int)args[0].asInt()));
+			});
+			define("IsMouseButtonDown", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonDown(button)", l, c);
+				return Value::Bool(IsMouseButtonDown((int)args[0].asInt()));
+			});
+			define("IsMouseButtonReleased", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonReleased(button)", l, c);
+				return Value::Bool(IsMouseButtonReleased((int)args[0].asInt()));
+			});
+			define("IsMouseButtonUp", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonUp(button)", l, c);
+				return Value::Bool(IsMouseButtonUp((int)args[0].asInt()));
+			});
+			define("GetMouseX", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetMouseX());
+			});
+			define("GetMouseY", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetMouseY());
+			});
+			define("GetMousePosition", [=](const vector<Value>& args, int l, int c) {
+				return Vector2ToValue(GetMousePosition());
+			});
+			define("GetMouseDelta", [=](const vector<Value>& args, int l, int c) {
+				return Vector2ToValue(GetMouseDelta());
+			});
+			define("SetMousePosition", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("SetMousePosition(x, y)", l, c);
+				SetMousePosition((int)args[0].asInt(), (int)args[1].asInt());
+				return Value::None();
+			});
+			define("SetMouseOffset", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("SetMouseOffset(x, y)", l, c);
+				SetMouseOffset((int)args[0].asInt(), (int)args[1].asInt());
+				return Value::None();
+			});
+			define("SetMouseScale", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("SetMouseScale(x, y)", l, c);
+				SetMouseScale((float)args[0].asFloat(), (float)args[1].asFloat());
+				return Value::None();
+			});
+			define("GetMouseWheelMove", [](const vector<Value>& args, int l, int c) {
+				return Value::Float(GetMouseWheelMove());
+			});
+			define("GetMouseWheelMoveV", [=](const vector<Value>& args, int l, int c) {
+				return Vector2ToValue(GetMouseWheelMoveV());
+			});
+			define("SetMouseCursor", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("SetMouseCursor(cursor)", l, c);
+				SetMouseCursor((int)args[0].asInt());
 				return Value::None();
 			});
 		};
