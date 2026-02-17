@@ -7,7 +7,7 @@ define function coordinant(w,h,x,lam,color)->vector(): {
 	return <x+w/2,-lam(x)+h/2>
 }
 define function draw_function(w, h, lam, color): {
-	for let i = -w / 2 if i <= w / 2 then i++ do: {
+	for let i = -w / 2 if i <= w / 2 then i++ do: { 
 		DrawLineV(coordinant(w,h,(i),lam,color), coordinant(w,h,(i+1),lam,color),color)
 	}
 }
