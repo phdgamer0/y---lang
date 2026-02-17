@@ -1,0 +1,40 @@
+Copyright (c) 2026 Yazdan Samari
+
+All rights reserved.
+
+This software, including the compiler, runtime, standard library,
+tooling, documentation, and associated materials (the "Language"),
+is the intellectual property of Yazdan Samari.
+
+Permission is granted to any individual to:
+- Use the Language to create applications and libraries
+- Distribute and sell applications or libraries created using the Language
+- Use the Language for personal, educational, or internal purposes
+- Study the source code and report bugs or provide feedback
+
+The following actions are STRICTLY PROHIBITED without explicit written
+permission from the author:
+
+1. Claiming authorship or ownership of the Language or its source code
+2. Rebranding, renaming, or presenting the Language as a separate or
+   original language or product
+3. Selling, sublicensing, or monetizing the Language itself
+4. Distributing modified or unmodified copies of the Language
+5. Forking the Language for public release or redistribution
+6. Removing or altering copyright or authorship notices
+
+For clarity:
+- Applications, libraries, and other works created USING the Language
+  are NOT considered derivative works of the Language.
+- Ownership of such works belongs entirely to their respective authors.
+
+Any violation of these terms automatically terminates this license and
+constitutes copyright infringement.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING
+FROM THE USE OF THE SOFTWARE.
+
+© 2026 Yazdan Samari. All rights reserved.
