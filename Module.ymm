@@ -113,6 +113,7 @@ define function hash($arg)-> int():{
 	}
 	return int(Abs(H) * (10**18))
 }
+``` CLOCK SIM: ```
 define function draw_clock_body(center, clc_clor, dot_color): {
 	~DrawRectangle(WIN_WIDTH/2-200,WIN_HEIGHT/2 - 200, 400, 400, Color(255, 150, 170, 255) )
 	DrawCircleV(center, 202, dot_color)
@@ -161,18 +162,69 @@ define function draw_clock(center, clc_clor, dot_color): {
 define function foo(): {
 	InitWindow(WIN_WIDTH, WIN_HEIGHT,"Clock sim")
 	let pink = Color(255, 150, 170, 255)
+	let yellow = Color(255, 255, 0, 255)
+	let center = vector(400, 300)
+	let gray = Color(230, 230, 230, 255)
+	let black = Color(0, 0, 0, 255)
+	let white = Color(255, 255, 255, 255)
+	SetTargetFPS(60)
+	while (not bool(WindowShouldClose())) do: {
+		BeginDrawing()
+		ClearBackground(pink)
+		~DrawFPS(10, 10)
+		~fill_with_flowers(WIN_WIDTH, WIN_HEIGHT, yellow, RADH, RADV, white, true, 1, black)
+		~draw_clock(center, white, black)
+		EndDrawing()
+	}
+	CloseWindow()
+}
+``` FUNCTION SIM: ```
+define function steup_axis(T, C): {
+	DrawLineEx(<0, WIN_HEIGHT/2>,<WIN_WIDTH,WIN_HEIGHT/2 >, T, C)
+DrawLineEx(<WIN_WIDTH/2, 0>,<WIN_WIDTH/2, WIN_HEIGHT >, T, C)
+}
+define function coordinant(w, h, x, lam, color, scale: float(1.0), stretch: float(1.0)) -> vector(): {
+	return <x + w / 2, - lam(float(x / scale), stretch) + h / 2 >
+}
+define function draw_function(w, h, lam, color, scale: float(1.0), stretch: float(1.0)): {
+	for let i = -w / 2 if i <= w / 2 then i += scale do: {
+		DrawLineV(coordinant(w, h, (i), lam, color, scale, stretch), coordinant(w, h, (i + scale), lam, color, scale, stretch), color)
+	}
+}
+define function baz(): {
+	InitWindow(WIN_WIDTH, WIN_HEIGHT,"drawing a function in y--")
+	let pink = Color(255, 150, 170, 255)
 let yellow = Color(255, 255, 0, 255)
-let center = vector(400, 300)
-let gray = Color(230, 230, 230, 255)
-let black = Color(0, 0, 0, 255)
-let white = Color(255, 255, 255, 255)
+let zoom, stre:= 10.0,10.0
+let quadratic = define lambda function(x: float(), stretch: float(1.0)) -> float(): { return stretch * (Sin(x)) }
+let offsetx, offsety = 120,60
+let mouse_x, mouse_y
+let toggled_zoom = true
 SetTargetFPS(60)
 while (not bool(WindowShouldClose())) do: {
 	BeginDrawing()
-	ClearBackground(pink)
-	~DrawFPS(10, 10)
-	~fill_with_flowers(WIN_WIDTH, WIN_HEIGHT, yellow, RADH, RADV, white, true, 1, black)
-	~draw_clock(center, white, black)
+	ClearBackground(BLACK)
+	DrawFPS(10, 10)
+	DrawText(f'{string(zoom).strip("0").center(10," ")}\n{string(stre).strip("0").center(10," ")}', WIN_WIDTH - offsetx, 10, 20, WHITE)
+	DrawRectangleV(<WIN_WIDTH - offsetx - 1, offsety - 1 >, <32 , 32 >, WHITE)
+	DrawRectangleV(<WIN_WIDTH - offsetx, offsety >, <30, 30 >, BLACK)
+	DrawText(f'-', WIN_WIDTH - offsetx + 11, offsety + 6, 20, WHITE)
+		`----------------------------------------------------------------`
+	DrawRectangleV(<WIN_WIDTH - offsetx + 41, offsety - 1 >, <32 , 32 >, WHITE)
+	DrawRectangleV(<WIN_WIDTH - offsetx + 42, offsety >, <30, 30 >, BLACK)
+	DrawText(f'+', WIN_WIDTH - offsetx + 52, offsety + 6, 20, WHITE)
+	mouse_x, mouse_y = GetMouseX(), GetMouseY()
+	if IsKeyPressed(32): toggled_zoom = not toggled_zoom
+	if mouse_x >= 680 and mouse_x <= 710 and mouse_y >= 60 and mouse_y <= 90 and IsMouseButtonPressed(0): {
+		if toggled_zoom: zoom -= 1.0
+		else: stre -= 2.0
+	}
+	if mouse_x >= 720 and mouse_x <= 750 and mouse_y >= 60 and mouse_y <= 90 and IsMouseButtonPressed(0): {
+		if toggled_zoom: zoom += 1.0
+		else: stre += 2.0
+	}
+	steup_axis(THICKNESS - 1, yellow)
+	draw_function(WIN_WIDTH, WIN_HEIGHT, quadratic, pink, zoom, stre)
 	EndDrawing()
 }
 	CloseWindow()
