@@ -5,7 +5,17 @@
 #include <iostream>
 void printErrorContext(const std::string&, int, int);
 int main() {
-	string path = "C:\\Users\\Windows\\source\\repos\\phdgamer0\\y---lang\\test.ymm";
+	/*
+	====================================================================================
+	|	Change the path to point to your target .ymm file.                              |
+	|	Compile & Link: Compile yrun.cpp ensuring Raylib is linked.                     |
+	|	g++ yrun.cpp -o y_lang -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 && ./y_lang  |
+	|	if you see this: Choose Compiler: AST:0 VM:1 DEBUG_VM:2 : ALWAYS CHOOSE 1       |
+	====================================================================================
+	*/
+	// -------------------------------------------------------------------------------
+	string path = "C:\\Users\\Windows\\source\\repos\\phdgamer0\\y---lang\\test.ymm"; // <-- CHANGE THIS TO YOUR PATH!
+	// -------------------------------------------------------------------------------
 	std::ifstream file(path);
 	if (!file) {
 		std::cerr << "FATAL ERROR: Cannot open file at path:" << path << "\n";

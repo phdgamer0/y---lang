@@ -10,6 +10,7 @@
 #define DrawTextEx Win_DrawTextEx
 #define DrawTextW Win_DrawTextW
 #define LoadImageW Win_LoadImageW
+#define LoadImage Win_LoadImage
 #include <windows.h> // My attacks have no effect on you?
 #undef Rectangle
 #undef ShowCursor
@@ -27,6 +28,7 @@
 #undef _TOKEN_INFORMATION_CLASS
 #undef min
 #undef max
+#undef LoadImage
 #endif // Who decided that?
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
@@ -3528,7 +3530,7 @@ static inline Vector2 ValueToVector2(const Value& v, int l, int c) {
 	if (vec->elements.size() < 2) throw ValueError("Vector must have at least 2 elements for Vector2", l, c);
 	return Vector2{ (float)vec->elements[0].asFloat(), (float)vec->elements[1].asFloat() };
 }
-static inline auto Vector2ToValue = [&](Vector2 v) -> Value {
+static inline auto Vector2ToValue = [](Vector2 v) -> Value {
 	std::vector<Value> elems;
 	elems.reserve(2);
 	elems.push_back(Value::Float(v.x));
