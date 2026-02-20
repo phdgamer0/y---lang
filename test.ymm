@@ -1,29 +1,38 @@
 import "Module.ymm"
-
+let starting_angle:= float(PI/2)
+let const SQ_LEN = 100
+let const OFF = 2
+let const SPEED = 1
+let direction:= true
+let t = 0.0
+let mass:= 1.0
+let K:= 10.0
+let omega = define lambda function(m, k)-> float(): {return Sqrt(k/m)}
+define function generate_spring_at(start_vec, len, num, angle)-> list(): {
+	let res = [start_vec]
+	for let i = 1 if i < num then i++ do: {
+		let x, y = res[i - 1][0] + len * Cos(angle), res[i-1][1] + len * Sin(angle * ((-1) ** (i - 1)))
+		res.append(<x, y>)
+	}
+	return res
+}
+define function draw_ground(start, end, thick, color): {
+	DrawLineEx(start,end, thick, color)
+}
 define function main(): {
-	InitWindow(WIN_WIDTH,WIN_HEIGHT,"my paint")
-	SetTargetFPS(144)
-	let color_pallet = [WHITE, RED, GREEN, BLUE]
-	let pointer, size = 0, 10
-	let mouse_x, mouse_y
-	let buffer = set()
+	InitWindow(WIN_WIDTH, WIN_HEIGHT, "hooke's law")
+	SetTargetFPS(60)
 	while (not WindowShouldClose()) do: {
 		BeginDrawing()
 		ClearBackground(BLACK)
 		DrawFPS(10, 10)
-		for vector_elements in buffer do: {
-			DrawCircleV(vector_elements[0], vector_elements[2], color_pallet[vector_elements[1]])
-		}
-		mouse_x, mouse_y = GetMouseX(), GetMouseY()
-		if IsKeyPressed(258): pointer = (pointer+1)%4
-		elif IsKeyPressed(259): buffer.clear()
-		elif IsKeyPressed(45): size -= 1
-		elif IsKeyPressed(61): size += 1
-		elif mouse_x >= 0 and mouse_x <= WIN_WIDTH and mouse_y >= 0 and mouse_y <= WIN_HEIGHT and IsMouseButtonDown(0):
-		buffer.add((<mouse_x, mouse_y >, $pointer, $size))
-		elif mouse_x >= 0 and mouse_x <= WIN_WIDTH and mouse_y >= 0 and mouse_y <= WIN_HEIGHT and not IsMouseButtonDown(0):
-		DrawCircleV(<mouse_x, mouse_y >, size, color_pallet[pointer])
-		
+		let current_extension = 90 + 50 * Cos(omega(mass,K)*t)
+		starting_angle = Arccos(current_extension / 300)
+		draw_ground(<0, 3 * WIN_HEIGHT / 4 >, <WIN_WIDTH, 3 * WIN_HEIGHT / 4 >, 2, WHITE)
+		let sp = generate_spring_at(<0, 3 * WIN_HEIGHT / 4 - SQ_LEN / 2 - OFF >, SQ_LEN / 2, 7, starting_angle)
+		for let i = 0 if i < length(sp) - 1 then i++ do: DrawLineV(sp[i],sp[i+1],WHITE)
+		t+=0.016
+		DrawRectangleV(<sp[-1][0], 3 * WIN_HEIGHT / 4 - SQ_LEN - OFF >, <SQ_LEN, SQ_LEN>, Color(54,185,126,255))
 		EndDrawing()
 	}
 	CloseWindow()
