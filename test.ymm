@@ -1,38 +1,93 @@
 import "Module.ymm"
-let starting_angle:= float(PI/2)
-let const SQ_LEN = 100
-let const OFF = 2
-let const SPEED = 1
-let direction:= true
-let t = 0.0
-let mass:= 1.0
-let K:= 10.0
-let omega = define lambda function(m, k)-> float(): {return Sqrt(k/m)}
-define function generate_spring_at(start_vec, len, num, angle)-> list(): {
-	let res = [start_vec]
-	for let i = 1 if i < num then i++ do: {
-		let x, y = res[i - 1][0] + len * Cos(angle), res[i-1][1] + len * Sin(angle * ((-1) ** (i - 1)))
-		res.append(<x, y>)
-	}
-	return res
+let const CIRCLE_RADIUS = 300
+define function Draw_Speed_Meter(outer_color, inside_color, line_colors, number_colors): {
+	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS+3, 150, 390, 400, outer_color)
+	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS, 150, 390, 400, inside_color)
+	Draw_Speed_Lines(line_colors)
 }
-define function draw_ground(start, end, thick, color): {
-	DrawLineEx(start,end, thick, color)
+``` 
+x = WIN_WIDTH / 2 + R * Cos(a)
+y = WIN_WIDTH / 2 - R * Sin(a)
+slice = 24
+small = 20
+big = 30
+```
+define function Draw_Speed_Lines(line_colors): {
+	for let i,j = 7 * PI / 6,0 if i >= -PI / 6 then i -= PI/18, j++ do: {
+		let outer=<400+300*Cos(i),400-300*Sin(i)>
+		if not (j % 2): {
+			DrawLineEx(outer, <outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i) >, THICKNESS, line_colors)
+			switch (j):{
+				case 0 then do: {
+					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 60 * Sin(i), 20, WHITE)
+					break
+				}
+				case 2 then do: {
+					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 90 * Sin(i), 20, WHITE)
+					break
+				}
+				case 4 then do: {
+					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 10 * Sin(i), 20, WHITE)
+					break
+				}
+				case 6 then do: {
+					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 30 * Sin(i), 20, WHITE)
+					break
+				}
+				case 8 then do: {
+					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 35 * Sin(i), 20, WHITE)
+					break
+				}
+				case 10 then do: {
+					DrawText(f'{j*10}', outer[0] - 10 * Cos(i), outer[1] + 40 * Sin(i), 20, WHITE)
+					break
+				}
+				case 12 then do: {
+					DrawText(f'{j*10}', outer[0] - 10, outer[1] + 40 * Sin(i), 20, WHITE)
+					break
+				}
+				case 14 then do: {
+					DrawText(f'{j*10}', outer[0] - 80 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
+					break
+				}
+				case 16 then do: {
+					DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 40 * Sin(i), 20, RED)
+					break
+				}
+				case 18 then do: {
+					DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
+					break
+				}
+				case 20 then do: {
+					DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 20 * Sin(i), 20, RED)
+					break
+				}
+				case 22 then do: {
+					DrawText(f'{j*10}', outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i), 20, RED)
+					break
+				}
+				case 24 do: {
+					DrawText(f'{j*10}', outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i), 20, RED)
+					break
+				}
+				default do: {
+					break
+				}
+			}
+		}
+		else: DrawLineEx(outer, <outer[0] - 20 * Cos(i), outer[1] + 20 * Sin(i) >, THICKNESS / 2, line_colors)
+	}
 }
 define function main(): {
-	InitWindow(WIN_WIDTH, WIN_HEIGHT, "hooke's law")
+	InitWindow(WIN_WIDTH, WIN_HEIGHT, "speedometer")
 	SetTargetFPS(60)
 	while (not WindowShouldClose()) do: {
 		BeginDrawing()
 		ClearBackground(BLACK)
+		Draw_Speed_Meter(SKYBLUE,BLACK,WHITE,RED)
+		DrawCircleV(<WIN_WIDTH/2, WIN_HEIGHT/2>,3,RED)
+		DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2>, <150,400>, THICKNESS,RED)
 		DrawFPS(10, 10)
-		let current_extension = 90 + 50 * Cos(omega(mass,K)*t)
-		starting_angle = Arccos(current_extension / 300)
-		draw_ground(<0, 3 * WIN_HEIGHT / 4 >, <WIN_WIDTH, 3 * WIN_HEIGHT / 4 >, 2, WHITE)
-		let sp = generate_spring_at(<0, 3 * WIN_HEIGHT / 4 - SQ_LEN / 2 - OFF >, SQ_LEN / 2, 7, starting_angle)
-		for let i = 0 if i < length(sp) - 1 then i++ do: DrawLineV(sp[i],sp[i+1],WHITE)
-		t+=0.016
-		DrawRectangleV(<sp[-1][0], 3 * WIN_HEIGHT / 4 - SQ_LEN - OFF >, <SQ_LEN, SQ_LEN>, Color(54,185,126,255))
 		EndDrawing()
 	}
 	CloseWindow()
