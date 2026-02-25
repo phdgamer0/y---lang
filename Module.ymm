@@ -229,3 +229,125 @@ while (not bool(WindowShouldClose())) do: {
 }
 	CloseWindow()
 }
+let const CIRCLE_RADIUS = 300
+let car_speed = 0
+let our_speed = 0
+let step = 0.0001
+let SPEED_STEP = 1
+define function Draw_Speed_Meter(outer_color, inside_color, line_colors, number_colors): {
+	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS + 3, 150, 390, 400, outer_color)
+DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS, 150, 390, 400, inside_color)
+Draw_Speed_Lines(line_colors)
+}
+``` 
+x = WIN_WIDTH / 2 + R * Cos(a)
+y = WIN_WIDTH / 2 - R * Sin(a)
+slice = 24
+small = 20
+big = 30
+```
+define function Draw_Speed_Lines(line_colors): {
+	for let i, j = 7 * PI / 6,0 if i >= -PI / 6 then i -= PI / 18, j++ do: {
+	let outer = <400+300 * Cos(i),400 - 300 * Sin(i) >
+		if not(j % 2): {
+		DrawLineEx(outer, <outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i) >, THICKNESS, line_colors)
+		switch (j):{
+				case 0 then do: {
+				DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 60 * Sin(i), 20, WHITE)
+				break
+			}
+				case 2 then do: {
+				DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 90 * Sin(i), 20, WHITE)
+				break
+			}
+				case 4 then do: {
+				DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 10 * Sin(i), 20, WHITE)
+				break
+			}
+				case 6 then do: {
+				DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 30 * Sin(i), 20, WHITE)
+				break
+			}
+				case 8 then do: {
+				DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 35 * Sin(i), 20, WHITE)
+				break
+			}
+				case 10 then do: {
+				DrawText(f'{j*10}', outer[0] - 10 * Cos(i), outer[1] + 40 * Sin(i), 20, WHITE)
+				break
+			}
+				case 12 then do: {
+				DrawText(f'{j*10}', outer[0] - 10, outer[1] + 40 * Sin(i), 20, WHITE)
+				break
+			}
+				case 14 then do: {
+				DrawText(f'{j*10}', outer[0] - 80 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
+				break
+			}
+				case 16 then do: {
+				DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 40 * Sin(i), 20, RED)
+				break
+			}
+				case 18 then do: {
+				DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
+				break
+			}
+				case 20 then do: {
+				DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 10 * Sin(i), 20, RED)
+				break
+			}
+				case 22 then do: {
+				DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 70 * Sin(i), 20, RED)
+				break
+			}
+				case 24 do: {
+				DrawText(f'{j*10}', outer[0] - 75 * Cos(i), outer[1] + 60 * Sin(i), 20, RED)
+				break
+			}
+				default do: {
+				break
+			}
+			}
+	}
+	else: DrawLineEx(outer, <outer[0] - 20 * Cos(i), outer[1] + 20 * Sin(i) >, THICKNESS / 2, line_colors)
+}
+}
+define function Draw_speed_line(step): {
+	if car_speed < our_speed: {
+	DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2 >, <400 + 250 * Cos(7 * PI / 6 - PI * our_speed / 180), 400 - 250 * Sin(7 * PI / 6 - PI * our_speed / 180) >, THICKNESS, RED)
+	our_speed -= lam(step)
+}
+elif car_speed > our_speed: {
+	DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2 >, <400 + 250 * Cos(7 * PI / 6 - PI * our_speed / 180), 400 - 250 * Sin(7 * PI / 6 - PI * our_speed / 180) >, THICKNESS, RED)
+	our_speed += lam(step)
+}
+	else: DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2 >, <400 + 250 * Cos(7 * PI / 6 - PI * car_speed / 180), 400 - 250 * Sin(7 * PI / 6 - PI * car_speed / 180) >, THICKNESS, RED)
+}
+let lam = define lambda function(k: float(0.05)) -> float(): {
+	return Abs(car_speed - our_speed) * k
+}
+define function show_details(): {
+	DrawText(f"{car_speed} Km/h", WIN_WIDTH/2-40, WIN_HEIGHT/2 - 125, 20, WHITE)
+}
+define function buzz(): {
+	InitWindow(WIN_WIDTH, WIN_HEIGHT, "speedometer")
+	SetTargetFPS(60)
+	while(not WindowShouldClose()) do: {
+		BeginDrawing()
+		ClearBackground(BLACK)
+		Draw_Speed_Meter(SKYBLUE, BLACK, WHITE, RED)
+		~DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2 >, <400 + 250 * Cos(7 * PI / 6 - PI * car_speed / 180), 400 - 250 * Sin(7 * PI / 6 - PI * car_speed / 180) >, THICKNESS, RED)
+if car_speed < 240 and(IsKeyPressed("W".ascii()) or IsKeyDown("W".ascii())): {
+	car_speed += SPEED_STEP
+}
+elif car_speed > 0 and(IsKeyPressed("S".ascii()) or IsKeyDown("S".ascii())): {
+	car_speed -= SPEED_STEP
+}
+show_details()
+Draw_speed_line(0.05)
+DrawCircleV(<WIN_WIDTH/2, WIN_HEIGHT/2 >, 3, RED)
+DrawFPS(10, 10)
+EndDrawing()
+	}
+CloseWindow()
+}

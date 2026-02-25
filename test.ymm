@@ -1,94 +1,47 @@
-import "Module.ymm"
-let const CIRCLE_RADIUS = 300
-define function Draw_Speed_Meter(outer_color, inside_color, line_colors, number_colors): {
-	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS+3, 150, 390, 400, outer_color)
-	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS, 150, 390, 400, inside_color)
-	Draw_Speed_Lines(line_colors)
-}
-``` 
-x = WIN_WIDTH / 2 + R * Cos(a)
-y = WIN_WIDTH / 2 - R * Sin(a)
-slice = 24
-small = 20
-big = 30
-```
-define function Draw_Speed_Lines(line_colors): {
-	for let i,j = 7 * PI / 6,0 if i >= -PI / 6 then i -= PI/18, j++ do: {
-		let outer=<400+300*Cos(i),400-300*Sin(i)>
-		if not (j % 2): {
-			DrawLineEx(outer, <outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i) >, THICKNESS, line_colors)
-			switch (j):{
-				case 0 then do: {
-					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 60 * Sin(i), 20, WHITE)
-					break
+~import "Module.ymm"
+define function main(): {
+	define class Vec3D: {
+	#public:
+		define function __construct__(x: float(0.0), y: float(0.0), z: float(0.0))->object(): {
+			let self.vect:= [x, y, z]
+		}
+		define function __display__(): {
+			return f"<{self.vect[0]}, {self.vect[1]}, {self.vect[2]}>"
+		}
+		define function __times__(other): {
+			if typeof (other) === "instance": {
+				let result:= float()
+				for i, j in self.vect, other.vect do: {
+					result += i*j
 				}
-				case 2 then do: {
-					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 90 * Sin(i), 20, WHITE)
-					break
+				return result
+			}
+			else: {
+				for i in self.vect do: {
+					i*=other
 				}
-				case 4 then do: {
-					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 10 * Sin(i), 20, WHITE)
-					break
-				}
-				case 6 then do: {
-					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 30 * Sin(i), 20, WHITE)
-					break
-				}
-				case 8 then do: {
-					DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 35 * Sin(i), 20, WHITE)
-					break
-				}
-				case 10 then do: {
-					DrawText(f'{j*10}', outer[0] - 10 * Cos(i), outer[1] + 40 * Sin(i), 20, WHITE)
-					break
-				}
-				case 12 then do: {
-					DrawText(f'{j*10}', outer[0] - 10, outer[1] + 40 * Sin(i), 20, WHITE)
-					break
-				}
-				case 14 then do: {
-					DrawText(f'{j*10}', outer[0] - 80 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
-					break
-				}
-				case 16 then do: {
-					DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 40 * Sin(i), 20, RED)
-					break
-				}
-				case 18 then do: {
-					DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
-					break
-				}
-				case 20 then do: {
-					DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 20 * Sin(i), 20, RED)
-					break
-				}
-				case 22 then do: {
-					DrawText(f'{j*10}', outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i), 20, RED)
-					break
-				}
-				case 24 do: {
-					DrawText(f'{j*10}', outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i), 20, RED)
-					break
-				}
-				default do: {
-					break
-				}
+				return self
 			}
 		}
-		else: DrawLineEx(outer, <outer[0] - 20 * Cos(i), outer[1] + 20 * Sin(i) >, THICKNESS / 2, line_colors)
+		define function __times_eq__(other): {
+			if typeof (other) === "instance": {
+				let result:= float()
+				for i, j in self.vect, other.vect do: {
+					result += i*j
+				}
+				return result
+			}
+			else: {
+				for i in self.vect do: {
+					i*=other
+				}
+				return self*2
+			}
+		}
+	#private:
+	#protected:
 	}
-}
-define function main(): {
-	InitWindow(WIN_WIDTH, WIN_HEIGHT, "speedometer")
-	SetTargetFPS(60)
-	while (not WindowShouldClose()) do: {
-		BeginDrawing()
-		ClearBackground(BLACK)
-		Draw_Speed_Meter(SKYBLUE,BLACK,WHITE,RED)
-		DrawCircleV(<WIN_WIDTH/2, WIN_HEIGHT/2>,3,RED)
-		DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2>, <150,400>, THICKNESS,RED)
-		DrawFPS(10, 10)
-		EndDrawing()
-	}
-	CloseWindow()
+	let my_vect = Vec3D(1, 2, 3)
+	my_vect*2
+	print(my_vect*2)
 }
