@@ -2251,6 +2251,7 @@ struct ClassObject : HeapObject {
 	vector<Value> parents;
 	vector<ClassObject*> mro;
 	unordered_map<string, Value> staticFields;
+	unordered_map<std::string, AccessLevel> fieldAccess;
 	struct MethodInfo {
 		Value func;
 		AccessLevel access;
@@ -4431,7 +4432,7 @@ struct Interpreter {
 			throw TypeError("Cannot cast '" + valueToString(v) + "' to int", l, c);
 		}), false);
 		env->set("float", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::Int(0, false);
+			if (args.empty()) return Value::Float(0.0, false);
 			Value v = args[0];
 			if (v.type == ValueType::FLOAT) return Value::Float(v.asFloat());
 			if (v.type == ValueType::INT) return Value::Float(v.asInt());
@@ -7984,8 +7985,6 @@ struct Interpreter {
 		catch (...) {throw;}
 	}
 private:
-	
-	//static auto rectClass = std::make_shared<ClassObject>("Rectangle");
 	bool canOptimizeScope(const vector<Stmt*>& body) {
 		for (auto* st : body) {
 			if (st->type == StmtType::LET || st->type == StmtType::MULTI_LET ||
@@ -8014,7 +8013,8 @@ enum class OpCode : uint8_t {
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
 	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
 	// Arithmetic & Logic
-	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_DUP, OP_DUP_2,
+	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_IADD,
+	OP_ISUB, OP_IMUL, OP_IDIV, OP_IFLOOR_DIV, OP_IMOD, OP_IPOW ,OP_DUP, OP_DUP_2,
 	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
 	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
 	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
@@ -8063,6 +8063,13 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_FLOOR_DIV: return "OP_FLOOR_DIV";
 		case OpCode::OP_MOD: return "OP_MOD";
 		case OpCode::OP_POW: return "OP_POW";
+		case OpCode::OP_IADD: return "OP_IADD";
+		case OpCode::OP_ISUB: return "OP_ISUB";
+		case OpCode::OP_IMUL: return "OP_IMUL";
+		case OpCode::OP_IDIV: return "OP_IDIV";
+		case OpCode::OP_IFLOOR_DIV: return "OP_IFLOOR_DIV";
+		case OpCode::OP_IMOD: return "OP_IMOD";
+		case OpCode::OP_IPOW: return "OP_IPOW";
 		case OpCode::OP_DUP: return "OP_DUP";
 		case OpCode::OP_DUP_2: return "OP_DUP_2";
 		case OpCode::OP_EQ: return "OP_EQ";
@@ -8632,22 +8639,38 @@ struct ByteCodeCompiler {
 						}
 						else if (stmt->type == StmtType::LET) {
 							auto let = static_cast<LetStmt*>(stmt);
-							if (let->name.rfind("self.", 0) == 0) continue;
 							string propName = let->name;
-							if (propName.rfind("obj.", 0) == 0) propName = propName.substr(4);
-							if (let->value) compile(let->value);
+							bool isInstance = false;
+							if (propName.rfind("self.", 0) == 0) {
+								propName = propName.substr(5);
+								isInstance = true;
+							}
+							else if (propName.rfind("obj.", 0) == 0) propName = propName.substr(4);
+							if (isInstance) emitByte(OpCode::OP_NOTYPE, let->line, let->col);
+							else if (let->value) compile(let->value);
 							else emitByte(OpCode::OP_NOTYPE, let->line, let->col);
-							emitIdentifier(OpCode::OP_CLASS_FIELD, propName, let->line, let->col);
+							emitByte(OpCode::OP_CLASS_FIELD, let->line, let->col);
+							chunk->write((uint8_t)access, let->line, let->col);
+							int nameIdx = chunk->addConstant(Value::String(propName));
+							chunk->write((uint8_t)nameIdx, let->line, let->col);
 						}
 						else if (stmt->type == StmtType::MULTI_LET) {
 							auto mlet = static_cast<MultiLetStmt*>(stmt);
 							for (size_t i = 0; i < mlet->names.size(); i++) {
-								if (mlet->names[i].rfind("self.", 0) == 0) continue;
 								string propName = mlet->names[i];
-								if (propName.rfind("obj.", 0) == 0) propName = propName.substr(4);
-								if (mlet->values[i]) compile(mlet->values[i]);
+								bool isInstance = false;
+								if (propName.rfind("self.", 0) == 0) {
+									propName = propName.substr(5);
+									isInstance = true;
+								}
+								else if (propName.rfind("obj.", 0) == 0) propName = propName.substr(4);
+								if (isInstance) emitByte(OpCode::OP_NOTYPE, mlet->line, 0);
+								else if (mlet->values[i]) compile(mlet->values[i]);
 								else emitByte(OpCode::OP_NOTYPE, mlet->line, 0);
-								emitIdentifier(OpCode::OP_CLASS_FIELD, propName, mlet->line, 0);
+								emitByte(OpCode::OP_CLASS_FIELD, mlet->line, 0);
+								chunk->write((uint8_t)access, mlet->line, 0);
+								int nameIdx = chunk->addConstant(Value::String(propName));
+								chunk->write((uint8_t)nameIdx, mlet->line, 0);
 							}
 						}
 					}
@@ -8835,12 +8858,13 @@ struct ByteCodeCompiler {
 						emitIdentifier(OpCode::OP_GET_PROPERTY, get->name, as->line, as->col);
 						compile(as->value);
 						switch (as->op) {
-						case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
-						case TokenType::MINUS_EQ: emitByte(OpCode::OP_SUB, as->line, as->col); break;
-						case TokenType::STAR_EQ: emitByte(OpCode::OP_MUL, as->line, as->col); break;
-						case TokenType::DIV_EQ: emitByte(OpCode::OP_DIV, as->line, as->col); break;
-						case TokenType::MOD_EQ: emitByte(OpCode::OP_MOD, as->line, as->col); break;
-						case TokenType::POW_EQ: emitByte(OpCode::OP_POW, as->line, as->col); break;
+						case TokenType::PLUS_EQ: emitByte(OpCode::OP_IADD, as->line, as->col); break;
+						case TokenType::MINUS_EQ: emitByte(OpCode::OP_ISUB, as->line, as->col); break;
+						case TokenType::STAR_EQ: emitByte(OpCode::OP_IMUL, as->line, as->col); break;
+						case TokenType::DIV_EQ: emitByte(OpCode::OP_IDIV, as->line, as->col); break;
+						case TokenType::FLOOR_DIV_EQ: emitByte(OpCode::OP_IFLOOR_DIV, as->line, as->col); break;
+						case TokenType::MOD_EQ: emitByte(OpCode::OP_IMOD, as->line, as->col); break;
+						case TokenType::POW_EQ: emitByte(OpCode::OP_IPOW, as->line, as->col); break;
 						
 						default: throw SyntaxError("Unknown/Unsupported augmented assignment operator", as->line, as->col);
 						}
@@ -8858,13 +8882,13 @@ struct ByteCodeCompiler {
 						emitByte(OpCode::OP_GET_INDEX, as->line, as->col);
 						compile(as->value);
 						switch (as->op) {
-						case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
-						case TokenType::MINUS_EQ: emitByte(OpCode::OP_SUB, as->line, as->col); break;
-						case TokenType::STAR_EQ: emitByte(OpCode::OP_MUL, as->line, as->col); break;
-						case TokenType::DIV_EQ: emitByte(OpCode::OP_DIV, as->line, as->col); break;
-						case TokenType::FLOOR_DIV_EQ: emitByte(OpCode::OP_FLOOR_DIV, as->line, as->col); break;
-						case TokenType::MOD_EQ: emitByte(OpCode::OP_MOD, as->line, as->col); break;
-						case TokenType::POW_EQ: emitByte(OpCode::OP_POW, as->line, as->col); break;
+						case TokenType::PLUS_EQ: emitByte(OpCode::OP_IADD, as->line, as->col); break;
+						case TokenType::MINUS_EQ: emitByte(OpCode::OP_ISUB, as->line, as->col); break;
+						case TokenType::STAR_EQ: emitByte(OpCode::OP_IMUL, as->line, as->col); break;
+						case TokenType::DIV_EQ: emitByte(OpCode::OP_IDIV, as->line, as->col); break;
+						case TokenType::FLOOR_DIV_EQ: emitByte(OpCode::OP_IFLOOR_DIV, as->line, as->col); break;
+						case TokenType::MOD_EQ: emitByte(OpCode::OP_IMOD, as->line, as->col); break;
+						case TokenType::POW_EQ: emitByte(OpCode::OP_IPOW, as->line, as->col); break;
 						default: throw SyntaxError("Unknown augmented assignment", as->line, as->col);
 						}
 						emitByte(OpCode::OP_SET_INDEX, as->line, as->col);
@@ -8915,13 +8939,13 @@ struct ByteCodeCompiler {
 					else emitIdentifier(OpCode::OP_GET_VAR, v->name, as->line, as->col);
 					compile(as->value);
 					switch (as->op) {
-						case TokenType::PLUS_EQ: emitByte(OpCode::OP_ADD, as->line, as->col); break;
-						case TokenType::MINUS_EQ: emitByte(OpCode::OP_SUB, as->line, as->col); break;
-						case TokenType::STAR_EQ: emitByte(OpCode::OP_MUL, as->line, as->col); break;
-						case TokenType::DIV_EQ: emitByte(OpCode::OP_DIV, as->line, as->col); break;
-						case TokenType::FLOOR_DIV_EQ: emitByte(OpCode::OP_FLOOR_DIV, as->line, as->col); break;
-						case TokenType::POW_EQ: emitByte(OpCode::OP_POW, as->line, as->col); break;
-						case TokenType::MOD_EQ: emitByte(OpCode::OP_MOD, as->line, as->col); break;
+						case TokenType::PLUS_EQ: emitByte(OpCode::OP_IADD, as->line, as->col); break;
+						case TokenType::MINUS_EQ: emitByte(OpCode::OP_ISUB, as->line, as->col); break;
+						case TokenType::STAR_EQ: emitByte(OpCode::OP_IMUL, as->line, as->col); break;
+						case TokenType::DIV_EQ: emitByte(OpCode::OP_IDIV, as->line, as->col); break;
+						case TokenType::FLOOR_DIV_EQ: emitByte(OpCode::OP_IFLOOR_DIV, as->line, as->col); break;
+						case TokenType::POW_EQ: emitByte(OpCode::OP_IPOW, as->line, as->col); break;
+						case TokenType::MOD_EQ: emitByte(OpCode::OP_IMOD, as->line, as->col); break;
 					}
 				}
 				if (arg != -1) {
@@ -9395,6 +9419,70 @@ struct VM {
 		bool isHandlingError = false;
 		int line = 0;
 		int col = 0;
+		auto invokeBinaryDunder = [&](Value a, Value b, const string& leftOp, const string& rightOp, int line, int col) -> bool {
+			if (a.type == ValueType::INSTANCE) {
+				auto* instanceA = static_cast<InstanceObject*>(a.ref.get());
+				ClassObject* clsA = instanceA->klass;
+				ClassObject::MethodInfo* methodA = nullptr;
+				for (auto* ancestor : clsA->mro) {
+					if (ancestor->methods.count(leftOp)) {
+						methodA = &ancestor->methods[leftOp];
+						break;
+					}
+				}
+				if (methodA) {
+					stack.push_back(a);
+					Value objVal; objVal.type = ValueType::CLASS;
+					objVal.ref = std::shared_ptr<HeapObject>(clsA, [](HeapObject*) {});
+					stack.push_back(objVal);
+					stack.push_back(b);
+					callValue(methodA->func, 3, line, col);
+					return true;
+				}
+			}
+			if (b.type == ValueType::INSTANCE) {
+				auto* instanceB = static_cast<InstanceObject*>(b.ref.get());
+				ClassObject* clsB = instanceB->klass;
+				ClassObject::MethodInfo* methodB = nullptr;
+				for (auto* ancestor : clsB->mro) {
+					if (ancestor->methods.count(rightOp)) {
+						methodB = &ancestor->methods[rightOp];
+						break;
+					}
+				}
+				if (methodB) {
+					stack.push_back(b);
+					Value objVal; objVal.type = ValueType::CLASS;
+					objVal.ref = std::shared_ptr<HeapObject>(clsB, [](HeapObject*) {});
+					stack.push_back(objVal);
+					stack.push_back(a);
+					callValue(methodB->func, 3, line, col);
+					return true;
+				}
+			}
+			return false;
+		};
+		auto checkFieldAccess = [&](ClassObject* targetClass, const string& name, int line, int col) {
+			if (targetClass->fieldAccess.count(name)) {
+				AccessLevel access = targetClass->fieldAccess[name];
+				if (access != AccessLevel::PUBLIC) {
+					bool allowed = false;
+					if (frame->function && frame->function->owner) {
+						ClassObject* callerCls = frame->function->owner;
+						if (access == AccessLevel::PRIVATE && callerCls == targetClass) allowed = true;
+						else if (access == AccessLevel::PROTECTED) {
+							for (auto* ancestor : callerCls->mro) {
+								if (ancestor == targetClass) { 
+									allowed = true;
+									break;
+								}
+							}
+						}
+					}
+					if (!allowed) throw RuntimeError("Cannot access private/protected field '" + name + "'", line, col);
+				}
+			}
+		};
 		while (true) {
 			Chunk* currentChunk = frame->function ? frame->function->chunk : &chunk;
 			try {
@@ -9470,6 +9558,7 @@ struct VM {
 					Value obj = pop();
 					if (obj.type == ValueType::INSTANCE) {
 						auto* instance = static_cast<InstanceObject*>(obj.ref.get());
+						checkFieldAccess(instance->klass, name, line, col);
 						if (instance->fields.count(name)) stack.push_back(instance->fields[name]);
 						else {
 							ClassObject* cls = instance->klass;
@@ -9516,6 +9605,7 @@ struct VM {
 					Value obj = pop();
 					if (obj.type == ValueType::INSTANCE) {
 						auto* instance = static_cast<InstanceObject*>(obj.ref.get());
+						checkFieldAccess(instance->klass, name, line, col);
 						instance->fields[name] = val;
 					}
 					else if (obj.type == ValueType::CLASS) {
@@ -9527,13 +9617,16 @@ struct VM {
 					break;
 				}
 				case OpCode::OP_CLASS_FIELD: {
+					uint8_t accessByte = *ip++;
+					AccessLevel access = (AccessLevel)accessByte;
 					uint8_t nameIdx = *ip++;
 					string name = currentChunk->constants[nameIdx].asString();
 					Value val = pop();
 					Value classVal = stack.back();
 					if (classVal.type != ValueType::CLASS) throw RuntimeError("Cannot define static field on non-class", line, col);
 					auto* cls = static_cast<ClassObject*>(classVal.ref.get());
-					cls->staticFields[name] = val;
+					cls->fieldAccess[name] = access;
+					if (val.type != ValueType::NOTYPE) cls->staticFields[name] = val;
 					break;
 				}
 				case OpCode::OP_DUP: {
@@ -9856,9 +9949,19 @@ struct VM {
 					if (!stack.empty()) stack.pop_back();
 					break;
 				}
-				case OpCode::OP_ADD: {
+				case OpCode::OP_IADD: {
 					Value b = pop();
 					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__plus_eq__", "", line, col)) break;
+					stack.push_back(a);
+					stack.push_back(b);
+					goto execute_op_add;
+				}
+				case OpCode::OP_ADD: {
+					execute_op_add:
+					Value b = pop();
+					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__plus__", "__r_plus__", line, col)) break;
 					if (a.type == ValueType::INT && b.type == ValueType::INT) {
 						long long res = a.iVal + b.iVal;
 						bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;
@@ -9896,9 +9999,18 @@ struct VM {
 					else stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
 					break;
 				}
-				case OpCode::OP_SUB: {
+				case OpCode::OP_ISUB: {
 					Value b = pop();
 					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__minus_eq__", "", line, col)) break;
+					stack.push_back(a); stack.push_back(b);
+					goto execute_op_sub;
+				}
+				case OpCode::OP_SUB: {
+					execute_op_sub:
+					Value b = pop();
+					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__minus__", "__r_minus__", line, col)) break;
 					if (a.type == ValueType::INT && b.type == ValueType::INT) {
 						long long res = a.iVal - b.iVal;
 						bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
@@ -9932,9 +10044,18 @@ struct VM {
 					else stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
 					break;
 				}
-				case OpCode::OP_DIV: {
+				case OpCode::OP_IDIV: {
 					Value b = pop();
 					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__divide_eq__", "", line, col)) break;
+					stack.push_back(a); stack.push_back(b);
+					goto execute_op_div;
+				}
+				case OpCode::OP_DIV: {
+					execute_op_div:
+					Value b = pop();
+					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__divide__", "__r_divide__", line, col)) break;
 					if (a.type == ValueType::VECTOR) {
 						if (!b.isNumber()) throw TypeError("Vector can only be divided by a number", line, col);
 						if (b.asFloat() == 0) throw DivisionByZeroError("Vector division by zero", line, col);
@@ -9953,9 +10074,18 @@ struct VM {
 					}
 					break;
 				}
-				case OpCode::OP_MUL: {
+				case OpCode::OP_IMUL: {
 					Value b = pop();
 					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__times_eq__", "", line, col)) break;
+					stack.push_back(a); stack.push_back(b);
+					goto execute_op_mul;
+				}
+				case OpCode::OP_MUL: {
+					execute_op_mul:
+					Value b = pop();
+					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__times__", "__r_times__", line, col)) break;
 					if (a.type == ValueType::STRING && b.type == ValueType::INT) {
 						string res = "";
 						string base = a.asString();
@@ -10091,9 +10221,18 @@ struct VM {
 					else stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
 					break;
 				}
-				case OpCode::OP_FLOOR_DIV: {
+				case OpCode::OP_IFLOOR_DIV: {
 					Value b = pop();
 					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__int_divide_eq__", "", line, col)) break;
+					stack.push_back(a); stack.push_back(b);
+					goto execute_op_int_div;
+				}
+				case OpCode::OP_FLOOR_DIV: {
+					execute_op_int_div:
+					Value b = pop();
+					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__int_divide__", "__r_int_divide__", line, col)) break;
 					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 						if (b.asFloat() == 0) throw DivisionByZeroError("Division by zero", line, col);
 						stack.push_back(BigIntObject::div(a, b));
@@ -10105,9 +10244,18 @@ struct VM {
 					}
 					break;
 				}
-				case OpCode::OP_MOD: {
+				case OpCode::OP_IMOD: {
 					Value b = pop();
 					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__modulo_eq__", "", line, col)) break;
+					stack.push_back(a); stack.push_back(b);
+					goto execute_op_mod;
+				}
+				case OpCode::OP_MOD: {
+					execute_op_mod:
+					Value b = pop();
+					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__modulo__", "__r_modulo__", line, col)) break;
 					if (a.type == ValueType::INT && b.type == ValueType::INT) {
 						if (b.iVal == 0) throw DivisionByZeroError("Modulo by zero", line, col);
 						stack.push_back(Value::Int(a.iVal % b.iVal));
@@ -10119,9 +10267,18 @@ struct VM {
 					}
 					break;
 				}
+				case OpCode::OP_IPOW: {
+					Value b = pop();
+					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__power_eq__", "", line, col)) break;
+					stack.push_back(a); stack.push_back(b);
+					goto execute_op_pow;
+				}
 				case OpCode::OP_POW: {
+					execute_op_pow:
 					Value b = pop(); 
 					Value a = pop();
+					if (invokeBinaryDunder(a, b, "__power__", "__r_power__", line, col)) break;
 					if ((a.type == ValueType::INT || a.type == ValueType::BIGINT) &&
 						(b.type == ValueType::INT || b.type == ValueType::BIGINT)) {
 						stack.push_back(BigIntObject::pow(a, b));
