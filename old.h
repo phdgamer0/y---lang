@@ -56,7 +56,11 @@
 #include <thread>
 #include <ctime>
 #include <math.h>
+#ifdef _MSC_VER
 #include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
 #include <deque>
 #include "raylib.h"
 
@@ -3781,9 +3785,11 @@ struct Interpreter {
 				return Value::String("\033[" + code + "m" + text + "\033[0m");
 			});
 			define("Beep", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Beep() expects 2 arguments (frequency,duration)",l,c);
+				if (args.size() != 2) throw ArgumentError("Beep() expects 2 arguments (frequency, duration)",l,c);
 				if (args[0].asFloat()<=0 || args[1].asFloat()<=0) throw ValueError("Frequency or duration should be positive",l,c);
-				Beep(args[0].asFloat(),args[1].asFloat());
+				#ifdef _WIN32
+					Beep(args[0].asFloat(), args[1].asFloat());
+				#endif
 				return Value::None();
 			});
 		};
