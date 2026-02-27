@@ -1,47 +1,73 @@
 ~import "Module.ymm"
 define function main(): {
-	define class Vec3D: {
+	define class Graph: {
 	#public:
-		define function __construct__(x: float(0.0), y: float(0.0), z: float(0.0))->object(): {
-			let self.vect:= [x, y, z]
+		let self.adj:= dict()
+		define function __construct__(isDirected: bool(false)): {
+			let const self.directed = isDirected
+			return self
 		}
-		define function __display__(): {
-			return f"<{self.vect[0]}, {self.vect[1]}, {self.vect[2]}>"
+		define function add_node(node): {
+			if node is not in self.adj.keys(): self.adj[node] = []
+			return None
 		}
-		define function __times__(other): {
-			if typeof (other) === "instance": {
-				let result:= float()
-				for i, j in self.vect, other.vect do: {
-					result += i*j
-				}
-				return result
-			}
-			else: {
-				for i in self.vect do: {
-					i*=other
-				}
-				return self
-			}
+		define function add_edge(u, v):{
+			self.add_node(u)
+			self.add_node(v)
+			self.adj[u].append(v)
+			if not self.directed: self.adj[v].append(u)
+			return None
 		}
-		define function __times_eq__(other): {
-			if typeof (other) === "instance": {
-				let result:= float()
-				for i, j in self.vect, other.vect do: {
-					result += i*j
+		define function remove_edge(u, v): {
+			self.adj[u].remove(v)
+			if not self.directed: self.adj[v].remove(u)
+			return None
+		}
+		define function bfs(start): {
+			let seen:= set()
+			let queue, order := [start], []
+			while queue do: {
+				let node = queue.pop(0)
+				if node is not in seen: {
+					for i in self.adj[node] do: { queue.append(i) }
+					seen.add(node)
+					order.append(node)
 				}
-				return result
 			}
-			else: {
-				for i in self.vect do: {
-					i*=other
+			return order
+		}
+		define function dfs(start): {
+			let seen:= set()
+			let stack, order := [start], []
+			while stack do: {
+				let node = stack.pop()
+				if node is not in seen: {
+					stack.extend(self.adj[node])
+					seen.add(node)
+					order.append(node)
 				}
-				return self*2
 			}
+			return order
 		}
 	#private:
+		define function __display__(): {
+			let res = ""
+			for i, j in self.adj do: {
+				res += f"{i} -> {j} \n"
+			}
+			return res.strip("\n")
+		}
 	#protected:
 	}
-	let my_vect = Vec3D(1, 2, 3)
-	my_vect*2
-	print(my_vect*2)
+	let g = Graph()
+	for i in "ABCDEFG" do: g.add_node(i)
+	g.add_edge("A","B")
+	g.add_edge("A","C")
+	g.add_edge("B","C")
+	g.add_edge("B","D")
+	g.add_edge("D","E")
+	g.add_edge("D","F")
+	g.add_edge("F","G")
+	print(g.bfs('A'))
+	print(g.dfs('A'))
 }
