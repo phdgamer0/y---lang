@@ -1,6 +1,6 @@
 ~import "Module.ymm"
 define function main(): {
-	define class Graph: {
+	`define class Graph: {
 	#public:
 		let self.adj:= dict()
 		define function __construct__(isDirected: bool(false)): {
@@ -69,5 +69,6 @@ define function main(): {
 	g.add_edge("D","F")
 	g.add_edge("F","G")
 	print(g.bfs('A'))
-	print(g.dfs('A'))
+	print(g.dfs('A'))`
+	
 }
