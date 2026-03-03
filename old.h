@@ -11,7 +11,9 @@
 #define DrawTextW Win_DrawTextW
 #define LoadImageW Win_LoadImageW
 #define LoadImage Win_LoadImage
+#define DELETE Win_DELETE
 #include <windows.h> // My attacks have no effect on you?
+#undef DELETE
 #undef Rectangle
 #undef ShowCursor
 #undef CloseWindow
@@ -71,7 +73,7 @@ using std::vector;
 using std::unordered_map;
 // -------------------- TOKENIZER --------------------
 enum class TokenType {
-	LET, DEFINE, FUNCTION, RETURN, IF, ELSE_IF, ELSE, FOR, WHILE, DO, THEN, BREAK, CONTINUE, SKIP,
+	LET, DEFINE, FUNCTION, RETURN, IF, ELSE_IF, ELSE, FOR, WHILE, DO, THEN, BREAK, CONTINUE, SKIP, DELETE,
 	TRUE, FALSE, AT, DOLLAR, DOT_DOT, DOT_DOT_DOT, CONST, ASSERT, FSTRING, SWITCH, CASE, DEFAULT,
 	IDENTIFIER, NUMBER, STRING, INCREMENT, DECREMENT, TRY, THROW, CATCH, FINALLY, IMPORT, FROM,
 	ASSIGN, ARROW, LPAREN, RPAREN, COLON, COMMA, LBRACE, RBRACE, LBRACKET, RBRACKET, COLON_EQ, HASHTAG,
@@ -101,6 +103,7 @@ inline TokenType keywordType(const string& w) {
 	if (w == "break") return TokenType::BREAK;
 	if (w == "continue") return TokenType::CONTINUE;
 	if (w == "skip") return TokenType::SKIP;
+	if (w == "delete") return TokenType::DELETE;
 	if (w == "true") return TokenType::TRUE;
 	if (w == "false") return TokenType::FALSE;
 	if (w == "and") return TokenType::AND;
@@ -417,7 +420,7 @@ enum class ExprType {
 enum class StmtType {
 	ASSIGN, LET, RETURN, FUNC, IF, EXPR, BREAK, CONTINUE, SKIP,
 	WHILE, DO_WHILE, FOR, FOR_EACH, TRY, THROW, ASSERT, SWITCH,
-	IMPORT, MULTI_LET, MULTI_ASSIGN, CLASS
+	IMPORT, MULTI_LET, MULTI_ASSIGN, CLASS, DELETE,
 };
 struct Value;
 struct Stmt;
@@ -708,6 +711,10 @@ struct ClassStmt : Stmt {
 	vector<Stmt*> protectedBody;
 	ClassStmt(string n, const vector<string>& p, const vector<Stmt*>& pub, const vector<Stmt*>& priv, const vector<Stmt*>& prot)
 		: Stmt(StmtType::CLASS), name(n), parents(p), publicBody(pub), privateBody(priv), protectedBody(prot) {}
+};
+struct DeleteStmt : Stmt {
+	Expr* target;
+	DeleteStmt(Expr* t): Stmt(StmtType::DELETE), target(t) {};
 };
 // -------------------- PARSER --------------------
 class Parser {
@@ -1379,6 +1386,15 @@ public:
 			vector<Stmt*> defaultBody = parseBlock();
 			consume(TokenType::RBRACE, "Expected '}' to close switch block");
 			return setPos(new SwitchStmt(target, cases, defaultBody), t);
+		}
+		if (match(TokenType::DELETE)) {
+			Token t = tokens[pos - 1];
+			Expr* e = parseExpr();
+			if (!dynamic_cast<VarExpr*>(e) && !dynamic_cast<IndexExpr*>(e) && 
+				!dynamic_cast<GetExpr*>(e) && !dynamic_cast<OwnershipExpr*>(e)) {
+				throw SyntaxError("Invalid delete target. Can only delete variables, indices, or properties.", t.line, t.col);
+			}
+			return setPos(new DeleteStmt(e),t);
 		}
 		if (match(TokenType::IMPORT)) {
 			Token t = tokens[pos - 1];
@@ -8017,10 +8033,11 @@ enum class OpCode : uint8_t {
 	// Variables & Scope
 	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY, OP_REF_LOCAL,
 	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
-	OP_MULTI_SET, OP_GET_LOCAL,OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
+	OP_MULTI_SET, OP_GET_LOCAL, OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
+	OP_DELETE,
 	// Arithmetic & Logic
 	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_IADD,
-	OP_ISUB, OP_IMUL, OP_IDIV, OP_IFLOOR_DIV, OP_IMOD, OP_IPOW ,OP_DUP, OP_DUP_2,
+	OP_ISUB, OP_IMUL, OP_IDIV, OP_IFLOOR_DIV, OP_IMOD, OP_IPOW, OP_DUP, OP_DUP_2,
 	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
 	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
 	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
@@ -8062,6 +8079,7 @@ static inline std::string OpCodeToString(OpCode num){
 		case OpCode::OP_SET_LOCAL: return "OP_SET_LOCAL";
 		case OpCode::OP_INC_LOCAL: return "OP_INC_LOCAL";
 		case OpCode::OP_SET_FLAGS: return "OP_SET_FLAGS";
+		case OpCode::OP_DELETE: return "OP_DELETE";
 		case OpCode::OP_ADD: return "OP_ADD";
 		case OpCode::OP_SUB: return "OP_SUB";
 		case OpCode::OP_MUL: return "OP_MUL";
@@ -8692,6 +8710,30 @@ struct ByteCodeCompiler {
 				else {
 					emitIdentifier(OpCode::OP_DEFINE_VAR, c->name, c->line, 0);
 				}
+				break;
+			}
+			case StmtType::DELETE: {
+				auto delStmt = static_cast<DeleteStmt*>(s);
+				if (auto v = dynamic_cast<VarExpr*>(delStmt->target)) {
+					int local = resolveLocal(v->name);
+					if (local != -1) {
+						emitByte(OpCode::OP_REF_LOCAL, delStmt->line, delStmt->col);
+						chunk->write((uint8_t)local, delStmt->line, delStmt->col);
+					}
+					else emitIdentifier(OpCode::OP_REF_VAR, v->name, delStmt->line, delStmt->col);
+				}
+				else if (auto idx = dynamic_cast<IndexExpr*>(delStmt->target)) {
+					compile(idx->base);
+					compile(idx->index);
+					emitByte(OpCode::OP_REF_INDEX, delStmt->line, delStmt->col);
+				}
+				/*else if (auto own = dynamic_cast<OwnershipExpr*>(delStmt->target)) {
+					compile(own->expr);
+					emitByte(OpCode::OP_)
+				}*/
+				else throw SyntaxError("Can only delete variables or indices", delStmt->line, delStmt->col);
+				emitByte(OpCode::OP_DELETE, delStmt->line, delStmt->col);
+				emitByte(OpCode::OP_POP, delStmt->line, delStmt->col);
 				break;
 			}
 			case StmtType::EXPR: {
@@ -11179,7 +11221,35 @@ struct VM {
 					}
 					break;
 				}
-					case OpCode::OP_RETURN: {
+				case OpCode::OP_DELETE: {
+					Value refVal = pop();
+					if (refVal.type != ValueType::REFERENCE || !refVal.ptr)
+						throw RuntimeError("Cannot delete a non-reference value", line, col);
+					Value actualVal = *(refVal.ptr);
+					*(refVal.ptr) = Value::NoType();
+					if (actualVal.type == ValueType::INSTANCE) {
+						auto* instance = static_cast<InstanceObject*>(actualVal.ref.get());
+						ClassObject* cls = instance->klass;
+						ClassObject::MethodInfo* delMethod = nullptr;
+						for (auto* ancestor : cls->mro) {
+							if (ancestor->methods.count("__destruct__")) {
+								delMethod = &ancestor->methods["__destruct__"];
+								break;
+							}
+						}
+						if (delMethod) {
+							stack.push_back(actualVal);
+							Value objVal; objVal.type = ValueType::CLASS;
+							objVal.ref = std::shared_ptr<HeapObject>(cls, [](HeapObject*) {});
+							stack.push_back(objVal);
+							callValue(delMethod->func, 2, line, col);
+							break;
+						}
+					}
+					stack.push_back(Value::None());
+					break;
+				}
+				case OpCode::OP_RETURN: {
 				execute_return:
 					if (!frame->handlerStack.empty()) {
 						ExceptionHandler& h = frame->handlerStack.back();
