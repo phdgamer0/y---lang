@@ -1,74 +1,24 @@
-~import "Module.ymm"
+import "Module.ymm"
+let const DEFAULT_LENGTH = 120
+let const STARTING_ANG = float(PI/2.0)
+let const DEFAULT_ANG = float(PI/9.0)
+let const STARTING_THICNESS = 10
+let const DEFAULT_COEF = float(0.8)
+define function draw_branch(start:vector(),len:int(),ang:float(),thic:float()):{
+	if len<10: {return}
+	let end = <start[0]+Cos(ang)*len,start[1]-Sin(ang)*len>
+	DrawLineEx(start,end,thic,WHITE)
+	let angL, angR := (ang-DEFAULT_ANG), (ang+DEFAULT_ANG)
+	draw_branch(end,len*DEFAULT_COEF, angL, thic*DEFAULT_COEF)
+	draw_branch(end,len*DEFAULT_COEF, angR, thic*DEFAULT_COEF)
+}
 define function main(): {
-	`define class Graph: {
-	#public:
-		let self.adj:= dict()
-		define function __construct__(isDirected: bool(false)): {
-			let const self.directed = isDirected
-			return self
-		}
-		define function add_node(node): {
-			if node is not in self.adj.keys(): self.adj[node] = []
-			return None
-		}
-		define function add_edge(u, v):{
-			self.add_node(u)
-			self.add_node(v)
-			self.adj[u].append(v)
-			if not self.directed: self.adj[v].append(u)
-			return None
-		}
-		define function remove_edge(u, v): {
-			self.adj[u].remove(v)
-			if not self.directed: self.adj[v].remove(u)
-			return None
-		}
-		define function bfs(start): {
-			let seen:= set()
-			let queue, order := [start], []
-			while queue do: {
-				let node = queue.pop(0)
-				if node is not in seen: {
-					for i in self.adj[node] do: { queue.append(i) }
-					seen.add(node)
-					order.append(node)
-				}
-			}
-			return order
-		}
-		define function dfs(start): {
-			let seen:= set()
-			let stack, order := [start], []
-			while stack do: {
-				let node = stack.pop()
-				if node is not in seen: {
-					stack.extend(self.adj[node])
-					seen.add(node)
-					order.append(node)
-				}
-			}
-			return order
-		}
-	#private:
-		define function __display__(): {
-			let res = ""
-			for i, j in self.adj do: {
-				res += f"{i} -> {j} \n"
-			}
-			return res.strip("\n")
-		}
-	#protected:
+	InitWindow(WIN_WIDTH, WIN_HEIGHT, "farcto")
+	SetTargetFPS(60)
+	while not WindowShouldClose() do:{
+		BeginDrawing()
+		ClearBackground(BLACK)
+		draw_branch(<WIN_WIDTH/2,WIN_HEIGHT>,DEFAULT_LENGTH,STARTING_ANG,STARTING_THICNESS)
+		EndDrawing()
 	}
-	let g = Graph()
-	for i in "ABCDEFG" do: g.add_node(i)
-	g.add_edge("A","B")
-	g.add_edge("A","C")
-	g.add_edge("B","C")
-	g.add_edge("B","D")
-	g.add_edge("D","E")
-	g.add_edge("D","F")
-	g.add_edge("F","G")
-	print(g.bfs('A'))
-	print(g.dfs('A'))`
-	
 }
