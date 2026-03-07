@@ -14,8 +14,9 @@ int main() {
 	====================================================================================
 	*/
 	// -------------------------------------------------------------------------------
-	string path = "C:\\Users\\Windows\\source\\repos\\phdgamer0\\y---lang\\test.ymm"; // <-- CHANGE THIS TO YOUR PATH!
+	string path = "/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/test.ymm"; // <-- CHANGE THIS TO YOUR PATH!
 	// -------------------------------------------------------------------------------
+	//string path = "/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/test.ymm";
 	std::ifstream file(path);
 	if (!file) {
 		std::cerr << "FATAL ERROR: Cannot open file at path:" << path << "\n";
