@@ -4,7 +4,7 @@ import Vector
 import Math
 import Random
 let const WIN_WIDTH = 800
-let const WIN_HEIGHT = 800
+let const WIN_HEIGHT = 600
 let const RADH = 58
 let const RADV = 28
 let const THICKNESS = 2
