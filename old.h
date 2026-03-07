@@ -2972,7 +2972,11 @@ static inline std::string valueToString(const Value& v, int line = 0, int col = 
 		auto* super = static_cast<SuperObject*>(v.ref.get());
 		return "<super"+(super->name.empty()?"": super->name) + ">";
 	}
-	default: throw TypeError("Cannot implicitly convert this type to string", line, col);
+	case ValueType::PAIRED: {
+		auto* pair = static_cast<PairedObject*>(v.ref.get());
+		return "<Paired Object>";
+	}
+	default: throw TypeError("Cannot implicitly convert this type to string "+to_string((int)v.type), line, col);
 	}
 }
 static inline std::string PrintProperty(const Value& v) {
@@ -9365,6 +9369,8 @@ struct ByteCodeCompiler {
 					emitByte(OpCode::OP_POP, fe->line, fe->col);
 					if (locals.size() > 0) locals.pop_back();
 				}
+				for (int b : loopStack.back().breakJumps) patchJump(b);
+				loopStack.pop_back();
 				scopeDepth--;
 				break;
 			}
