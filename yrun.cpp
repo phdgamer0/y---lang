@@ -6,12 +6,12 @@
 void printErrorContext(const std::string&, int, int);
 int main() {
 	/*
-	====================================================================================
-	|	Change the path to point to your target .ymm file.                              |
-	|	Compile & Link: Compile yrun.cpp ensuring Raylib is linked.                     |
-	|	g++ yrun.cpp -o y_lang -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 && ./y_lang  |
-	|	if you see this: "Choose Compiler: AST:0 VM:1 DEBUG_VM:2 :" ALWAYS CHOOSE 1     |
-	====================================================================================
+	========================================================================================
+	|	Change the path to point to your target .ymm file.                                  |
+	|	Compile & Link: Compile yrun.cpp ensuring Raylib is linked.                         |
+	|	g++ -o3 yrun.cpp -o y_lang -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 && ./y_lang  |
+	|	if you see this: "Choose Compiler: AST:0 VM:1 DEBUG_VM:2 :" ALWAYS CHOOSE 1         |
+	========================================================================================
 	*/
 	// -------------------------------------------------------------------------------
 	string path = "/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/test.ymm"; // <-- CHANGE THIS TO YOUR PATH!
@@ -32,7 +32,10 @@ int main() {
 		vector<Stmt*> program;
 		while (!parser.isAtEnd()) program.push_back(parser.parseStmt());
 		int useVM;
-		cout<<"Choose Compiler: AST:0 VM:1 DEBUG_VM:2 :";
+		cout<<"Choose Compiler: AST:0 VM:1 ";
+		#ifdef VM_DEBUG_MODE
+			std::cout << "DEBUG_VM:2 ";
+		#endif
 		cin>>useVM;
 		Interpreter interp;
 		if (!useVM) {
@@ -40,7 +43,15 @@ int main() {
 			std::cout<<"Program finished successfully with code 0";
 		}
 		else {
-			if (useVM == 2) DEBUGGER_MODE_IS_ENABLED = true;
+			#ifndef VM_DEBUG_MODE
+			if (useVM == 2) {
+				std::cout << "\n[Notice: Fast Release Build active. Debugging disabled. Running standard VM]\n";
+				useVM = 1;
+			}
+			#endif
+			if (useVM == 2) {
+				DEBUGGER_MODE_IS_ENABLED = true;
+			}
 			Chunk chunk;
 			ByteCodeCompiler compiler(&chunk);
 			for (Stmt* stmt : program) compiler.compileStmt(stmt);
