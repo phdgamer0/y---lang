@@ -4,32 +4,32 @@ import Vector
 import Math
 import Random
 let const WIN_WIDTH = 800
-let const WIN_HEIGHT = 600
+let const WIN_HEIGHT = 800
 let const RADH = 58
 let const RADV = 28
 let const THICKNESS = 2
 define function draw_leaf(centerx, centery, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color): {
 	if has_shadow: {
-	DrawEllipse(centerx + radV, centery, radH + shadow_thickness, radV + shadow_thickness, shadow_color)
-	DrawEllipse(centerx - radV, centery, radH + shadow_thickness, radV + shadow_thickness, shadow_color)
-	DrawEllipse(centerx, centery + radV, radV + shadow_thickness, radH + shadow_thickness, shadow_color)
-	DrawEllipse(centerx, centery - radV, radV + shadow_thickness, radH + shadow_thickness, shadow_color)
-}
-DrawEllipse(centerx + radV, centery, radH, radV, leaf_color)
-DrawEllipse(centerx - radV, centery, radH, radV, leaf_color)
-DrawEllipse(centerx, centery + radV, radV, radH, leaf_color)
-DrawEllipse(centerx, centery - radV, radV, radH, leaf_color)
+		DrawEllipse(centerx + radV, centery, radH + shadow_thickness, radV + shadow_thickness, shadow_color)
+		DrawEllipse(centerx - radV, centery, radH + shadow_thickness, radV + shadow_thickness, shadow_color)
+		DrawEllipse(centerx, centery + radV, radV + shadow_thickness, radH + shadow_thickness, shadow_color)
+		DrawEllipse(centerx, centery - radV, radV + shadow_thickness, radH + shadow_thickness, shadow_color)
+	}
+	DrawEllipse(centerx + radV, centery, radH, radV, leaf_color)
+	DrawEllipse(centerx - radV, centery, radH, radV, leaf_color)
+	DrawEllipse(centerx, centery + radV, radV, radH, leaf_color)
+	DrawEllipse(centerx, centery - radV, radV, radH, leaf_color)
 }
 define function draw_flower(centerx, centery, center_color, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color): {
 	draw_leaf(centerx, centery, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color)
 	if has_shadow: DrawCircle(centerx, centery, radV + shadow_thickness, shadow_color)
-DrawCircle(centerx, centery, radV, center_color)
+	DrawCircle(centerx, centery, radV, center_color)
 }
 define function fill_with_flowers(win_w, win_h, center_color, radH, radV, leaf_color, has_shadow, shadow_thickness, shadow_color): {
 	for i in 40...win_w...80 do: {
-	for j in 40...win_h...80 do: {
-		draw_flower(i, j, center_color, radH / 3, radV / 3, leaf_color, has_shadow, shadow_thickness, shadow_color)
-	}
+		for j in 40...win_h...80 do: {
+			draw_flower(i, j, center_color, radH / 3, radV / 3, leaf_color, has_shadow, shadow_thickness, shadow_color)
+		}
 	}
 }
 define cached function fib(n: int()) -> int(): {
@@ -120,11 +120,11 @@ define function draw_clock_body(center, clc_clor, dot_color): {
 	DrawCircleV(center, 200, clc_clor)
 	`v_begin = <400 + 160 * cosx, 300 + 160 * sinx>`
 	`v_end = <400 + 195 * cosx, 300 + 195 * sinx>`
-let angle = float()
-for i in 0...12...1 do: {
-	angle = float(i * PI / 6)
-	DrawLineEx(<400+ 160 * Cos(angle), 300 + 160 * Sin(angle) >, <400+ 195 * Cos(angle), 300 + 195 * Sin(angle) >, 2, dot_color)
-}
+	let angle = float()
+	for i in 0...12...1 do: {
+		angle = float(i * PI / 6)
+		DrawLineEx(<400+ 160 * Cos(angle), 300 + 160 * Sin(angle) >, <400+ 195 * Cos(angle), 300 + 195 * Sin(angle) >, 2, dot_color)
+	}
 }
 define function draw_hour(center, hour, minute, color): {
 	let angle = float((hour + minute / 60.0) * PI / 6.0 - PI / 2.0)
@@ -132,12 +132,12 @@ DrawLineEx(center, <WIN_WIDTH / 2 + 80 * Cos(angle), WIN_HEIGHT / 2 + 80 * Sin(a
 }
 define function draw_minute(center, minute, second, color): {
 	let smooth_min = float(minute) + (float(second) / 60.0)
-let angle = float(smooth_min * PI / 30.0 - PI / 2.0)
-DrawLineEx(center, <WIN_WIDTH / 2 + 120 * Cos(angle), WIN_HEIGHT / 2 + 120 * Sin(angle) >, 2, color)
+	let angle = float(smooth_min * PI / 30.0 - PI / 2.0)
+	DrawLineEx(center, <WIN_WIDTH / 2 + 120 * Cos(angle), WIN_HEIGHT / 2 + 120 * Sin(angle) >, 2, color)
 }
 define function draw_second(center, second, color): {
 	let angle = float(second * PI / 30.0 - PI / 2.0)
-DrawLineEx(center, <WIN_WIDTH / 2 + 150 * Cos(angle), WIN_HEIGHT / 2 + 150 * Sin(angle) >, 2, color)
+	DrawLineEx(center, <WIN_WIDTH / 2 + 150 * Cos(angle), WIN_HEIGHT / 2 + 150 * Sin(angle) >, 2, color)
 }
 define function draw_digital_time(time, x, y, size, text_color, has_bg, bg_color): {
 	let h = string(time["hour"]) if time["hour"] >= 10 else "0" + string(time["hour"])
@@ -181,7 +181,7 @@ define function foo(): {
 ``` FUNCTION SIM: ```
 define function steup_axis(T, C): {
 	DrawLineEx(<0, WIN_HEIGHT/2>,<WIN_WIDTH,WIN_HEIGHT/2 >, T, C)
-DrawLineEx(<WIN_WIDTH/2, 0>,<WIN_WIDTH/2, WIN_HEIGHT >, T, C)
+	DrawLineEx(<WIN_WIDTH/2, 0>,<WIN_WIDTH/2, WIN_HEIGHT >, T, C)
 }
 define function coordinant(w, h, x, lam, color, scale: float(1.0), stretch: float(1.0)) -> vector(): {
 	return <x + w / 2, - lam(float(x / scale), stretch) + h / 2 >
@@ -236,8 +236,8 @@ let step = 0.0001
 let SPEED_STEP = 1
 define function Draw_Speed_Meter(outer_color, inside_color, line_colors, number_colors): {
 	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS + 3, 150, 390, 400, outer_color)
-DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS, 150, 390, 400, inside_color)
-Draw_Speed_Lines(line_colors)
+	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS, 150, 390, 400, inside_color)
+	Draw_Speed_Lines(line_colors)
 }
 ``` 
 x = WIN_WIDTH / 2 + R * Cos(a)
@@ -310,7 +310,7 @@ define function Draw_Speed_Lines(line_colors): {
 			}
 	}
 	else: DrawLineEx(outer, <outer[0] - 20 * Cos(i), outer[1] + 20 * Sin(i) >, THICKNESS / 2, line_colors)
-}
+	}
 }
 define function Draw_speed_line(step): {
 	if car_speed < our_speed: {
@@ -351,3 +351,327 @@ EndDrawing()
 	}
 CloseWindow()
 }
+~ let const DEFAULT_LENGTH = 120
+~ let const STARTING_ANG = float(PI/2.0)
+~ let const DEFAULT_ANG = float(PI/9.0)
+~ let const STARTING_THICNESS = 10
+~ let const DEFAULT_COEF = float(0.8)
+~ define function draw_branch(start:vector(),len:int(),ang:float(),thic:float()):{
+~ 	if len<10: {return}
+~ 	let end = <start[0]+Cos(ang)*len,start[1]-Sin(ang)*len>
+~ 	DrawLineEx(start,end,thic,WHITE)
+~ 	let angL, angR := (ang-DEFAULT_ANG), (ang+DEFAULT_ANG)
+~ 	draw_branch(end,len*DEFAULT_COEF, angL, thic*DEFAULT_COEF)
+~ 	draw_branch(end,len*DEFAULT_COEF, angR, thic*DEFAULT_COEF)
+~ }
+~ define function tree(): {
+~ 	InitWindow(WIN_WIDTH, WIN_HEIGHT, "farcto")
+~ 	SetTargetFPS(60)
+~ 	while not WindowShouldClose() do:{
+~ 		BeginDrawing()
+~ 		ClearBackground(BLACK)
+~ 		draw_branch(<WIN_WIDTH/2,WIN_HEIGHT>,DEFAULT_LENGTH,STARTING_ANG,STARTING_THICNESS)
+~ 		EndDrawing()
+~ 	}
+~ }
+define function matmar():{
+	define class Matrix: {
+			#public:
+				define function __construct__(row:int(0), col:int(0), *args): {
+					let self.mat := []
+					self.MaxVal = args.max() if args else 0
+					self.MinVal = args.min() if args else 0
+					if args.Any_Of(define lambda function(x) -> bool() :{return typeof(x) is not in ["integer", "float"]}): {
+						throw TypeError, "non numeric type detected in the matrix, try casting them to float or integers brfore passing them"
+					}
+					if row and col: {
+						assert length(args) <= row * col, f"the values exceed the static matrix's size, try with\nMatrix(omit, omit, {string(args).strip('()')})"
+						self.row = row
+						self.col = col
+						for let i = 0 if i < row then i++ do: {
+							self.mat.append([])
+							for let j = 0 if j < col then j++ do: {
+								self.mat[i].append(args[col * i + j] if length(args)> col * i + j else 0)
+							}
+						}
+					}
+					elif row and not col: {
+						col = length(args) // row if not length(args) % row or row === 1 else length(args) // row + 1
+						self.row = row
+						self.col = col
+						for let i = 0 if i < row then i++ do:{
+							self.mat.append([])
+							for let j = 0 if j < col then j++ do: {
+								self.mat[i].append(args[col * i + j] if length(args) > col * i + j else 0)
+							}
+						}
+					}
+					elif col and not row: {
+						row = length(args) // col if not length(args) % col or col === 1 else length(args) // col + 1
+						self.row = row
+						self.col = col
+						for let i = 0 if i < row then i++ do: {
+							self.mat.append([])
+							for let j = 0 if j < col then j++ do: {
+								self.mat[i].append(args[col * i + j] if length(args) > col * i + j else 0)
+							}
+						}
+					}
+					else: {
+						throw Warning, "row and columns are both omitted, defaulting to row matrix..."
+						row = 1
+						col = length(args) // row if not length(args) % row or row === 1 else length(args) // row + 1
+						self.row = row
+						self.col = col
+						for let i = 0 if i < row then i++ do: {
+							self.mat.append([])
+							for let j = 0 if j < col then j++ do: {
+								self.mat[i].append(args[col * i + j] if length(args) > col * i + j else 0)
+							}
+						}
+					}
+					return self
+				}
+				define function __display__(): {
+					let max = define lambda function(x, y): {return x if x >= y else y}
+					let cell = max(length(string(self.MinVal)), length(string(self.MaxVal)))
+					let res := ""
+						for rows in self.mat do:{
+							for let cols = 0 if cols < self.col then cols++ do: {
+								res += (' ' * (cell - length(string(rows[cols])))) + f'{string(rows[cols])}'
+								if cols + 1 < self.col: res += '  '
+								else: res += '\n'
+							}
+						}
+					return res
+				}
+				define function __plus__(other): {
+					if typeof(other) !== "instance": throw TypeError, 'cannot add non-matrices'
+					if self.row !== other.row or self.col !== other.col: throw ValueError, 'cannot add matrices with different dimensions'
+					let res = obj(self.row,self.col)
+					for r1, r2, r3 in self.mat, other.mat, res.mat do: {
+						for c1, c2, c3 in r1, r2, r3 do: {
+							c3 = c1 + c2
+						}
+					}
+					res.MaxVal = self.MaxVal + other.MaxVal
+					res.MinVal = self.MinVal + other.MinVal
+					return res
+				}
+				define function __minus__(other): {
+					if typeof(other) !== "instance": throw TypeError, 'cannot subtract non-matrices'
+					if self.row !== other.row or self.col !== other.col: throw ValueError, 'cannot subtract matrices with different dimensions'
+					let res = obj(self.row,self.col)
+					for r1, r2, r3 in self.mat, other.mat, res.mat do: {
+						for c1, c2, c3 in r1, r2, r3 do: {
+							c3 = c1 - c2
+						}
+					}
+					res.MaxVal = self.MaxVal - other.MaxVal
+					res.MinVal = self.MinVal - other.MinVal
+					return res
+				}
+				define function __times__(other): {
+					if typeof(other) is not in ['instance', 'integer', 'float']: throw TypeError, "cannot multiply matrix with types other than 'instance', 'integer' and 'float'"
+					elif typeof(other) is in ['integer', 'float']: {
+						let res = obj(self.row, self.col)
+						for r1, r2 in res.mat, self.mat do: {
+							for c1, c2 in r1, r2 do: {
+								c1 = c2*other
+							}
+						}
+						res.MaxVal = self.MaxVal * other
+						return res
+					}
+					else: {
+						assert self.col === other.row, f"A {self.row} x {self.col} matrix cannot be multiplied by a {other.row} x {other.col} matrix"
+						let res = obj(self.row, other.col)
+						for let i = 0 if i < self.row then i++ do: {
+							for let j = 0 if j < other.col then j++ do: {
+								for let k = 0 if k < self.col then k++ do: {
+									res.mat[i][j] += self.mat[i][k] * other.mat[k][j]
+								}
+							}
+						}
+						return res
+					}
+				}
+				define function __r_times__(other): {
+					if typeof(other) is not in ['integer', 'float']: throw TypeError, "cannot multiply matrix with types other than 'integer' and 'float'"
+					return self * other
+				}
+				define function __divide__(other): {
+					if typeof(other) is not in ['integer', 'float']: throw TypeError, "cannot multiply matrix with types other than 'integer' and 'float'"
+					if other: return self*(1/other)  
+					else: throw ZeroDivisionError, "cannot divide by 0"
+				}
+				define function det(): {
+					assert self.row === self.col, "cannot take the determinant of a non square matrix"
+					if self.row <= 5: return self._det_helper(self.mat)
+					else: {
+						let temp = obj(self.row, self.col)
+						temp.uTri()
+						let res = 1
+						for let i = 0 if i < self.row then i++ do: {
+							for let j = 0 if j < self.col then j++ do: {
+								if i === j: res *= temp.mat[i][j]
+							}
+						}
+					}
+				}
+				define function transpose(): {
+					let temp = obj(self.col, self.row, 0)
+					for let i = 0 if i < length(self.mat) then i++ do: {
+						for let j = 0 if j < length(self.mat[0]) then j++ do: {
+							temp.mat[j][i] = self.mat[i][j]
+						}
+					}
+					self.mat = $temp.mat
+					swap(@self.row, @self.col)
+				}
+				define function inv(): {
+					let det = self.det()
+					if det === 0: throw MathError, 'cannot invert a matrix that is non-square or has a determinant of 0'
+					let temp = $self.mat
+					for let row = 0 if row < length(self.mat) then row++ do: {
+						for let col = 0 if col < length(self.mat[0]) then col++ do: {
+							self.mat[row][col] = float(1/det) * ((-1) ** (row + col)) * self._det_helper(self._remove_row_col(temp, row, col))
+						}
+					}
+					self.transpose()
+				}
+				define function uTri(): {
+					let colOp = 0
+					let rowOp = 0
+					while colOp !== self.col - 1 do: {
+						if self.mat[rowOp][colOp] === 0: {
+							rowOp++
+							if rowOp === self.row - 1: {
+								rowOp = 0
+								colOp++
+							}
+							continue
+						}
+						for let i = rowOp + 1 if i < self.row then i++ do: {
+							if self.mat[i][colOp] === 0: continue
+							let coef = self.mat[i][colOp] / self.mat[rowOp][colOp]
+							for let c = colOp if c < self.col then c++ do: {
+								self.mat[i][c] -= self.mat[rowOp][c] * coef 
+							}
+						}
+						colOp++
+						rowOp++
+					}
+				}
+				define function unitMat(row:int(),col:int()): {
+					assert row === col, 'A unit matrix should be a aquare matrix'
+					let res = obj(row, col, 0)
+					for let i = 0 if i < row then i++ do: {
+						for let j = 0 if j < col then j++ do: {
+							if i === j: res.mat[i][j] = 1
+							else: res.mat[i][j] = 0
+						}
+					}
+					return res
+				}
+			#private:
+				define function _remove_row_col(lis: list(), i: int(), j: int()) -> list(): {
+					let res := []
+					for let row = 0 if row < length(lis) then row++ do: {
+						if row === i: continue
+						res.append([])
+						for let col = 0 if col < length(lis[0]) then col++ do:{
+							if col === j: continue
+							res[-1].append(lis[row][col])
+						}
+					}
+					return res
+				}
+				define function _det_helper(lis: list()): {
+					if length(lis) === 1: return lis[0][0]
+					let result = 0
+					for let j = 0 if j < length(lis) then j++ do: {
+						result += ((-1) ** (j)) * lis[0][j] * self._det_helper(self._remove_row_col(lis, 0, j))
+					}
+					return result
+				}
+				let self.MaxVal
+				let self.MinVal
+			#protected:
+				let self.row
+				let self.col
+		}
+}
+```
+wordle game
+=============
+import FileStream
+import Random
+import Os
+import System
+let all_guesses := list()
+let const all_words = set("abcdefghijklmnopqrstuvwxyz".chars())
+define function Draw_chances(max_chances:int(), Word:string(), place_holder:string(' ')):{
+	let columns := 5
+	let top_edge, mid_edge, bot_edge
+	top_edge = '╔' + ('═══╦' * (columns - 1)) + '═══╗'
+   mid_edge = '╠' + ('═══╬' * (columns - 1)) + '═══╣'
+   bot_edge = '╚' + ('═══╩' * (columns - 1)) + '═══╝'
+	let row_content_filled = '║'
+	print(top_edge)
+   for i in range(max_chances) do:{
+		for j in i*columns...(i+1)*columns do:{
+			let ch = all_guesses.get(j, place_holder)
+			if ch is not in Word: ch = Color(ch, "white")
+			elif ch === Word[j%columns]: ch = Color(ch, "green")
+			else: ch = Color(ch, "yellow")
+			row_content_filled += f" {ch} ║"
+		}
+		print(row_content_filled)
+      if i < max_chances - 1: print(mid_edge)
+		row_content_filled = '║'
+	}
+   print(bot_edge)
+}
+define function main():{
+	let File = SafeOpen('valid-wordle-words.txt')
+	let words, inp, gameOver, word, chances = [], "", true, "", 6
+	if File.IsOpen(): words = File.ReadLines()
+	File.Close()
+	while true do:{
+      if gameOver:{
+         gameOver = false
+         word = words[RandChoice(0..length(words))]
+         chances = 6
+         all_guesses.clear()
+      }
+      Console("clear")
+      Draw_chances(6, word)
+		print(f"unused letters: {all_words.difference(set($all_guesses))}")
+      inp = input(f"chances: {chances}\nenter the 5 letter word to play or q to exit: ", string()).lower()
+		while inp !== "q" and (length(inp) !== 5 or not inp.isalpha() or inp is not in words) do:{
+         Console("clear")
+      	Draw_chances(6, word)
+			print(f"unused letters: {all_words.difference(set($all_guesses))}")
+			print("Wrong input try again")
+			inp = input(f"chances: {chances}\nenter the 5 letter word to play or q to exit: ", string()).lower()
+         continue
+      }
+      if inp === 'q': break
+      all_guesses.extend(inp.chars())
+      chances--
+      Console("clear")
+      Draw_chances(6, word)
+      if inp === word:{
+         print(f"{Color('YOU WON!', 'green')} the word was {word}")
+         gameOver = true
+      }
+      elif chances === 0:{
+         print(f"{Color('YOU LOST!', 'red')} the word was {word}")
+         gameOver = true
+      }
+      if gameOver: input("Press Enter to play again...", string())
+   }
+}
+
+```
