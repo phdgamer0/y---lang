@@ -58,6 +58,7 @@
 #include <thread>
 #include <ctime>
 #include <math.h>
+#include <locale.h>
 #ifdef _MSC_VER
 #include <intrin.h>
 #else
@@ -89,6 +90,10 @@
 #undef KEY_BACKSPACE
 #undef KEY_END
 #include <nlohmann/json.hpp>
+#include "qrcodegen.hpp"
+#define CPPHTTPLIB_OPENSSL_SUPPORT
+#include "httplib.h"
+#include <libtcc.h>
 
 bool DEBUGGER_MODE_IS_ENABLED = false;
 namespace fs = std::filesystem;
@@ -96,6 +101,7 @@ using std::string;
 using std::vector;
 using std::unordered_map;
 using json = nlohmann::json;
+using namespace qrcodegen;
 // -------------------- TOKENIZER --------------------
 enum class TokenType {
 	LET, DEFINE, FUNCTION, RETURN, IF, ELSE_IF, ELSE, FOR, WHILE, DO, THEN, BREAK, CONTINUE, SKIP, DELETE,
@@ -2831,6 +2837,12 @@ static Value defaultOf(ValueType t) {
 	}
 	return Value::NoType();
 }
+inline int getGlobalVarId(const std::string& name) {
+   static std::unordered_map<std::string, int> pool;
+   static int nextId = 0;
+   if (pool.find(name) == pool.end()) pool[name] = nextId++;
+   return pool[name];
+}
 struct Var {
 	Value value;
 	Value* alias = nullptr;
@@ -3053,7 +3065,7 @@ static inline std::string PrintProperty(const Value& v) {
 	else return "";
 	return "failure";
 }
-static inline std::string PrintStackForDebug(const std::deque<Value>& stack) {
+static inline std::string PrintStackForDebug(const std::vector<Value>& stack) {
 	std::string result = "start -> [";
 	for (auto val = stack.begin(); val < stack.end(); val++) {
 		result+= PrintProperty(*val);
@@ -3090,7 +3102,7 @@ static inline std::string PrintStackForDebug(const std::deque<Value>& stack) {
 			#ifdef VM_DEBUG_MODE 
 				result+= val->__DEBUGGING__NAME__;
 			#endif
-			result+= (" " + valueToString(*val));
+			//result+= (" " + valueToString(*val));
 		}
 		if (val != stack.end() - 1) result += ", ";
 	}
@@ -3646,7 +3658,202 @@ static inline std::vector<Vector2> ValueToVectorList(const Value& v, int l, int 
 	for (const auto& el : list->elements) points.push_back(ValueToVector2(el, l, c));
 	return points;
 }
-
+enum class OpCode : uint8_t {
+	// Literals & Constants
+	OP_CONSTANT, OP_CONSTANT_LONG, OP_TRUE, OP_FALSE, OP_NONE, OP_NOTYPE,
+	// Variables & Scope
+	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY, OP_REF_LOCAL,
+	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
+	OP_MULTI_SET, OP_GET_LOCAL, OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
+	OP_REF_PROPERTY, OP_DELETE,
+	// Arithmetic & Logic
+	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_IADD,
+	OP_ISUB, OP_IMUL, OP_IDIV, OP_IFLOOR_DIV, OP_IMOD, OP_IPOW, OP_DUP, OP_DUP_2,
+	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
+	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
+	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
+	// Containers
+	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT, OP_UNPACK_DICT,
+	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE, OP_BUILD_SLICE,
+	// OOP
+	OP_CLASS, OP_METHOD, OP_GET_PROPERTY, OP_SET_PROPERTY, OP_CLASS_FIELD, OP_SUPER,
+	// Comprehension
+	OP_LIST_APPEND, OP_SET_ADD, OP_DICT_SET, OP_LIST_TO_TUPLE, OP_LIST_TO_VECTOR,
+	// Access & Calls
+	OP_GET_INDEX, OP_SET_INDEX, OP_INVOKE, OP_CALL,
+	// Control Flow
+	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN, OP_TO_STREAM, OP_JUMP_IF_NOT_LT,
+	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER, OP_SKIP_ITER, OP_SWITCH_TABLE,
+	// Errors & Systems
+	OP_THROW, OP_ASSERT, OP_IMPORT, OP_POP, OP_DEBUG_NAME, OP_TRY_ENTER, OP_TRY_EXIT,
+	OP_CATCH, OP_RETHROW, OP_END_FINALLY
+};
+static inline std::string OpCodeToString(OpCode num) {
+   switch (num) {
+      case OpCode::OP_CONSTANT: return "OP_CONSTANT";
+      case OpCode::OP_CONSTANT_LONG: return "OP_CONSTANT_LONG";
+      case OpCode::OP_TRUE: return "OP_TRUE";
+      case OpCode::OP_FALSE: return "OP_FALSE";
+      case OpCode::OP_NONE: return "OP_NONE";
+      case OpCode::OP_NOTYPE: return "OP_NOTYPE";
+      case OpCode::OP_DEFINE_VAR: return "OP_DEFINE_VAR";
+      case OpCode::OP_GET_VAR: return "OP_GET_VAR";
+      case OpCode::OP_SET_VAR: return "OP_SET_VAR";
+      case OpCode::OP_DEEP_COPY: return "OP_DEEP_COPY";
+      case OpCode::OP_REF_LOCAL: return "OP_REF_LOCAL";
+      case OpCode::OP_DEFINE_REF: return "OP_DEFINE_REF";
+      case OpCode::OP_REF_VAR: return "OP_REF_VAR";
+      case OpCode::OP_REF_INDEX: return "OP_REF_INDEX";
+      case OpCode::OP_SET_REF: return "OP_SET_REF";
+      case OpCode::OP_SHALLOW_COPY: return "OP_SHALLOW_COPY";
+      case OpCode::OP_MULTI_SET: return "OP_MULTI_LET";
+      case OpCode::OP_GET_LOCAL: return "OP_GET_LOCAL";
+      case OpCode::OP_SET_LOCAL: return "OP_SET_LOCAL";
+      case OpCode::OP_INC_LOCAL: return "OP_INC_LOCAL";
+      case OpCode::OP_SET_FLAGS: return "OP_SET_FLAGS";
+      case OpCode::OP_REF_PROPERTY: return "OP_REF_PROPERTY";
+      case OpCode::OP_DELETE: return "OP_DELETE";
+      case OpCode::OP_ADD: return "OP_ADD";
+      case OpCode::OP_SUB: return "OP_SUB";
+      case OpCode::OP_MUL: return "OP_MUL";
+      case OpCode::OP_DIV: return "OP_DIV";
+      case OpCode::OP_FLOOR_DIV: return "OP_FLOOR_DIV";
+      case OpCode::OP_MOD: return "OP_MOD";
+      case OpCode::OP_POW: return "OP_POW";
+      case OpCode::OP_IADD: return "OP_IADD";
+      case OpCode::OP_ISUB: return "OP_ISUB";
+      case OpCode::OP_IMUL: return "OP_IMUL";
+      case OpCode::OP_IDIV: return "OP_IDIV";
+      case OpCode::OP_IFLOOR_DIV: return "OP_IFLOOR_DIV";
+      case OpCode::OP_IMOD: return "OP_IMOD";
+      case OpCode::OP_IPOW: return "OP_IPOW";
+      case OpCode::OP_DUP: return "OP_DUP";
+      case OpCode::OP_DUP_2: return "OP_DUP_2";
+      case OpCode::OP_EQ: return "OP_EQ";
+      case OpCode::OP_NEQ: return "OP_NEQ";
+      case OpCode::OP_LT: return "OP_LT";
+      case OpCode::OP_GT: return "OP_GT";
+      case OpCode::OP_LTE: return "OP_LTE";
+      case OpCode::OP_GTE: return "OP_GTE";
+      case OpCode::OP_COLON: return "OP_COLON";
+      case OpCode::OP_STRICT_NEQ: return "OP_STRICT_NEQ";
+      case OpCode::OP_NOT: return "OP_NOT";
+      case OpCode::OP_AND: return "OP_AND";
+      case OpCode::OP_OR: return "OP_OR";
+      case OpCode::OP_XOR: return "OP_XOR";
+      case OpCode::OP_IS: return "OP_IS";
+      case OpCode::OP_IN: return "OP_IN";
+      case OpCode::OP_IS_NOT: return "OP_IS_NOT";
+      case OpCode::OP_STRICT_EQ: return "OP_STRICT_EQ";
+      case OpCode::OP_IS_IN: return "OP_IS_IN";
+      case OpCode::OP_IS_NOT_IN: return "OP_IS_NOT_IN";
+      case OpCode::OP_NXOR: return "OP_NXOR";
+      case OpCode::OP_NAND: return "OP_NAND";
+      case OpCode::OP_NOR: return "OP_NOR";
+      case OpCode::OP_NEGATE: return "OP_NEGATE";
+      case OpCode::OP_INCREMENT: return "OP_INCREMENT";
+      case OpCode::OP_DECREMENT: return "OP_DECREMENT";
+      case OpCode::OP_BUILD_LIST: return "OP_BUILD_LIST";
+      case OpCode::OP_BUILD_TUPLE: return "OP_BUILD_TUPLE";
+      case OpCode::OP_BUILD_SET: return "OP_BUILD_SET";
+      case OpCode::OP_BUILD_DICT: return "OP_BUILD_DICT";
+      case OpCode::OP_UNPACK_DICT: return "OP_UNPACK_DICT";
+      case OpCode::OP_BUILD_RANGE: return "OP_BUILD_RANGE";
+      case OpCode::OP_BUILD_VECTOR: return "OP_BUILD_VECTOR";
+      case OpCode::OP_BUILD_FSTRING: return "OP_BUILD_FSTRING";
+      case OpCode::OP_BUILD_FILE: return "OP_BUILD_FILE";
+      case OpCode::OP_BUILD_SLICE: return "OP_BUILD_SLICE";
+      case OpCode::OP_CLASS: return "OP_CLASS";
+      case OpCode::OP_METHOD: return "OP_METHOD";
+      case OpCode::OP_GET_PROPERTY: return "OP_GET_PROPERTY";
+      case OpCode::OP_SET_PROPERTY: return "OP_SET_PROPERTY";
+      case OpCode::OP_CLASS_FIELD: return "OP_CLASS_FIELD";
+      case OpCode::OP_SUPER: return "OP_SUPER";
+      case OpCode::OP_LIST_APPEND: return "OP_LIST_APPEND";
+      case OpCode::OP_SET_ADD: return "OP_SET_ADD";
+      case OpCode::OP_DICT_SET: return "OP_DICT_SET";
+      case OpCode::OP_LIST_TO_TUPLE: return "OP_LIST_TO_TUPLE";
+      case OpCode::OP_LIST_TO_VECTOR: return "OP_LIST_TO_VECTOR";
+      case OpCode::OP_GET_INDEX: return "OP_GET_INDEX";
+      case OpCode::OP_SET_INDEX: return "OP_SET_INDEX";
+      case OpCode::OP_INVOKE: return "OP_INVOKE";
+      case OpCode::OP_CALL: return "OP_CALL";
+      case OpCode::OP_JUMP: return "OP_JUMP";
+      case OpCode::OP_JUMP_IF_FALSE: return "OP_JUMP_IF_FALSE";
+      case OpCode::OP_LOOP: return "OP_LOOP";
+      case OpCode::OP_RETURN: return "OP_RETURN";
+      case OpCode::OP_TO_STREAM: return "OP_TO_STREAM";
+      case OpCode::OP_JUMP_IF_NOT_LT: return "OP_JUMP_IF_NOT_LT";
+      case OpCode::OP_BREAK: return "OP_BREAK";
+      case OpCode::OP_CONTINUE: return "OP_CONTINUE";
+      case OpCode::OP_SKIP: return "OP_SKIP";
+      case OpCode::OP_OMIT: return "OP_OMIT";
+      case OpCode::OP_FOR_ITER: return "OP_FOR_ITER";
+      case OpCode::OP_SKIP_ITER: return "OP_SKIP_ITER";
+      case OpCode::OP_SWITCH_TABLE: return "OP_SWITCH_TABLE";
+      case OpCode::OP_THROW: return "OP_THROW";
+      case OpCode::OP_ASSERT: return "OP_ASSERT";
+      case OpCode::OP_IMPORT: return "OP_IMPORT";
+      case OpCode::OP_POP: return "OP_POP";
+      case OpCode::OP_DEBUG_NAME: return "OP_DEBUG_NAME";
+      case OpCode::OP_TRY_ENTER: return "OP_TRY_ENTER";
+      case OpCode::OP_TRY_EXIT: return "OP_TRY_EXIT";
+      case OpCode::OP_CATCH: return "OP_CATCH";
+      case OpCode::OP_RETHROW: return "OP_RETHROW";
+      case OpCode::OP_END_FINALLY: return "OP_END_FINALLY";
+      default: return "UNKNOWN";
+   }
+}
+struct Chunk {
+	vector<uint8_t> code;
+	vector<Value> constants;
+	vector<int> lines;
+	vector<int> columns;
+	void write(uint8_t byte, int line, int col) {
+		code.push_back(byte);
+		lines.push_back(line);
+		columns.push_back(col);
+	}
+	void write(OpCode op, int line, int col) {
+		write(static_cast<uint8_t>(op), line, col);
+	}
+	int addConstant(Value v) {
+		for (size_t i = 0; i < constants.size(); i++) {
+			if (constants[i].strictEquals(v)) {
+				return static_cast<int>(i);
+			}
+		}
+		constants.push_back(v);
+		return static_cast<int>(constants.size() - 1);
+	}
+};
+struct LoopContext {
+	int startAddress;
+	int stepAddress;
+	vector<int> breakJumps;
+	vector<int> continueJumps;
+	bool isForEach;
+	int startLocalCount;
+	int iteratorSlot;
+};
+struct Local {
+	string name;
+	int depth;
+};
+struct ExceptionHandler {
+	int catchAddress;
+	int finallyAddress;
+	int stackDepth;
+	int scopeDepth;
+	bool isInsideFinally = false;
+};
+struct CallFrame {
+	FunctionObject* function;
+	uint8_t* ip;
+	int basePointer;
+	vector<Value> cacheKey;
+	vector<ExceptionHandler> handlerStack;
+};
 // ------------ AST WALKER -------------
 struct Interpreter {
 	std::shared_ptr<Env> env;
@@ -3667,1823 +3874,7 @@ struct Interpreter {
 		registerStdLib();
 	}
 	Value nativePrint(const vector<Value>& args, int l, int c);
-	void registerStdLib() {
-		modules["FileStream"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			define("Open", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Open() expects exactly 1 argument (path)", l, c);
-				string path = valueToString(args[0]);
-				auto* fObj = new FileObject(path);
-				if (!fObj->isOpen) { delete fObj; throw FileNotFoundError("Cannot find or open file: " + path, l, c); }
-				Value v; v.type = ValueType::FILE; v.ref = std::shared_ptr<HeapObject>(fObj);
-				return v;
-			});
-			define("SafeOpen", [](const vector<Value>& args, int l, int c) {
-				if (args.size() < 1 || args.size() > 2) throw ArgumentError("SafeOpen() expects path and optional failure value", l, c);
-				string path = valueToString(args[0]);
-				Value failVal = (args.size() == 2) ? args[1] : Value::None();
-				auto* fObj = new FileObject(path);
-				if (!fObj->isOpen) { delete fObj; return failVal; }
-				Value v; v.type = ValueType::FILE; v.ref = std::shared_ptr<HeapObject>(fObj);
-				return v;
-			});
-		};
-		modules["Os"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			define("Make", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Make() expects (path, name)", l, c);
-				string loc = valueToString(args[0]);
-				string name = valueToString(args[1]);
-				string fullPath = loc;
-				if (!fullPath.empty() && fullPath.back() != '/' && fullPath.back() != '\\') fullPath += "/";
-				fullPath += name;
-				std::ofstream outfile(fullPath);
-				if (!outfile) throw PermissionError("Cannot create file at: " + fullPath, l, c);
-				outfile.close();
-				return Value::None();
-			});
-			define("Remove", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Remove() expects 1 argument (path)", l, c);
-				string path = valueToString(args[0]);
-				if (std::remove(path.c_str()) != 0) throw PermissionError("Cannot remove: " + path, l, c);
-				return Value::None();
-			});
-			define("Exists", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Exists() expects 2 arguments (path, name)", l, c);
-				string loc = valueToString(args[0]);
-				string name = valueToString(args[1]);
-				string fullPath = loc;
-				if (!fullPath.empty() && fullPath.back() != '/' && fullPath.back() != '\\') fullPath += "/";
-				fullPath += name;
-				std::ifstream f(fullPath);
-				return Value::Bool(f.good());
-			});
-			define("ListNames", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("ListNames() expects 1 argument (path)", l, c);
-				string pathStr = valueToString(args[0]);
-				fs::path p(pathStr);
-				if (!fs::exists(p)) throw FileNotFoundError("Path not found: " + pathStr, l, c);
-				vector<Value> results;
-				if (fs::is_directory(p)) {
-					for (const auto& entry : fs::directory_iterator(p)) {
-						results.push_back(Value::String(entry.path().filename().string()));
-					}
-				}
-				else if (fs::is_regular_file(p)) {
-					std::ifstream file(p);
-					string line;
-					while (std::getline(file, line)) {
-						if (!line.empty() && line.back() == '\r') line.pop_back();
-						results.push_back(Value::String(line));
-					}
-				}
-				else throw FileNotFoundError("Path is not a valid file or directory: " + pathStr, l, c);
-				return Value::List(results);
-			});
-			define("MkDir", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("MkDir() expects 1 argument (path)", l, c);
-				string path = valueToString(args[0]);
-				if (!fs::create_directories(path)) {
-				}
-				return Value::None();
-			});
-			define("RmDir", [](const vector<Value>& args, int l, int c) {
-				if (args.size() < 1 || args.size() > 2) throw ArgumentError("RmDir() expects 2 arguments (path, recursive?)", l, c);
-				string path = valueToString(args[0]);
-				bool recursive = (args.size() == 2) ? args[1].asBool() : false;
-				if (recursive) fs::remove_all(path);
-				else fs::remove(path);
-				return Value::None();
-			});
-			define("Cwd", [](const vector<Value>& args, int l, int c) {
-				return Value::String(fs::current_path().string());
-			});
-			define("Cd", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Cd() expects 1 argument (path)", l, c);
-				string path = valueToString(args[0]);
-				try {
-					fs::current_path(path);
-				}
-				catch (const fs::filesystem_error& e) {
-					throw FileNotFoundError("Cannot change directory to: " + path, l, c);
-				}
-				return Value::None();
-			});
-			define("Rename", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Rename() expects 2 arguments (old, new)", l, c);
-				string oldP = valueToString(args[0]);
-				string newP = valueToString(args[1]);
-				try {
-					fs::rename(oldP, newP);
-				}
-				catch (...) {
-					throw PermissionError("Rename failed", l, c);
-				}
-				return Value::None();
-			});
-			define("Env", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Env() expects 1 argument (name)", l, c);
-				const char* val = std::getenv(valueToString(args[0]).c_str());
-				return val ? Value::String(val) : Value::None();
-			});
-			define("Console", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Console() expects 1 argument (command)", l, c);
-				string cmd = valueToString(args[0]);
-				int result = std::system(cmd.c_str());
-				return Value::Int(result);
-			});
-		};
-		modules["Time"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			define("Sleep", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Sleep(milliseconds)", l, c);
-				long long ms = args[0].asInt();
-				std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-				return Value::None();
-			});
-			define("Now", [](const vector<Value>& args, int l, int c) {
-				auto now = std::chrono::system_clock::now();
-				auto duration = now.time_since_epoch();
-				double seconds = std::chrono::duration<double>(duration).count();
-				return Value::Float(seconds);
-			});
-			define("Clock", [](const vector<Value>& args, int l, int c) {
-				auto now = std::chrono::high_resolution_clock::now();
-				double ms = std::chrono::duration<double, std::milli>(now.time_since_epoch()).count();
-				return Value::Float(ms);
-			});
-			define("Format", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Format(timestamp, formatStr)", l, c);
-				time_t rawTime = (time_t)args[0].asFloat();
-				string fmt = valueToString(args[1]);
-				struct tm* timeInfo = std::localtime(&rawTime);
-				char buffer[80];
-				std::strftime(buffer, 80, fmt.c_str(), timeInfo);
-				return Value::String(string(buffer));
-			});
-			define("Local", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Local(timestamp)", l, c);
-				time_t rawTime = (time_t)args[0].asFloat();
-				struct tm* t = std::localtime(&rawTime);
-				unordered_map<Value, Value, ValueHash, ValueEqual> parts;
-				parts[Value::String("year")] = Value::Int(t->tm_year + 1900);
-				parts[Value::String("month")] = Value::Int(t->tm_mon + 1);
-				parts[Value::String("day")] = Value::Int(t->tm_mday);
-				parts[Value::String("hour")] = Value::Int(t->tm_hour);
-				parts[Value::String("min")] = Value::Int(t->tm_min);
-				parts[Value::String("sec")] = Value::Int(t->tm_sec);
-				return Value::Dict(parts);
-			});
-		};
-		modules["System"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			define("Exit", [](const vector<Value>& args, int l, int c) {
-				int code = (args.size() > 0) ? (int)args[0].asInt() : 0;
-				exit(code);
-				return Value::None(); // Never reached
-			});
-			define("Platform", [](const vector<Value>& args, int l, int c) {
-				#ifdef _WIN32
-					return Value::String("windows");
-				#elif __APPLE__
-					return Value::String("macos");
-				#elif __linux__
-					return Value::String("linux");
-				#else
-					return Value::String("unknown");
-				#endif
-			});
-			define("Color", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Color() expects 2 arguments (text, colorName)", l, c);
-				string text = valueToString(args[0]);
-				string color = valueToString(args[1]);
-				string code = "37";
-				if (color == "red") code = "31";
-				else if (color == "green") code = "32";
-				else if (color == "yellow") code = "33";
-				else if (color == "blue") code = "34";
-				else if (color == "magenta") code = "35";
-				else if (color == "cyan") code = "36";
-				else if (color == "white") code = "37";
-				else if (color == "reset") code = "0";
-				else throw ValueError("invalid color", l, c);
-				return Value::String("\033[" + code + "m" + text + "\033[0m");
-			});
-			define("Beep", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Beep() expects 2 arguments (frequency, duration)",l,c);
-				if (args[0].asFloat()<=0 || args[1].asFloat()<=0) throw ValueError("Frequency or duration should be positive",l,c);
-				#ifdef _WIN32
-					Beep(args[0].asFloat(), args[1].asFloat());
-				#endif
-				return Value::None();
-			});
-		};
-		modules["Math"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			auto valueToFloat = [&](const Value& v, int l, int c) -> double {
-				if (v.type == ValueType::FLOAT) return v.asFloat();
-				if (v.type == ValueType::INT) return (double)v.iVal;
-				if (v.type == ValueType::BOOL) return v.asBool() ? 1.0 : 0.0;
-				if (v.type == ValueType::BIGINT) {
-					try { return std::stod(valueToString(v)); }
-					catch (...) { return INFINITY; }
-				}
-				throw TypeError("Expected a number", l, c);
-			};
-			// Constants
-			env->set("PI", Value::Float(3.141592653589793), true, true);
-			env->set("E", Value::Float(2.718281828459045), true, true);
-			env->set("PHI", Value::Float(1.618033988749894), true, true);
-			env->set("G", Value::Float(6.6743e-11), true, true);
-			env->set("G_EARTH", Value::Float(9.80665), true, true);
-			env->set("EPSILON_0", Value::Float(8.8541878128e-12), true, true);
-			env->set("PLANCK_H", Value::Float(6.62607015e-34), true, true);
-			// Basic Functions
-			define("Abs", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Abs() expects 1 argument (num)", l, c);
-				const Value& v = args[0];
-				if (v.type == ValueType::INT) return Value::Int(std::abs(v.asInt()));
-				if (v.type == ValueType::FLOAT) return Value::Float(std::abs(v.asFloat()));
-				if (v.type == ValueType::BIGINT) {
-					auto* big = static_cast<BigIntObject*>(v.ref.get());
-					if (!big->isNegative) return v;
-					auto copy = std::make_shared<BigIntObject>(*big);
-					copy->isNegative = false;
-					return Value::BigInt(copy);
-				}
-				return Value::Float(std::abs(valueToFloat(v, l, c)));
-			});
-			define("Floor", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Floor() expects 1 argument (num)", l, c);
-				if (args[0].type == ValueType::INT || args[0].type == ValueType::BIGINT) return args[0];
-				return Value::Int((long long)std::floor(valueToFloat(args[0], l, c)));
-			});
-			define("Ceil", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Ceil() expects 1 argument (num)", l, c);
-				if (args[0].type == ValueType::INT || args[0].type == ValueType::BIGINT) return args[0];
-				return Value::Int((long long)std::ceil(valueToFloat(args[0], l, c)));
-			});
-			define("Sqrt", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Sqrt() expects 1 argument (num)", l, c);
-				double val = valueToFloat(args[0], l, c);
-				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
-				return Value::Float(std::sqrt(val));
-			});
-			define("Cbrt", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Cbrt() expects 1 argument (num)", l, c);
-				return Value::Float(std::cbrt(valueToFloat(args[0], l, c)));
-			});
-			define("Sgn", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Sgn() expects 1 argument (num)", l, c);
-				double val = valueToFloat(args[0], l, c);
-				if (val > 0.0) return Value::Int(1);
-				else if (val < 0.0) return Value::Int(-1);
-				else return Value::Int(0);
-			});
-			define("RadToDeg", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("RadToDeg() expects 1 argument (num)", l, c);
-				return Value::Float(valueToFloat(args[0], l, c) * (long double)180 / 3.141592653589793);
-			});
-			define("DegToRad", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("DegToRad() expects 1 argument (num)", l, c);
-				return Value::Float(valueToFloat(args[0], l, c) * 3.141592653589793 / (long double)180);
-			});
-			// Trig
-			define("Sin", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Sin() expects 1 argument (num)", l, c);
-				return Value::Float(std::sin(valueToFloat(args[0], l, c)));
-			});
-			define("Cos", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Cos() expects 1 argument (num)", l, c);
-				return Value::Float(std::cos(valueToFloat(args[0], l, c)));
-			});
-			define("Tan", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Tan() expects 1 argument (num)", l, c);
-				return Value::Float(std::tan(valueToFloat(args[0], l, c)));
-			});
-			define("Sinh", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Sinh() expects 1 argument (num)", l, c);
-				return Value::Float(std::sinh(valueToFloat(args[0], l, c)));
-			});
-			define("Cosh", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Cosh() expects 1 argument (num)", l, c);
-				return Value::Float(std::cosh(valueToFloat(args[0], l, c)));
-			});
-			define("Tanh", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Tanh() expects 1 argument (num)", l, c);
-				return Value::Float(std::tanh(valueToFloat(args[0], l, c)));
-			});
-			// Arc
-			define("Arcsin", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Arcsin() expects 1 argument (num)", l, c);
-				return Value::Float(std::asin(valueToFloat(args[0], l, c)));
-			});
-			define("Arccos", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Arccos() expects 1 argument (num)", l, c);
-				return Value::Float(std::acos(valueToFloat(args[0], l, c)));
-			});
-			define("Arctan", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Arctan() expects 1 argument (num)", l, c);
-				return Value::Float(std::atan(valueToFloat(args[0], l, c)));
-			});
-			define("Arcsinh", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Arcsinh() expects 1 argument (num)", l, c);
-				return Value::Float(std::asinh(valueToFloat(args[0], l, c)));
-			});
-			define("Arccosh", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Arccosh() expects 1 argument (num)", l, c);
-				return Value::Float(std::acosh(valueToFloat(args[0], l, c)));
-			});
-			define("Arctanh", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Arctanh() expects 1 argument (num)", l, c);
-				return Value::Float(std::atanh(valueToFloat(args[0], l, c)));
-			});
-			// Log
-			define("Log", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Log() expects 1 argument (num)", l, c);
-				double val = valueToFloat(args[0], l, c);
-				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
-				return Value::Float(std::log(val));
-			});
-			define("Log2", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Log2() expects 1 argument (num)", l, c);
-				double val = valueToFloat(args[0], l, c);
-				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
-				return Value::Float(std::log2(val));
-			});
-			define("Log10", [&](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Log10() expects 1 argument (num)", l, c);
-				double val = valueToFloat(args[0], l, c);
-				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
-				return Value::Float(std::log10(val));
-			});
-		};
-		modules["Random"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			auto getGen = []() -> std::mt19937& {
-				static std::random_device rd;
-				static std::mt19937 gen(rd());
-				return gen;
-			};
-			define("RandFloat", [=](const vector<Value>& args, int l, int c) {
-				std::uniform_real_distribution<> dis(0.0, 1.0);
-				return Value::Float(dis(getGen()));
-			});
-			define("RandChoice", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("RandChoice() expects 1 argument", l, c);
-				Value v = args[0];
-				auto pickIndex = [&](size_t size) {
-					if (size == 0) throw EmptyContainerError("Cannot choose from empty container", l, c);
-					std::uniform_int_distribution<size_t> dis(0, size - 1);
-					return dis(getGen());
-				};
-				if (v.type == ValueType::LIST) {
-					auto* list = static_cast<ListObject*>(v.ref.get());
-					return list->elements[pickIndex(list->elements.size())];
-				}
-				if (v.type == ValueType::TUPLE) {
-					auto* tuple = static_cast<TupleObject*>(v.ref.get());
-					return tuple->elements[pickIndex(tuple->elements.size())];
-				}
-				if (v.type == ValueType::STRING) {
-					const string& str = v.asString();
-					char c_char = str[pickIndex(str.size())];
-					return Value::String(string(1, c_char));
-				}
-				if (v.type == ValueType::SET) {
-					auto* set = static_cast<SetObject*>(v.ref.get());
-					size_t idx = pickIndex(set->elements.size());
-					return set->elements[idx];
-				}
-				if (v.type == ValueType::RANGE) {
-					auto* r = static_cast<RangeObject*>(v.ref.get());
-					if (!r->isValid) throw EmptyContainerError("Cannot choose from invalid range", l, c);
-					double diff = std::abs(r->end - r->start);
-					double steps = diff / std::abs(r->step);
-					long long count = 0;
-					if (r->step > 0 && r->end > r->start) count = (long long)(r->endInclusive ? floor(steps) + 1 : ceil(steps));
-					else if (r->step < 0 && r->end < r->start) count = (long long)(r->endInclusive ? floor(steps) + 1 : ceil(steps));
-					if (count <= 0) throw EmptyContainerError("Cannot choose from empty range", l, c);
-					std::uniform_int_distribution<long long> dis(0, count - 1);
-					long long offset = dis(getGen());
-					double val = r->start + (offset * r->step);
-					return r->isFloat ? Value::Float(val) : Value::Int((long long)val);
-				}
-				throw TypeError("RandChoice requires a container (list, set, tuple, string, range)", l, c);
-			});
-			define("Shuffle", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Shuffle() expects 1 argument", l, c);
-				Value v = args[0];
-				if (v.type == ValueType::LIST) {
-					Value newVal = deepCopy(v);
-					auto* list = static_cast<ListObject*>(newVal.ref.get());
-					std::shuffle(list->elements.begin(), list->elements.end(), getGen());
-					return newVal;
-				}
-				if (v.type == ValueType::TUPLE) {
-					Value newVal = deepCopy(v);
-					auto* t = static_cast<TupleObject*>(newVal.ref.get());
-					std::shuffle(t->elements.begin(), t->elements.end(), getGen());
-					return newVal;
-				}
-				if (v.type == ValueType::STRING) {
-					string s = v.asString();
-					std::shuffle(s.begin(), s.end(), getGen());
-					return Value::String(s);
-				}
-				if (v.type == ValueType::SET) {
-					Value newVal = deepCopy(v);
-					auto* s = static_cast<SetObject*>(newVal.ref.get());
-					std::shuffle(s->elements.begin(), s->elements.end(), getGen());
-					return newVal;
-				}
-				if (v.type == ValueType::RANGE) {
-					Value listVer = Value::List({});
-					throw TypeError("Cannot shuffle a Range (result would not be a range). Use Sample(range, len) to get a shuffled list.", l, c);
-				}
-				throw TypeError("Shuffle requires a mutable sequence or string", l, c);
-			});
-			define("Sample", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("Sample() expects 2 arguments (container, count)", l, c);
-				Value v = args[0];
-				long long k = args[1].asInt();
-				if (k < 0) throw ValueError("Sample count cannot be negative", l, c);
-				vector<Value> pool;
-				bool isString = (v.type == ValueType::STRING);
-				if (v.type == ValueType::LIST) pool = static_cast<ListObject*>(v.ref.get())->elements;
-				else if (v.type == ValueType::TUPLE) pool = static_cast<TupleObject*>(v.ref.get())->elements;
-				else if (v.type == ValueType::SET) pool = static_cast<SetObject*>(v.ref.get())->elements;
-				else if (v.type == ValueType::RANGE) {
-					auto* r = static_cast<RangeObject*>(v.ref.get());
-					double cur = r->start;
-					if (!r->startInclusive) cur += r->step;
-					while (true) {
-						bool cond = (r->step > 0) ? (r->endInclusive ? cur <= r->end : cur < r->end)
-							: (r->endInclusive ? cur >= r->end : cur > r->end);
-						if (!cond) break;
-						pool.push_back(r->isFloat ? Value::Float(cur) : Value::Int((long long)cur));
-						cur += r->step;
-					}
-				}
-				else if (isString) {
-					string s = v.asString();
-					for (char ch : s) pool.push_back(Value::String(string(1, ch)));
-				}
-				else throw TypeError("Sample requires a container", l, c);
-				if (k > (long long)pool.size()) throw ValueError("Sample larger than population", l, c);
-				vector<Value> result;
-				result.reserve(k);
-				std::sample(pool.begin(), pool.end(), std::back_inserter(result), k, getGen());
-				std::shuffle(result.begin(), result.end(), getGen());
-				vector<Value> deepResult;
-				for (auto& val : result) deepResult.push_back(deepCopy(val));
-
-				if (v.type == ValueType::LIST || v.type == ValueType::RANGE) return Value::List(deepResult);
-				if (v.type == ValueType::TUPLE) return Value::Tuple(deepResult);
-				if (v.type == ValueType::SET) return Value::Set(deepResult);
-				if (isString) {
-					string s = "";
-					for (const auto& val : deepResult) s += val.asString();
-					return Value::String(s);
-				}
-				return Value::None();
-			});
-		};
-		modules["Vector"] = [&](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			this->vectorEnabled = true;
-			auto vecConstructor = [](const vector<Value>& args, int l, int c) {
-				vector<Value> elems;
-				if (args.empty()) elems = { Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) };
-				else {
-					for (const auto& arg : args) {
-						if (!arg.isNumber()) throw TypeError("Vector arguments must be numbers", l, c);
-						elems.push_back(arg);
-					}
-				}
-				return Value::Vector(elems);
-			};
-			if (symbols.empty()) env->set("vector", Value::Native(vecConstructor), true);
-			else for (const auto& s : symbols) if (s == "vector") env->set("vector", Value::Native(vecConstructor), true);
-		};
-		modules["Raylib"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			static auto colorClass = std::make_shared<ClassObject>("Color");
-			static auto imageClass = std::make_shared<ClassObject>("Image");
-			static auto textureClass = std::make_shared<ClassObject>("Texture2D");
-			static auto fontClass = std::make_shared<ClassObject>("Font");
-			auto ImageToValue = [&](const Image& img) -> Value {
-				auto inst = std::make_shared<InstanceObject>(imageClass.get());
-				inst->fields["data"] = Value::pInt(img.data);
-				inst->fields["width"] = Value::Int(img.width);
-				inst->fields["height"] = Value::Int(img.height);
-				inst->fields["mipmaps"] = Value::Int(img.mipmaps);
-				inst->fields["format"] = Value::Int(img.format);
-				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
-				return v;
-			};
-			auto ValueToImage = [&](Value v, int l, int c) -> Image {
-				if (v.type != ValueType::INSTANCE) throw TypeError("Expected Image instance", l, c);
-				auto inst = static_cast<InstanceObject*>(v.ref.get());
-				if (inst->klass->name != "Image") throw TypeError("Expected Image instance", l, c);
-				Image img;
-				img.data = inst->fields["data"].aspInt();
-				img.width = (int)inst->fields["width"].asInt();
-				img.height = (int)inst->fields["height"].asInt();
-				img.mipmaps = (int)inst->fields["mipmaps"].asInt();
-				img.format = (int)inst->fields["format"].asInt();
-				return img;
-			};
-			auto TextureToValue = [&](const Texture2D& tex) -> Value {
-				auto inst = std::make_shared<InstanceObject>(textureClass.get());
-				inst->fields["id"] = Value::Int(tex.id); // Store OpenGL Texture ID
-				inst->fields["width"] = Value::Int(tex.width);
-				inst->fields["height"] = Value::Int(tex.height);
-				inst->fields["mipmaps"] = Value::Int(tex.mipmaps);
-				inst->fields["format"] = Value::Int(tex.format);
-				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
-				return v;
-			};
-			auto ValueToTexture = [&](Value v, int l, int c) -> Texture2D {
-				if (v.type != ValueType::INSTANCE) throw TypeError("Expected Texture2D instance", l, c);
-				auto inst = static_cast<InstanceObject*>(v.ref.get());
-				if (inst->klass->name != "Texture2D") throw TypeError("Expected Texture2D instance", l, c);
-				Texture2D tex;
-				tex.id = (unsigned int)inst->fields["id"].asInt();
-				tex.width = (int)inst->fields["width"].asInt();
-				tex.height = (int)inst->fields["height"].asInt();
-				tex.mipmaps = (int)inst->fields["mipmaps"].asInt();
-				tex.format = (int)inst->fields["format"].asInt();
-				return tex;
-			};
-			auto MakeColor = [&](int r, int g, int b, int a) -> Value {
-				auto inst = std::make_shared<InstanceObject>(colorClass.get());
-				inst->fields["r"] = Value::Int(r);
-				inst->fields["g"] = Value::Int(g);
-				inst->fields["b"] = Value::Int(b);
-				inst->fields["a"] = Value::Int(a);
-
-				Value v;
-				v.type = ValueType::INSTANCE;
-				v.ref = inst;
-				v.isConst = true; // Important: Make default colors constant!
-				return v;
-			};
-			auto FontToValue = [&](const Font& font) -> Value {
-				auto inst = std::make_shared<InstanceObject>(fontClass.get());
-				inst->fields["baseSize"] = Value::Int(font.baseSize);
-				inst->fields["glyphCount"] = Value::Int(font.glyphCount);
-				inst->fields["glyphPadding"] = Value::Int(font.glyphPadding);
-				inst->fields["texture"] = TextureToValue(font.texture);
-				inst->fields["recs"] = Value::pInt(font.recs);
-				inst->fields["glyphs"] = Value::pInt(font.glyphs);
-				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
-				return v;
-			};
-			auto ValueToFont = [&](Value v, int l, int c) -> Font {
-				if (v.type != ValueType::INSTANCE) throw TypeError("Expected Font instance", l, c);
-				auto inst = static_cast<InstanceObject*>(v.ref.get());
-				if (inst->klass->name != "Font") throw TypeError("Expected Font instance", l, c);
-				Font font;
-				font.baseSize = (int)inst->fields["baseSize"].asInt();
-				font.glyphCount = (int)inst->fields["glyphCount"].asInt();
-				font.glyphPadding = (int)inst->fields["glyphPadding"].asInt();
-				font.texture = ValueToTexture(inst->fields["texture"], l, c);
-				font.recs = (Rectangle*)inst->fields["recs"].aspInt();
-				font.glyphs = (GlyphInfo*)inst->fields["glyphs"].aspInt();
-				return font;
-			};
-			env->set("LIGHTGRAY", MakeColor(200, 200, 200, 255), true, true);
-			env->set("GRAY", MakeColor(130, 130, 130, 255), true, true);
-			env->set("DARKGRAY", MakeColor(80, 80, 80, 255), true, true);
-			env->set("YELLOW", MakeColor(253, 249, 0, 255), true, true);
-			env->set("GOLD", MakeColor(255, 203, 0, 255), true, true);
-			env->set("ORANGE", MakeColor(255, 161, 0, 255), true, true);
-			env->set("PINK", MakeColor(255, 109, 194, 255), true, true);
-			env->set("RED", MakeColor(230, 41, 55, 255), true, true);
-			env->set("MAROON", MakeColor(190, 33, 55, 255), true, true);
-			env->set("GREEN", MakeColor(0, 228, 48, 255), true, true);
-			env->set("LIME", MakeColor(0, 158, 47, 255), true, true);
-			env->set("DARKGREEN", MakeColor(0, 117, 44, 255), true, true);
-			env->set("SKYBLUE", MakeColor(102, 191, 255, 255), true, true);
-			env->set("BLUE", MakeColor(0, 121, 241, 255), true, true);
-			env->set("DARKBLUE", MakeColor(0, 82, 172, 255), true, true);
-			env->set("PURPLE", MakeColor(200, 122, 255, 255), true, true);
-			env->set("VIOLET", MakeColor(135, 60, 190, 255), true, true);
-			env->set("DARKPURPLE", MakeColor(112, 31, 126, 255), true, true);
-			env->set("BEIGE", MakeColor(211, 176, 131, 255), true, true);
-			env->set("BROWN", MakeColor(127, 106, 79, 255), true, true);
-			env->set("DARKBROWN", MakeColor(76, 63, 47, 255), true, true);
-			env->set("WHITE", MakeColor(255, 255, 255, 255), true, true);
-			env->set("BLACK", MakeColor(0, 0, 0, 255), true, true);
-			env->set("BLANK", MakeColor(0, 0, 0, 0), true, true);
-			env->set("MAGENTA", MakeColor(255, 0, 255, 255), true, true);
-			env->set("RAYWHITE", MakeColor(245, 245, 245, 255), true, true);
-			define("Color", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("Color(r, g, b, a)", l, c);
-				auto inst = std::make_shared<InstanceObject>(colorClass.get());
-				inst->fields["r"] = args[0];
-				inst->fields["g"] = args[1];
-				inst->fields["b"] = args[2];
-				inst->fields["a"] = args[3];
-				Value v;
-				v.type = ValueType::INSTANCE;
-				v.ref = inst;
-				return v;
-			});
-			define("Rectangle", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("Rectangle(x, y, w, h)", l, c);
-				static auto rectClass = std::make_shared<ClassObject>("Rectangle");
-				auto inst = std::make_shared<InstanceObject>(rectClass.get());
-				inst->fields["x"] = args[0];
-				inst->fields["y"] = args[1];
-				inst->fields["width"] = args[2];
-				inst->fields["height"] = args[3];
-				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
-				return v;
-			});
-			define("Font", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 6) throw ArgumentError("Font(baseSize, glyphCount, glyphPadding, texture, recs_ptr, glyphs_ptr)", l, c);
-				auto inst = std::make_shared<InstanceObject>(fontClass.get());
-				inst->fields["baseSize"] = args[0];
-				inst->fields["glyphCount"] = args[1];
-				inst->fields["glyphPadding"] = args[2];
-				inst->fields["texture"] = args[3];
-				inst->fields["recs"] = args[4];
-				inst->fields["glyphs"] = args[5];
-				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
-				return v;
-			});
-			define("FadeColor", [=](const vector<Value>& args, int l, int c) {
-				if(args.size() != 2) throw ArgumentError("Fade() takes two arguments, (color, fadeAmount)", l, c);
-				Color newColor = Fade(ValueToColor(args[0], l, c), args[1].asFloat());
-				auto v = MakeColor(newColor.r, newColor.g, newColor.b, newColor.a);
-				v.isConst = false;
-				return v;
-			});
-			define("ColorToGrayFast", [=](const vector<Value>& args, int l, int c) {
-				if(args.size() != 1) throw ArgumentError("ColorToGrayFast() takes one argument, (color)", l, c);
-				Color newColor = ValueToColor(args[0], l, c);
-				uint8_t G = static_cast<uint8_t>(floorf((newColor.r + newColor.g + newColor.b)/3.0F));
-				auto v = MakeColor(G, G, G, newColor.a);
-				v.isConst = false;
-				return v;
-			});
-			define("ColorToGray", [=](const vector<Value>& args, int l, int c){
-				if(args.size() != 1) throw ArgumentError("ColorToGray() takes one argument, (color)", l, c);
-				Color newColor = ValueToColor(args[0], l, c);
-				float R_linear = powf(newColor.r/255.0F, 2.2F);
-				float G_linear = powf(newColor.g/255.0F, 2.2F);
-				float B_linear = powf(newColor.r/255.0F, 2.2F);
-				float GRAY_linear = (0.2126F * R_linear) + (0.7152F * G_linear) + (0.0722F * B_linear);
-				uint8_t G = static_cast<uint8_t>(floorf(255.0F * powf(GRAY_linear, 1.0F/2.2F)));
-				auto v = MakeColor(G, G, G, newColor.a);
-				v.isConst = false;
-				return v;
-			});
-			define("InitWindow", [=](const vector<Value>& args, int l, int c) {
-				if(args.size()!=3) throw ArgumentError("InitWindow() takes three arguments, (width, height, text)", l, c);
-				InitWindow((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str());
-				return Value::None();
-			});
-			define("ToggleFullscreen", [=](const vector<Value>& args, int l, int c) {
-				if(!args.empty()) throw ArgumentError("ToggleFullscreen() takes no arguments", l, c);
-				ToggleFullscreen();
-				return Value::None();
-			});
-			define("CloseWindow", [=](const vector<Value>& args, int l, int c) {
-				if(!args.empty()) throw ArgumentError("CloseWindow() takes no arguments", l, c);
-				CloseWindow();
-				return Value::None();
-			});
-			define("WindowShouldClose", [=](const vector<Value>& args, int l, int c) {
-				if (!args.empty()) throw ArgumentError("WindowShouldClose() takes no arguments", l, c);
-				return Value::Bool((bool)WindowShouldClose());
-			});
-			define("BeginDrawing", [=](const vector<Value>& args, int l, int c) {
-				BeginDrawing();
-				return Value::None();
-			});
-			define("BeginBlendMode", [=](const vector<Value>& args, int l, int c) {
-				if(args.size() != 1) throw ArgumentError("BeginBlendMode() takes only one argument (mode)", l, c);
-				BeginBlendMode(args[0].asInt());
-				return Value::None();
-			});
-			define("EndBlendMode", [=](const vector<Value>& args, int l, int c) {
-				EndBlendMode();
-				return Value::None();
-			});
-			define("EndDrawing", [=](const vector<Value>& args, int l, int c) {
-				EndDrawing();
-				return Value::None();
-			});
-			define("ClearBackground", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("ClearBackground(Color)", l, c);
-				ClearBackground(ValueToColor(args[0], l, c));
-				return Value::None();
-			});
-			define("GetFrameTime", [=](const vector<Value>& args, int l, int c) {
-				if (!args.empty()) throw ArgumentError("GetFrameTime()", l, c);
-				return Value::Float(GetFrameTime());
-			});
-			define("SetTargetFPS", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("SetTargetFPS(fps)", l, c);
-				SetTargetFPS((int)args[0].asInt());
-				return Value::None();
-			});
-			define("DrawFPS", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("DrawFPS(x, y)", l, c);
-				DrawFPS((int)args[0].asInt(), (int)args[1].asInt());
-				return Value::None();
-			});
-			define("GetFontDefault", [=](const vector<Value>& args, int l, int c) {
-				if (!args.empty()) throw ArgumentError("GetFontDefault() takes no arguments", l, c);
-				return FontToValue(GetFontDefault());
-			});
-			define("LoadFont", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("LoadFont(fileName)", l, c);
-				Font font = LoadFont(args[0].asString().c_str());
-				return FontToValue(font);
-			});
-			define("LoadFontEx", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 3) throw ArgumentError("LoadFontEx(fileName, fontSize, fontChars_ptr)", l, c);
-				// Usually pass Value::Omit() or Value::None() for the 3rd arg to load default ASCII
-				int* chars = args[2].type == ValueType::NONE ? nullptr : (int*)args[2].aspInt();
-				Font font = LoadFontEx(args[0].asString().c_str(), (int)args[1].asInt(), chars, 0);
-				return FontToValue(font);
-			});
-			define("UnloadFont", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("UnloadFont(font)", l, c);
-				UnloadFont(ValueToFont(args[0], l, c));
-				return Value::None();
-			});
-			define("DrawTextEx", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 6) throw ArgumentError("DrawTextEx(font, text, positionVec, fontSize, spacing, tintColor)", l, c);
-				DrawTextEx(ValueToFont(args[0], l, c), args[1].asString().c_str(), ValueToVector2(args[2], l, c), (float)args[3].asFloat(), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
-				return Value::None();
-			});
-			define("DrawTextPro", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 8) throw ArgumentError("DrawTextPro(font, text, posVec, originVec, rotation, fontSize, spacing, tintColor)", l, c);
-				DrawTextPro(ValueToFont(args[0], l, c), args[1].asString().c_str(), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat(), (float)args[5].asFloat(), (float)args[6].asFloat(), ValueToColor(args[7], l, c));
-				return Value::None();
-			});
-			define("MeasureTextEx", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("MeasureTextEx(font, text, fontSize, spacing)", l, c);
-				Vector2 size = MeasureTextEx(ValueToFont(args[0], l, c), args[1].asString().c_str(), (float)args[2].asFloat(), (float)args[3].asFloat());
-				return Vector2ToValue(size);
-			});
-			define("DrawText", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("DrawText(str, x, y, size, color)", l, c);
-				DrawText(args[0].asString().c_str(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
-				return Value::None();
-			});
-			define("DrawPixel", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 3) throw ArgumentError("DrawPixel(x, y, color)", l, c);
-				DrawPixel((int)args[0].asInt(), (int)args[1].asInt(), ValueToColor(args[2], l, c));
-				return Value::None();
-			});
-			define("DrawPixelV", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("DrawPixelV(vec, color)", l, c);
-				DrawPixelV(ValueToVector2(args[0], l, c), ValueToColor(args[1], l, c));
-				return Value::None();
-			});
-			define("DrawLine", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("DrawLine(x1, y1, x2, y2, color)", l, c);
-				DrawLine((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
-				return Value::None();
-			});
-			define("DrawLineV", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 3) throw ArgumentError("DrawLineV(vec1, vec2, color)", l, c);
-				DrawLineV(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
-				return Value::None();
-			});
-			define("DrawLineEx", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawLineEx(vec1, vec2, thick, color)", l, c);
-				DrawLineEx(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawLineBezier", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawLineBezier(vec1, vec2, thick, color)", l, c);
-				DrawLineBezier(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawLineStrip", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("DrawLineStrip(pointList, color)", l, c);
-				auto points = ValueToVectorList(args[0], l, c);
-				DrawLineStrip(points.data(), (int)points.size(), ValueToColor(args[1], l, c));
-				return Value::None();
-			});
-			define("DrawCircle", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawCircle(x, y, radius, color)", l, c);
-				DrawCircle((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawCircleV", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 3) throw ArgumentError("DrawCircleV(centerVec, radius, color)", l, c);
-				DrawCircleV(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), ValueToColor(args[2], l, c));
-				return Value::None();
-			});
-			define("DrawCircleLines", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawCircleLines(x, y, radius, color)", l, c);
-				DrawCircleLines((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawCircleGradient", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("DrawCircleGradient(x, y, radius, inner, outer)", l, c);
-				DrawCircleGradient((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c), ValueToColor(args[4], l, c));
-				return Value::None();
-			});
-			define("DrawCircleSector", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 6) throw ArgumentError("DrawCircleSector(center, radius, start, end, segs, color)", l, c);
-				DrawCircleSector(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (int)args[4].asInt(), ValueToColor(args[5], l, c));
-				return Value::None();
-			});
-			define("DrawEllipse", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("DrawEllipse(x, y, radH, radV, color)", l, c);
-				DrawEllipse((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
-				return Value::None();
-			});
-			define("DrawRing", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 7) throw ArgumentError("DrawRing(center, inner, outer, start, end, segs, color)", l, c);
-				DrawRing(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), (int)args[5].asInt(), ValueToColor(args[6], l, c));
-				return Value::None();
-			});
-			define("DrawRectangle", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("DrawRectangle(x, y, w, h, color)", l, c);
-				DrawRectangle((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
-				return Value::None();
-			});
-			define("DrawRectangleV", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 3) throw ArgumentError("DrawRectangleV(posVec, sizeVec, color)", l, c);
-				DrawRectangleV(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
-				return Value::None();
-			});
-			define("DrawRectangleRec", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("DrawRectangleRec(rect, color)", l, c);
-				DrawRectangleRec(ValueToRect(args[0], l, c), ValueToColor(args[1], l, c));
-				return Value::None();
-			});
-			define("DrawRectanglePro", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawRectanglePro(rect, originVec, rot, color)", l, c);
-				DrawRectanglePro(ValueToRect(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawRectangleGradientV", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 6) throw ArgumentError("DrawRectangleGradientV(x, y, w, h, topCol, botCol)", l, c);
-				DrawRectangleGradientV((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c), ValueToColor(args[5], l, c));
-				return Value::None();
-			});
-			define("DrawRectangleRounded", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawRectangleRounded(rect, roundness, segs, color)", l, c);
-				DrawRectangleRounded(ValueToRect(args[0], l, c), (float)args[1].asFloat(), (int)args[2].asInt(), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawTriangle", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawTriangle(v1, v2, v3, color)", l, c);
-				DrawTriangle(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawTriangleFan", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("DrawTriangleFan(pointList, color)", l, c);
-				auto points = ValueToVectorList(args[0], l, c);
-				DrawTriangleFan(points.data(), (int)points.size(), ValueToColor(args[1], l, c));
-				return Value::None();
-			});
-			define("DrawPoly", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("DrawPoly(center, sides, radius, rot, color)", l, c);
-				DrawPoly(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
-				return Value::None();
-			});
-			define("DrawPolyLinesEx", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 6) throw ArgumentError("DrawPolyLinesEx(center, sides, radius, rot, thick, color)", l, c);
-				DrawPolyLinesEx(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
-				return Value::None();
-			});
-			define("IsKeyPressed", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsKeyPressed(key)", l, c);
-				return Value::Bool(IsKeyPressed((int)args[0].asInt()));
-			});
-			define("IsKeyPressedRepeat", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsKeyPressedRepeat(key)", l, c);
-				return Value::Bool(IsKeyPressedRepeat((int)args[0].asInt()));
-			});
-			define("IsKeyDown", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsKeyDown(key)", l, c);
-				return Value::Bool(IsKeyDown((int)args[0].asInt()));
-			});
-			define("IsKeyReleased", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsKeyReleased(key)", l, c);
-				return Value::Bool(IsKeyReleased((int)args[0].asInt()));
-			});
-			define("IsKeyUp", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsKeyUp(key)", l, c);
-				return Value::Bool(IsKeyUp((int)args[0].asInt()));
-			});
-			define("GetKeyPressed", [](const vector<Value>& args, int l, int c) {
-				return Value::Int(GetKeyPressed());
-			});
-			define("GetCharPressed", [](const vector<Value>& args, int l, int c) {
-				return Value::Int(GetCharPressed());
-			});
-			define("SetExitKey", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("SetExitKey(key)", l, c);
-				SetExitKey((int)args[0].asInt());
-				return Value::None();
-			});
-			define("IsMouseButtonPressed", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsMouseButtonPressed(button)", l, c);
-				return Value::Bool(IsMouseButtonPressed((int)args[0].asInt()));
-			});
-			define("IsMouseButtonDown", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsMouseButtonDown(button)", l, c);
-				return Value::Bool(IsMouseButtonDown((int)args[0].asInt()));
-			});
-			define("IsMouseButtonReleased", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsMouseButtonReleased(button)", l, c);
-				return Value::Bool(IsMouseButtonReleased((int)args[0].asInt()));
-			});
-			define("IsMouseButtonUp", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("IsMouseButtonUp(button)", l, c);
-				return Value::Bool(IsMouseButtonUp((int)args[0].asInt()));
-			});
-			define("GetMouseX", [](const vector<Value>& args, int l, int c) {
-				return Value::Int(GetMouseX());
-			});
-			define("GetMouseY", [](const vector<Value>& args, int l, int c) {
-				return Value::Int(GetMouseY());
-			});
-			define("GetMousePosition", [=](const vector<Value>& args, int l, int c) {
-				return Vector2ToValue(GetMousePosition());
-			});
-			define("GetMouseDelta", [=](const vector<Value>& args, int l, int c) {
-				return Vector2ToValue(GetMouseDelta());
-			});
-			define("SetMousePosition", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("SetMousePosition(x, y)", l, c);
-				SetMousePosition((int)args[0].asInt(), (int)args[1].asInt());
-				return Value::None();
-			});
-			define("SetMouseOffset", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("SetMouseOffset(x, y)", l, c);
-				SetMouseOffset((int)args[0].asInt(), (int)args[1].asInt());
-				return Value::None();
-			});
-			define("SetMouseScale", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("SetMouseScale(x, y)", l, c);
-				SetMouseScale((float)args[0].asFloat(), (float)args[1].asFloat());
-				return Value::None();
-			});
-			define("GetMouseWheelMove", [](const vector<Value>& args, int l, int c) {
-				return Value::Float(GetMouseWheelMove());
-			});
-			define("GetMouseWheelMoveV", [=](const vector<Value>& args, int l, int c) {
-				return Vector2ToValue(GetMouseWheelMoveV());
-			});
-			define("SetMouseCursor", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("SetMouseCursor(cursor)", l, c);
-				SetMouseCursor((int)args[0].asInt());
-				return Value::None();
-			});
-			define("Image", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("Image(data_ptr, width, height, mipmaps, format)", l, c);
-				auto inst = std::make_shared<InstanceObject>(imageClass.get());
-				inst->fields["data"] = args[0];
-				inst->fields["width"] = args[1];
-				inst->fields["height"] = args[2];
-				inst->fields["mipmaps"] = args[3];
-				inst->fields["format"] = args[4];
-				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
-				return v;
-			});
-			define("Texture2D", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("Texture2D(id, width, height, mipmaps, format)", l, c);
-				auto inst = std::make_shared<InstanceObject>(textureClass.get());
-				inst->fields["id"] = args[0];
-				inst->fields["width"] = args[1];
-				inst->fields["height"] = args[2];
-				inst->fields["mipmaps"] = args[3];
-				inst->fields["format"] = args[4];
-				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
-				return v;
-			});
-			define("LoadImage", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("LoadImage(fileName)", l, c);
-				Image img = LoadImage(args[0].asString().c_str());
-				return ImageToValue(img);
-			});
-			define("LoadImageColors", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("LoadImageColors(img)", l, c);
-				Image img = ValueToImage(args[0], l, c);
-				Color* pixels = LoadImageColors(img);
-				std::vector<Value> colorPix;
-				colorPix.reserve(img.width * img.height);
-				for(size_t i = 0; i < img.width * img.height; i++) colorPix.push_back(MakeColor(pixels[i].r,pixels[i].g,pixels[i].b,pixels[i].a));
-				return Value::List(colorPix);
-			});
-			define("UpdateImagePixels", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 2) throw ArgumentError("UpdateImagePixels(img, PixelList)", l, c);
-				Image img = ValueToImage(args[0], l, c);
-				auto* vec = static_cast<ListObject*>(args[1].ref.get());
-				Color* pixels = LoadImageColors(img);
-				size_t limit;
-				if (vec->elements.size() != img.width * img.height) throw Warning("list size does not match with the image's pixels. The result may not be correct, try resizing the image: ImageResizeNN(img, New_Width, New_Height)", l, c);
-				limit = std::min((size_t)img.width * (size_t)img.height, vec->elements.size());
-				for(size_t i = 0; i < limit; i++) pixels[i] = ValueToColor(vec->elements[i], l, c);
-				return Value::None();
-			});
-			define("LoadImageFromScreen", [=](const vector<Value>& args, int l, int c) {
-				if (!args.empty()) throw ArgumentError("LoadImageFromScreen()", l, c);
-				Image img = LoadImageFromScreen();
-				return ImageToValue(img);
-			});
-         define("ImageResizeNN", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 3) throw ArgumentError("ImageResizeNN(image, newWidth, newHeight)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            ImageResizeNN(&img, (int)args[1].asInt(), (int)args[2].asInt());
-            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
-            inst->fields["data"] = Value::pInt(img.data); 
-            inst->fields["width"] = Value::Int(img.width);
-            inst->fields["height"] = Value::Int(img.height);
-            return Value::None();
-         });
-         define("ImageColorTint", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 2) throw ArgumentError("ImageColorTint(image, color)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            ImageColorTint(&img, ValueToColor(args[1], l, c));
-            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
-            inst->fields["data"] = Value::pInt(img.data);
-            return Value::None();
-         });
-			define("ImageDither", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 5) throw ArgumentError("ImageDither(image, rBpp, gBpp, bBpp, aBpp)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            ImageDither(&img, (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), (int)args[4].asInt());
-            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
-            inst->fields["data"] = Value::pInt(img.data);
-            return Value::None();
-         });
-			define("ImageApplyPalette", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 2) throw ArgumentError("ImageApplyPalette(image, colorList)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            vector<Color> palette;
-            auto list = static_cast<ListObject*>(args[1].ref.get());
-            for (const auto& val : list->elements) palette.push_back(ValueToColor(val, l, c));
-            Color *pixels = LoadImageColors(img);
-            for (int i = 0; i < img.width * img.height; i++) {
-               Color current = pixels[i];
-               Color closest = palette[0];
-               int minDistance = INT_MAX;
-               for (Color p : palette) {
-                  int rDiff = current.r - p.r;
-                  int gDiff = current.g - p.g;
-                  int bDiff = current.b - p.b;
-                  double dist = (rDiff * rDiff * 0.30) + (gDiff * gDiff * 0.59) + (bDiff * bDiff * 0.11);
-                  if (dist < minDistance) {
-                     minDistance = dist;
-                     closest = p;
-                  }
-					}
-               pixels[i] = closest;
-            }
-            for (int y = 0; y < img.height; y++) for (int x = 0; x < img.width; x++) ImageDrawPixel(&img, x, y, pixels[y * img.width + x]);
-            UnloadImageColors(pixels);
-            return Value::None();
-         });
-			define("ImageColorGrayscale", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("ImageColorGrayscale(image)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            ImageColorGrayscale(&img);
-            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
-            inst->fields["data"] = Value::pInt(img.data);
-				inst->fields["format"] = Value::Int(img.format); 
-            inst->fields["width"] = Value::Int(img.width);
-            inst->fields["height"] = Value::Int(img.height);
-            return Value::None();
-         });
-			define("ImageColorInvert", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("ImageColorInvert(image)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            ImageColorInvert(&img);
-            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
-            inst->fields["data"] = Value::pInt(img.data);
-            return Value::None();
-         });
-         define("ImageColorContrast", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 2) throw ArgumentError("ImageColorContrast(image, contrastFloat)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            ImageColorContrast(&img, (float)args[1].asFloat());
-            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
-            inst->fields["data"] = Value::pInt(img.data);
-            return Value::None();
-         });
-         define("ImageColorBrightness", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 2) throw ArgumentError("ImageColorBrightness(image, brightnessInt)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            ImageColorBrightness(&img, (int)args[1].asInt());
-            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
-            inst->fields["data"] = Value::pInt(img.data);
-            return Value::None();
-         });
-         define("ExportImage", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 2) throw ArgumentError("ExportImage(image, fileName)", l, c);
-            Image img = ValueToImage(args[0], l, c);
-            bool success = ExportImage(img, args[1].asString().c_str());
-            return Value::Bool(success);
-         });
-			define("UnloadImage", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("UnloadImage(image)", l, c);
-				UnloadImage(ValueToImage(args[0], l, c));
-				return Value::None();
-			});
-			define("LoadTexture", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("LoadTexture(fileName)", l, c);
-				Texture2D tex = LoadTexture(args[0].asString().c_str());
-				return TextureToValue(tex);
-			});
-			define("LoadTextureFromImage", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("LoadTextureFromImage(image)", l, c);
-				Texture2D tex = LoadTextureFromImage(ValueToImage(args[0], l, c));
-				return TextureToValue(tex);
-			});
-			define("UnloadTexture", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("UnloadTexture(texture)", l, c);
-				UnloadTexture(ValueToTexture(args[0], l, c));
-				return Value::None();
-			});
-			define("DrawTexture", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawTexture(texture, posX, posY, tintColor)", l, c);
-				DrawTexture(ValueToTexture(args[0], l, c), (int)args[1].asInt(), (int)args[2].asInt(), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-			define("DrawTextureV", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 3) throw ArgumentError("DrawTextureV(texture, positionVec, tintColor)", l, c);
-				DrawTextureV(ValueToTexture(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
-				return Value::None();
-			});
-			define("DrawTextureEx", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 5) throw ArgumentError("DrawTextureEx(texture, positionVec, rotation, scale, tintColor)", l, c);
-				DrawTextureEx(ValueToTexture(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
-				return Value::None();
-			});
-			define("DrawTextureRec", [=](const vector<Value>& args, int l, int c) {
-				if (args.size() != 4) throw ArgumentError("DrawTextureRec(texture, sourceRec, positionVec, tintColor)", l, c);
-				DrawTextureRec(ValueToTexture(args[0], l, c), ValueToRect(args[1], l, c), ValueToVector2(args[2], l, c), ValueToColor(args[3], l, c));
-				return Value::None();
-			});
-		};
-		modules["Ncurses"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-			env->set("COLOR_BLACK", Value::Int(COLOR_BLACK), true, true);
-			env->set("COLOR_RED", Value::Int(COLOR_RED), true, true);
-			env->set("COLOR_GREEN", Value::Int(COLOR_GREEN), true, true);
-			env->set("COLOR_YELLOW", Value::Int(COLOR_YELLOW), true, true);
-			env->set("COLOR_BLUE", Value::Int(COLOR_BLUE), true, true);
-			env->set("COLOR_MAGENTA", Value::Int(COLOR_MAGENTA), true, true);
-			env->set("COLOR_CYAN", Value::Int(COLOR_CYAN), true, true);
-			env->set("COLOR_WHITE", Value::Int(COLOR_WHITE), true, true);
-			env->set("A_NORMAL", Value::Int(A_NORMAL), true, true);
-			env->set("A_BOLD", Value::Int(A_BOLD), true, true);
-			env->set("A_UNDERLINE", Value::Int(A_UNDERLINE), true, true);
-			env->set("A_REVERSE", Value::Int(A_REVERSE), true, true);
-			env->set("A_BLINK", Value::Int(A_BLINK), true, true);
-			define("InitScr", [](const vector<Value>& args, int l, int c) {
-				initscr();
-				cbreak();
-				noecho();
-				keypad(stdscr, true);
-				return Value::None();
-			});
-			define("EndWin", [](const vector<Value>& args, int l, int c) {
-				endwin();
-				return Value::None();
-			});
-			define("Print", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 1) throw ArgumentError("Print(string)", l, c);
-				printw("%s", args[0].asString().c_str());
-				return Value::None();
-			});
-			define("MovePrint", [](const vector<Value>& args, int l, int c) {
-				if (args.size() != 3) throw ArgumentError("MovePrint(x, y, string)", l, c);
-				mvprintw((int)args[1].asInt(), (int)args[0].asInt(), "%s", args[2].asString().c_str());
-				return Value::None();
-			});
-			define("Refresh", [](const vector<Value>& args, int l, int c) {
-				refresh();
-				return Value::None();
-			});
-			define("Clear", [](const vector<Value>& args, int l, int c) {
-				clear();
-				return Value::None();
-			});
-			define("GetCh", [](const vector<Value>& args, int l, int c) {
-				return Value::Int(getch());
-			});
-         define("GetMaxX", [](const vector<Value>& args, int l, int c) {
-            return Value::Int(getmaxx(stdscr));
-         });
-         define("GetMaxY", [](const vector<Value>& args, int l, int c) {
-            return Value::Int(getmaxy(stdscr));
-         });
-         define("CursSet", [](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("CursSet(visibility: 0=invisible, 1=normal, 2=bright)", l, c);
-            curs_set((int)args[0].asInt());
-            return Value::None();
-         });
-         define("NoDelay", [](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("NoDelay(bool)", l, c);
-            nodelay(stdscr, args[0].asBool());
-            return Value::None();
-         });
-         define("StartColor", [](const vector<Value>& args, int l, int c) {
-            start_color();
-            return Value::None();
-         });
-         define("InitPair", [](const vector<Value>& args, int l, int c) {
-            if (args.size() != 3) throw ArgumentError("InitPair(pair_id, fg_color, bg_color)", l, c);
-            init_pair((short)args[0].asInt(), (short)args[1].asInt(), (short)args[2].asInt());
-            return Value::None();
-         });
-         define("ColorPair", [](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("ColorPair(pair_id)", l, c);
-            return Value::Int(COLOR_PAIR((int)args[0].asInt()));
-         });
-         define("AttrOn", [](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("AttrOn(attribute_or_color)", l, c);
-            attron((int)args[0].asInt());
-            return Value::None();
-         });
-         define("AttrOff", [](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("AttrOff(attribute_or_color)", l, c);
-            attroff((int)args[0].asInt());
-            return Value::None();
-         });
-         define("DrawBox", [](const vector<Value>& args, int l, int c) {
-            box(stdscr, 0, 0);
-            return Value::None();
-         });
-		};
-		modules["Json"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
-			auto define = [&](string name, NativeFunc f) {
-				if (symbols.empty()) { env->set(name, Value::Native(f), true); return; }
-				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
-			};
-         static std::function<json(Value, int, int, std::vector<void*>&)> ValueToJson;
-         static std::function<Value(json, int, int)> JsonToValue;
-         static auto jsonClass = std::make_shared<ClassObject>("JsonObject");
-         ValueToJson = [&](Value v, int l, int c, std::vector<void*>& visited) -> json {
-            if (v.type == ValueType::NONE) return nullptr;
-            if (v.type == ValueType::BOOL) return v.asBool();
-            if (v.type == ValueType::INT) return v.asInt();
-            if (v.type == ValueType::FLOAT) return v.asFloat();
-            if (v.type == ValueType::STRING) return v.asString();
-            if (v.type == ValueType::LIST || v.type == ValueType::INSTANCE) {
-               if (!v.ref) return nullptr; 
-               void* ptr = v.ref.get();
-               for (void* p : visited) if (p == ptr) return "[Cyclic Reference]"; 
-               visited.push_back(ptr);
-               if (v.type == ValueType::LIST) {
-                  json j = json::array();
-                  auto list = static_cast<ListObject*>(ptr);
-                  for (auto& item : list->elements) j.push_back(ValueToJson(item, l, c, visited));
-                  visited.pop_back();
-                  return j;
-               }
-               if (v.type == ValueType::INSTANCE) {
-                  json j = json::object();
-                  auto inst = static_cast<InstanceObject*>(ptr);
-                  for (auto& pair : inst->fields) {
-                     if (pair.second.type != ValueType::INT &&
-                        pair.second.type != ValueType::FLOAT &&
-                        pair.second.type != ValueType::STRING &&
-                        pair.second.type != ValueType::BOOL &&
-                        pair.second.type != ValueType::LIST &&
-                        pair.second.type != ValueType::INSTANCE &&
-                        pair.second.type != ValueType::NONE) {
-                        continue; 
-                     }
-                     j[pair.first] = ValueToJson(pair.second, l, c, visited);
-                  }
-                  visited.pop_back();
-                  return j;
-               }
-            }
-            return nullptr; 
-         };
-			JsonToValue = [&](json j, int l, int c) -> Value {
-            if (j.is_null()) return Value::None();
-            if (j.is_boolean()) return Value::Bool(j.get<bool>());
-            if (j.is_number_integer()) return Value::Int(j.get<long long>()); 
-            if (j.is_number_float()) return Value::Float(j.get<double>());
-            if (j.is_string()) return Value::String(j.get<std::string>());
-            if (j.is_array()) {
-               auto list = std::make_shared<ListObject>();
-               for (auto& item : j) {
-                  list->elements.push_back(JsonToValue(item, l, c));
-               }
-               Value v; v.type = ValueType::LIST; v.ref = list; 
-               return v;
-            }
-            if (j.is_object()) {
-               auto inst = std::make_shared<InstanceObject>(jsonClass.get());
-               for (auto& [key, value] : j.items()) {
-                  inst->fields[key] = JsonToValue(value, l, c);
-               }
-               Value v; v.type = ValueType::INSTANCE; v.ref = inst; 
-               return v;
-            }
-            return Value::None();
-         };
-         define("ParseJson", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("Json.Parse(string)", l, c);
-            try {
-               json j = json::parse(args[0].asString());
-               return JsonToValue(j, l, c);
-            } 
-				catch (json::parse_error& e) {
-               throw ParseError("Invalid JSON string at byte " + std::to_string(e.byte), l, c);
-            }
-         });
-			define("StringifyJson", [=](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1 && args.size() != 2) throw ArgumentError("Json.stringify(object, indent = -1)", l, c);
-            std::vector<void*> visited;
-				json j = ValueToJson(args[0], l, c, visited);
-            return Value::String(j.dump(args.size() == 2? args[1].asInt() : -1));
-         });
-			define("IsValidJson", [](const vector<Value>& args, int l, int c) {
-            if (args.size() != 1) throw ArgumentError("Json.isValid(string)", l, c);
-            bool isValid = json::accept(args[0].asString());
-            return Value::Bool(isValid);
-         });
-		};
-		// ========= CASTING ==========
-		env->set("int", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::Int(0);
-			Value v = args[0];
-			if (v.type == ValueType::INT) return v;
-			if (v.type == ValueType::BIGINT) return v;
-			if (v.type == ValueType::BOOL) return Value::Int(v.asBool() ? 1 : 0);
-			if (v.type == ValueType::FLOAT) {
-				double d = v.asFloat();
-				if (d >= (double)LLONG_MIN && d <= (double)LLONG_MAX) return Value::Int((long long)d);
-				std::ostringstream ss;
-				ss << std::fixed << std::setprecision(0) << std::abs(d);
-				std::string s = ss.str();
-				BigIntObject res(0);
-				BigIntObject ten(10);
-				for (char ch : s) if (ch >= '0' && ch <= '9') res = (res * ten) + BigIntObject(ch - '0');
-				res.isNegative = (d < 0);
-				return Value::BigInt(std::make_shared<BigIntObject>(res));
-			}
-			if (v.type == ValueType::STRING) {
-				string s = v.asString();
-				try {return Value::Int(std::stoll(s));}
-				catch (...) {
-					bool neg = false;
-					if (!s.empty() && s[0] == '-') {neg = true; s = s.substr(1);}
-					BigIntObject res(0);
-					BigIntObject ten(10);
-					for (char ch : s) {
-						if (ch >= '0' && ch <= '9') res = (res * ten) + BigIntObject(ch - '0');
-						else throw ValueError("Invalid literal for int(): " + v.asString(), l, c);
-					}
-					res.isNegative = neg;
-					return Value::BigInt(std::make_shared<BigIntObject>(res));
-				}
-			}
-			throw TypeError("Cannot cast '" + valueToString(v) + "' to int", l, c);
-		}), false);
-		env->set("float", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::Float(0.0, false);
-			Value v = args[0];
-			if (v.type == ValueType::FLOAT) return Value::Float(v.asFloat());
-			if (v.type == ValueType::INT) return Value::Float(v.asInt());
-			if (v.type == ValueType::BOOL) return Value::Float(v.asBool() ? 1.0 : 0.0);
-			if (v.type == ValueType::STRING && isdecimal_str(v.asString())) {
-				try {
-					return Value::Int(std::stof(v.asString()));
-				}
-				catch (...) {
-					throw ValueError("ValueError: String too large for float", l, c);
-				}
-			}
-			throw TypeError("Cannot cast '" + valueToString(v) + "' to float", l, c);
-			}), false);
-		env->set("bool", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::Bool(false);
-			return Value::Bool(args[0].isTruthy());
-		}), false);
-		env->set("string", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::String("");
-			Value v = args[0];
-			switch (v.type) {
-			case ValueType::INT: return Value::String(v.adress ? ptr_to_string(v.adress) : std::to_string(v.asInt()));
-			case ValueType::FLOAT: return Value::String(std::to_string(v.asFloat()));
-			case ValueType::BOOL: return Value::String(v.asBool() ? "true" : "false");
-			case ValueType::STRING: return Value::String(v.asString());
-			case ValueType::NONE: return Value::String("None", true);
-			case ValueType::RANGE: return Value::String(valueToString(v));
-			case ValueType::SET: return Value::String(valueToString(v));
-			case ValueType::TUPLE: return Value::String(valueToString(v));
-			case ValueType::LIST: return Value::String(valueToString(v));
-			case ValueType::BIGINT: return Value::String(valueToString(v));
-			default: return Value::String("");
-			}
-		}), false);
-		// ======== CONSTRUCTOR ========
-		env->set("range", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::Range(0, 0, 1, false, false, false);
-			if (args.size() == 1 && args[0].type == ValueType::RANGE) return args[0];
-			double start = 0, end = 0, step = 1;
-			bool isFloat = false;
-			auto checkFloat = [&](const Value& v) { if (v.type == ValueType::FLOAT) isFloat = true; };
-			if (args.size() == 1) {
-				checkFloat(args[0]);
-				end = args[0].asFloat();
-			}
-			else if (args.size() >= 2) {
-				checkFloat(args[0]);
-				checkFloat(args[1]);
-				start = args[0].asFloat();
-				end = args[1].asFloat();
-			}
-			if (args.size() == 3) {
-				checkFloat(args[2]);
-				step = args[2].asFloat();
-			}
-			return Value::Range(start, end, step, true, false, isFloat);
-		}), false);
-		env->set("list", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (!args.empty() && args[0].type == ValueType::RANGE) {
-				auto* r = static_cast<RangeObject*>(args[0].ref.get());
-				vector<Value> elems;
-				double current = r->start;
-				if (!r->startInclusive) current += r->step;
-				if ((r->step > 0 && r->start > r->end) || (r->step < 0 && r->start < r->end) || r->step == 0) return Value::List({});
-				double diff = std::abs(r->end - r->start);
-				double steps = diff / std::abs(r->step);
-				if (steps > 1000000) throw MemoryError("MemoryError: Range too large to convert to list", l, c);
-				while (true) {
-					bool cond;
-					if (r->step > 0) cond = r->endInclusive ? (current <= r->end) : (current < r->end);
-					else cond = r->endInclusive ? (current >= r->end) : (current > r->end);
-					if (!cond) break;
-					if (r->isFloat) elems.push_back(Value::Float(current));
-					else elems.push_back(Value::Int((long long)current));
-					current += r->step;
-				}
-				return Value::List(elems);
-			}
-			if (!args.empty() && args[0].type == ValueType::SET) {
-				auto* s = static_cast<SetObject*>(args[0].ref.get());
-				return Value::List(s->elements);
-			}
-			if (!args.empty() && args[0].type == ValueType::TUPLE) {
-				auto* t = static_cast<TupleObject*>(args[0].ref.get());
-				return Value::List(t->elements);
-			}
-			if (!args.empty() && args[0].type == ValueType::VECTOR) {
-				auto* v = static_cast<VectorObject*>(args[0].ref.get());
-				vector<Value> elems;
-				for (auto d : v->elements) elems.push_back(d);
-				return Value::List(elems);
-			}
-			vector<Value> vals;
-			for (auto& v : args) vals.push_back(v);
-			return Value::List(vals);
-		}), false);
-		env->set("set", Value::Native([this](const vector<Value>& args, int l, int c) {
-			vector<Value> elems;
-			if (args.size() > 1) {
-				for (auto& arg : args) setAdd(elems, arg);
-				return Value::Set(elems);
-			}
-			if (args.empty()) return Value::Set({});
-			Value src = args[0];
-			if (src.type == ValueType::LIST) {
-				auto* l = static_cast<ListObject*>(src.ref.get());
-				for (auto& e : l->elements) setAdd(elems, e);
-			}
-			else if (src.type == ValueType::RANGE) {
-				auto* r = static_cast<RangeObject*>(src.ref.get());
-				double current = r->start;
-				if (!r->startInclusive) current += r->step;
-				while (true) {
-					bool cond;
-					if (r->step > 0) cond = r->endInclusive ? (current <= r->end) : (current < r->end);
-					else cond = r->endInclusive ? (current >= r->end) : (current > r->end);
-					if (!cond) break;
-					Value v = r->isFloat ? Value::Float(current) : Value::Int((long long)current);
-					setAdd(elems, v);
-					current += r->step;
-				}
-			}
-			else if (src.type == ValueType::VECTOR) {
-				auto* v = static_cast<VectorObject*>(src.ref.get());
-				for (auto d : v->elements) setAdd(elems, d);
-			}
-			else if (src.type == ValueType::STRING) {
-				for (char c : src.asString()) setAdd(elems, Value::String(string(1, c)));
-			}
-			else if (src.type == ValueType::SET) {
-				auto* s = static_cast<SetObject*>(src.ref.get());
-				for (auto& e : s->elements) setAdd(elems, e);
-			}
-			else if (src.type == ValueType::TUPLE) {
-				auto* t = static_cast<TupleObject*>(src.ref.get());
-				for (auto& e : t->elements) setAdd(elems, e);
-			}
-			else {
-				setAdd(elems, src);
-			}
-			return Value::Set(elems);
-		}), false);
-		env->set("tuple", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::Tuple({});
-			if (args.size() == 1) {
-				Value src = args[0];
-				if (src.type == ValueType::LIST) return Value::Tuple(static_cast<ListObject*>(src.ref.get())->elements);
-				if (src.type == ValueType::SET) return Value::Tuple(static_cast<SetObject*>(src.ref.get())->elements);
-				if (src.type == ValueType::RANGE) {
-					auto* r = static_cast<RangeObject*>(src.ref.get());
-					vector<Value> elems;
-					double current = r->start;
-					if (!r->startInclusive) current += r->step;
-					while (true) {
-						bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end)
-							: (r->endInclusive ? current >= r->end : current > r->end);
-						if (!cond) break;
-						elems.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
-						current += r->step;
-					}
-					return Value::Tuple(elems);
-				}
-				if (src.type == ValueType::TUPLE) return src;
-				if (src.type == ValueType::VECTOR) {
-					auto* v = static_cast<VectorObject*>(src.ref.get());
-					vector<Value> elems;
-					for (auto d : v->elements) elems.push_back(d);
-					return Value::Tuple(elems);
-				}
-			}
-			vector<Value> elems;
-			for (auto& arg : args) elems.push_back(arg);
-			return Value::Tuple(elems);
-		}), false);
-		env->set("dict", Value::Native([this](const vector<Value>& args, int l, int c) {
-			std::unordered_map<Value, Value, ValueHash, ValueEqual> map;
-			for (const auto& arg : args) {
-				Value v = arg;
-				if (v.type != ValueType::PAIRED) {
-					throw TypeError("dict() requires 'key : value' arguments or 'pair()' objects", l, c);
-				}
-				auto* pObj = static_cast<PairedObject*>(v.ref.get());
-				for (const auto& pair : pObj->pairs) {
-					Value key = pair.first;
-					Value val = pair.second;
-					if (key.type == ValueType::LIST || key.type == ValueType::SET || key.type == ValueType::DICT) {
-						if (key.type == ValueType::DICT) throw TypeError("Dictionary cannot be used as a key (unhashable)", l, c);
-						key = deepCopy(key);
-						key.isConst = true;
-					}
-					map[key] = val;
-				}
-			}
-			return Value::Dict(map);
-		}), false);
-		// ======= INTROSPECTION =======
-		env->set("typeof", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.size() != 1) throw ArgumentError("typeof() takes exactly one argument", l, c);
-			switch (args[0].type) {
-			case ValueType::INT: return Value::String("integer");
-			case ValueType::FLOAT: return Value::String("float");
-			case ValueType::BOOL: return Value::String("boolean");
-			case ValueType::STRING: return Value::String("string");
-			case ValueType::LIST: return Value::String("list");
-			case ValueType::RANGE: return Value::String("range");
-			case ValueType::SET: return Value::String("set");
-			case ValueType::TUPLE: return Value::String("tuple");
-			case ValueType::DICT: return Value::String("dictionary");
-			case ValueType::FUNCTION: return Value::String("function");
-			case ValueType::VECTOR: return Value::String("vector");
-			case ValueType::NATIVE_FUNCTION: return Value::String("native function");
-			case ValueType::FILE: return Value::String("file");
-			case ValueType::PAIRED: return Value::String("pair");
-			case ValueType::BIGINT: return Value::String("integer");
-			case ValueType::CLASS: return Value::String("class");
-			case ValueType::INSTANCE: return Value::String("instance");
-			case ValueType::SUPER: return Value::String("function");
-			case ValueType::ERROR: return Value::String("error");
-			case ValueType::NONE: return Value::String("None");
-			default: return Value::String("NoType");
-			}
-		}), false);
-		env->set("isLocked", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.size() != 1) throw ArgumentError("isLocked() takes exactly one argument", l, c);
-			return Value::Bool(args[0].isLocked);
-		}), false);
-		env->set("isConst", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.size() != 1) throw ArgumentError("isConst() takes exactly one argument", l, c);
-			return Value::Bool(args[0].isConst);
-		}), false);
-		env->set("length", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.empty()) return Value::Int(0);
-			if (args.size() > 1) throw ArgumentError("length() takes exactly one argument", l, c);
-			Value v = args[0];
-			if (v.type == ValueType::LIST) {
-				auto* list = static_cast<ListObject*>(v.ref.get());
-				return Value::Int(list->elements.size());
-			}
-			else if (v.type == ValueType::STRING) return Value::Int(v.asString().size());
-			else if (v.type == ValueType::SET) {
-				auto* s = static_cast<SetObject*>(v.ref.get());
-				return Value::Int(s->elements.size());
-			}
-			else if (v.type == ValueType::TUPLE) {
-				auto* t = static_cast<TupleObject*>(v.ref.get());
-				return Value::Int(t->elements.size());
-			}
-			else if (v.type == ValueType::RANGE) {
-				auto* r = static_cast<RangeObject*>(v.ref.get());
-				if (r->step == 0) return Value::Int(0);
-				double s = r->start;
-				if (!r->startInclusive) s += r->step;
-				double e = r->end;
-				if (r->endInclusive) e += (r->step > 0 ? 1 : -1) * (r->step * 0.000000001);
-				long long count = 0;
-				if (r->step > 0 && r->end > s) {
-					if (r->endInclusive) count = (long long)floor((r->end - s) / r->step) + 1;
-					else count = (long long)ceil((r->end - s) / r->step);
-				}
-				else if (r->step < 0 && r->end < s) {
-					if (r->endInclusive) count = (long long)floor((s - r->end) / -r->step) + 1;
-					else count = (long long)ceil((s - r->end) / -r->step);
-				}
-				return Value::Int(count < 0 ? 0 : count);
-			}
-			else {
-				throw TypeError("Object of type " + valueToString(v) + " has no length", l, c);
-			}
-		}), false);
-		env->set("sum", Value::Native([this](const vector<Value>& args, int l, int c) {
-			long double total = 0;
-			bool isFloat = false;
-			vector<Value> worklist;
-			worklist.reserve(args.size() * 2);
-			for (const auto& arg : args) worklist.push_back(arg);
-			while (!worklist.empty()) {
-				Value v = worklist.back();
-				worklist.pop_back();
-				switch (v.type) {
-				case ValueType::INT:
-					total += v.asInt();
-					break;
-				case ValueType::FLOAT:
-					total += v.asFloat();
-					isFloat = true;
-					break;
-				case ValueType::LIST: {
-					auto* list = static_cast<ListObject*>(v.ref.get());
-					worklist.insert(worklist.end(), list->elements.begin(), list->elements.end());
-					break;
-				}
-				case ValueType::TUPLE: {
-					auto* t = static_cast<TupleObject*>(v.ref.get());
-					worklist.insert(worklist.end(), t->elements.begin(), t->elements.end());
-					break;
-				}
-				case ValueType::SET: {
-					auto* s = static_cast<SetObject*>(v.ref.get());
-					worklist.insert(worklist.end(), s->elements.begin(), s->elements.end());
-					break;
-				}
-				case ValueType::RANGE: {
-					auto* r = static_cast<RangeObject*>(v.ref.get());
-					if (r->isFloat) isFloat = true;
-					double current = r->start;
-					if (!r->startInclusive) current += r->step;
-					while (true) {
-						bool cond = (r->step > 0) ?
-							(r->endInclusive ? current <= r->end : current < r->end) :
-							(r->endInclusive ? current >= r->end : current > r->end);
-						if (!cond) break;
-						total += current;
-						current += r->step;
-					}
-					break;
-				}
-				case ValueType::BOOL:
-					total += v.asBool() ? 1 : 0;
-					break;
-				default:
-					throw TypeError("sum() encountered non-numeric type: " + valueToString(v), l, c);
-				}
-			}
-			return isFloat ? Value::Float(total) : Value::Int((long long)total);
-		}), false);
-		env->set("pair", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.size() != 2) throw ArgumentError("pair() takes exactly two arguments (keys, values)", l, c);
-			auto extract = [&](Value v) -> vector<Value> {
-				if (v.type == ValueType::LIST) return static_cast<ListObject*>(v.ref.get())->elements;
-				if (v.type == ValueType::SET) return static_cast<SetObject*>(v.ref.get())->elements;
-				if (v.type == ValueType::TUPLE) return static_cast<TupleObject*>(v.ref.get())->elements;
-				if (v.type == ValueType::RANGE) {
-					auto* r = static_cast<RangeObject*>(v.ref.get());
-					vector<Value> rvals;
-					double current = r->start;
-					if (!r->startInclusive) current += r->step;
-					while (true) {
-						bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end)
-							: (r->endInclusive ? current >= r->end : current > r->end);
-						if (!cond) break;
-						rvals.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
-						current += r->step;
-					}
-					return rvals;
-				}
-				throw TypeError("pair() arguments must be containers (list, set, tuple, range)", l, c);
-				return {};
-			};
-			vector<Value> rawKeys = extract(args[0]);
-			vector<Value> vals = extract(args[1]);
-			vector<Value> uniqueKeys;
-			for (const auto& k : rawKeys) {
-				bool seen = false;
-				for (const auto& u : uniqueKeys) if (k.strictEquals(u)) { seen = true; break; }
-				if (!seen) uniqueKeys.push_back(k);
-			}
-			size_t count = std::min(uniqueKeys.size(), vals.size());
-			std::vector<std::pair<Value, Value>> finalPairs;
-			for (size_t i = 0; i < count; i++) {
-				finalPairs.push_back({ uniqueKeys[i], vals[i] });
-			}
-			return Value::Paired(finalPairs);
-		}), false);
-		env->set("swap", Value::Native([this](const vector<Value>& args, int l, int c) {
-			if (args.size() != 2) throw ArgumentError("swap() takes exactly two arguments", l, c);
-			if (args[0].type != ValueType::REFERENCE || args[1].type != ValueType::REFERENCE){
-				throw TypeError("swap requires refrences. use swap(@a, @b)", l, c);
-			}
-			auto* val1 = args[0].ptr;
-			auto* val2 = args[1].ptr;
-			if (!val1 || !val2) throw RuntimeError("cannot swap null refrences", l, c);
-			if (val1->isConst || val2->isConst) throw ConstError("cannot swap constants", l, c);
-			if ((val1->isLocked || val2 ->isLocked) && !val1->sameType(*val2)) throw ConstError("cannot change the type of the locked variables", l, c);
-			std::swap(*val1, *val2);
-			return Value::None();
-		}), false);
-		// ============ I/O ============
-		env->set("print", Value::Native([this](const vector<Value>& args, int l, int c) {
-			return this->nativePrint(args, l, c);
-		}), false);
-		env->set("input", Value::Native([this](const vector<Value>& args, int l, int c) {
-			string prompt = "";
-			if (!args.empty()) prompt = valueToString(args[0]);
-			std::cout << prompt;
-			if (std::cin.fail()) std::cin.clear();
-			if (std::cin.peek() == '\n') std::cin.ignore();
-			string line;
-			if (!std::getline(std::cin, line)) return Value::None();
-			if (args.size() > 1) {
-				ValueType targetType = args[1].type;
-				try {
-					if (targetType == ValueType::INT) return Value::Int(std::stoll(line));
-					else if (targetType == ValueType::FLOAT) return Value::Float(std::stod(line));
-					else if (targetType == ValueType::BOOL) return Value::Bool(line == "true");
-					else if (targetType == ValueType::LIST || targetType == ValueType::SET || targetType == ValueType::RANGE) {
-						throw TypeError("Complex type input not fully supported yet", l, c);
-					}
-				}
-				catch (const LangError&) { throw; }
-				catch (...) {
-					throw ValueError("ValueError: Could not convert input '" + line + "' to target type", l, c);
-				}
-			}
-			return Value::String(line);
-		}), false);
-	}
+	void registerStdLib();
 	LValue resolveLValue(Expr* e) {
 		if (ValueExpr* ve = dynamic_cast<ValueExpr*>(e)) {
 			if (ve->sourcePtr) return LValue(ve->sourcePtr, true);
@@ -5512,1315 +3903,7 @@ struct Interpreter {
 		}
 		throw TypeError("Expression is not assignable", e->line, e->col);
 	}
-	Value Resolve_methods(MethodCallExpr* m) {
-		auto error = [&](const string& msg, const string& type = "RuntimeError") {
-			if (type == "TypeError") throw TypeError(msg, m->line, m->col);
-			if (type == "ValueError") throw ValueError(msg, m->line, m->col);
-			if (type == "IndexError") throw IndexError(msg, m->line, m->col);
-			if (type == "ConstError") throw ConstError(msg, m->line, m->col);
-			if (type == "KeyError") throw KeyError(msg, m->line, m->col);
-			if (type == "ArgumentError") throw ArgumentError(msg, m->line, m->col);
-			if (type == "EmptyContainerError") throw EmptyContainerError(msg, m->line, m->col);
-			if (type == "AttributeError") throw AttributeError(msg, m->line, m->col);
-			throw RuntimeError(msg, m->line, m->col);
-		};
-		Value* targetPtr = nullptr;
-		Value tempVal;
-		bool isConstView = false;
-		if (dynamic_cast<VarExpr*>(m->object) || dynamic_cast<IndexExpr*>(m->object)) {
-			LValue lv = resolveLValue(m->object);
-			targetPtr = lv.ref;
-			isConstView = lv.isConstView;
-		}
-		else {
-			tempVal = eval(m->object);
-			targetPtr = &tempVal;
-			isConstView = tempVal.isConst;
-		}
-		Value& target = *targetPtr;
-		auto checkConst = [&]() {
-			if (target.isConst || isConstView) {
-				error("Cannot call mutating method '" + m->method + "' on const object", "ConstError");
-			}
-		};
-		// if (m->method == "swap") {
-		// 	if (m->args.size() != 1) error("swap() takes one argument", "ArgumentError");
-		// 	auto* base = &eval(m->args[0]);
-		// 	//std::swap(base, target);
-		// 	auto* temp = base;
-		// 	base = targetPtr;
-		// 	targetPtr = temp;
-		// 	return Value::None();
-		// }
-		if (m->method == "adress") {
-			if (!m->args.empty()) error("adress() takes no arguments", "ArgumentError");
-			if (target.ref) {
-				return Value::pInt(target.ref.get());
-			}
-			if (dynamic_cast<VarExpr*>(m->object) || dynamic_cast<IndexExpr*>(m->object)) {
-				return Value::pInt(targetPtr);
-			}
-			return Value::pInt(nullptr);
-		}
-		if (m->method == "base") {
-			if (m->args.size() != 1) error("base() takes exactly one argument", "ArgumentError");
-			int base = eval(m->args[0]).asInt();
-			if (base < 2 || base > 36) error("base() target must be between 2 and 36", "ValueError");
-			if (target.type == ValueType::INT || target.type == ValueType::FLOAT) {
-				string res = "";
-				bool isNeg = false;
-				double val = target.asFloat();
-				if (val < 0) { isNeg = true; val = -val; }
-				long long intPart = (long long)val;
-				double fracPart = val - intPart;
-				if (intPart == 0) res = "0";
-				else {
-					while (intPart > 0) {
-						int rem = intPart % base;
-						res += (rem < 10 ? '0' + rem : 'A' + (rem - 10));
-						intPart /= base;
-					}
-				}
-				if (isNeg) res += '-';
-				std::reverse(res.begin(), res.end());
-				if (fracPart > 0) {
-					res += '.';
-					int precision = 8;
-					while (fracPart > 0 && precision-- > 0) {
-						fracPart *= base;
-						int digit = (int)fracPart;
-						res += (digit < 10 ? '0' + digit : 'A' + (digit - 10));
-						fracPart -= digit;
-						if (fracPart < 1e-9) break;
-					}
-				}
-				return Value::String(res);
-			}
-			error("base() requires an int or float", "TypeError");
-		}
-		// ---------------- REVERSE ---------------
-		if (m->method == "reverse") {
-			checkConst();
-			if (!m->args.empty()) error("reverse() does not accept arguments", "ArgumentError");
-			if (target.type == ValueType::STRING) {
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				if (str->value.size() < 2) return target;
-				std::reverse(str->value.begin(), str->value.end());
-				return target;
-			}
-			if (target.type == ValueType::LIST) {
-				auto* list = static_cast<ListObject*>(target.ref.get());
-				if (list->elements.size() < 2) return target;
-				std::reverse(list->elements.begin(), list->elements.end());
-				return target;
-			}
-			if (target.type == ValueType::RANGE) {
-				auto* rang = static_cast<RangeObject*>(target.ref.get());
-				std::swap(rang->start, rang->end);
-				std::swap(rang->startInclusive, rang->endInclusive);
-				rang->step = -rang->step;
-				return target;
-			}
-			if (target.type == ValueType::SET) {
-				auto* set = static_cast<SetObject*>(target.ref.get());
-				if (set->elements.size() < 2) return target;
-				reverse(set->elements.begin(),set->elements.end());
-				return target;
-			}
-			error("reverse() not supported on this type", "TypeError");
-		}
-		// ---------------- APPEND ----------------
-		if (m->method == "append") {
-			checkConst();
-			if (m->args.size() != 1) error("append() takes exactly one argument", "ArgumentError");
-			Value v = eval(m->args[0]);
-			if (target.type == ValueType::LIST) {
-				auto* list = static_cast<ListObject*>(target.ref.get());
-				list->elements.push_back(v);
-				return target;
-			}
-			if (target.type == ValueType::STRING) {
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value += valueToString(v);
-				return target;
-			}
-			error("append() not supported on this type", "TypeError");
-		}
-		// ---------------- SORT ----------------
-		if (m->method == "sort") {
-			checkConst();
-			if (m->args.size() > 1) error("sort() takes zero or one argument", "ArgumentError");
-
-			bool reverseSort = false;
-			if (!m->args.empty()) reverseSort = eval(m->args[0]).asBool();
-
-			if (target.type == ValueType::STRING) {
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				if (str->value.size() <= 1) return Value::String(str->value);
-				std::sort(str->value.begin(), str->value.end());
-				if (reverseSort) std::reverse(str->value.begin(), str->value.end());
-				return target;
-			}
-			if (target.type == ValueType::LIST) {
-				auto* list = static_cast<ListObject*>(target.ref.get());
-				auto& elems = list->elements;
-				if (elems.size() <= 1) return Value::List(list->elements);
-
-				ValueType t = elems[0].type;
-				for (size_t i = 1; i < elems.size(); ++i) {
-					if (elems[i].type != t) error("cannot sort list with mixed types", "TypeError");
-				}
-				if (t != ValueType::INT && t != ValueType::FLOAT &&
-					t != ValueType::STRING && t != ValueType::BOOL && t != ValueType::LIST) {
-					error("unsupported type in sort()", "TypeError");
-				}
-				std::sort(elems.begin(), elems.end(), [](const Value& a, const Value& b) { return lessValue(a, b); });
-				if (reverseSort) std::reverse(elems.begin(), elems.end());
-				return target;
-			}
-			error("sort() only works on mutable types", "TypeError");
-		}
-		// ---------------- FUNCTIONAL METHODS ----------------
-		if (m->method == "All_Of" || m->method == "Any_Of" || m->method == "None_Of" || m->method == "One_Of" ||
-			m->method == "find" || m->method == "select" || m->method == "reject" ||
-			m->method == "partition" || m->method == "map") {
-			if (m->args.size() != 1) error(m->method + "() expects exactly one argument (a lambda function)", "ArgumentError");
-			Value lambda = eval(m->args[0]);
-			if (lambda.type != ValueType::FUNCTION) error(m->method + "() argument must be a function or lambda", "TypeError");
-			vector<Value> elements;
-			if (target.type == ValueType::LIST) elements = static_cast<ListObject*>(target.ref.get())->elements;
-			else if (target.type == ValueType::SET) elements = static_cast<SetObject*>(target.ref.get())->elements;
-			else if (target.type == ValueType::TUPLE) elements = static_cast<TupleObject*>(target.ref.get())->elements;
-			else if (target.type == ValueType::VECTOR) {
-				for (auto d : static_cast<VectorObject*>(target.ref.get())->elements) elements.push_back(d);
-			}
-			else if (target.type == ValueType::DICT) {
-				auto* d = static_cast<DictObject*>(target.ref.get());
-				for (auto& pair : d->items) elements.push_back(pair.first); // Iterate keys
-			}
-			else if (target.type == ValueType::STRING) {
-				string& s = static_cast<StringObject*>(target.ref.get())->value;
-				for (char c : s) elements.push_back(Value::String(string(1, c)));
-			}
-			else error("Method '" + m->method + "' requires a container (List, Set, Tuple, Vector, Dict, or String)", "TypeError");
-			vector<Value> resultsTrue;
-			vector<Value> resultsFalse;
-			vector<Value> resultsMap;
-			int matchCount = 0;
-			for (const auto& elem : elements) {
-				vector<CallArg> args;
-				CallArg arg;
-				arg.value = elem;
-				arg.hasLValue = false;
-				args.push_back(arg);
-				Value ret = call(lambda, args, {}, m->line, m->col);
-				bool matches = ret.isTruthy();
-				if (m->method == "All_Of") {
-					if (!matches) return Value::Bool(false);
-				}
-				else if (m->method == "Any_Of") {
-					if (matches) return Value::Bool(true);
-				}
-				else if (m->method == "None_Of") {
-					if (matches) return Value::Bool(false);
-				}
-				else if (m->method == "One_Of") {
-					if (matches) {
-						matchCount++;
-						if (matchCount > 1) return Value::Bool(false);
-					}
-				}
-				else if (m->method == "find") {
-					if (matches) return elem;
-				}
-				else if (m->method == "select") {
-					if (matches) resultsTrue.push_back(elem);
-				}
-				else if (m->method == "reject") {
-					if (!matches) resultsTrue.push_back(elem);
-				}
-				else if (m->method == "partition") {
-					if (matches) resultsTrue.push_back(elem);
-					else resultsFalse.push_back(elem);
-				}
-				else if (m->method == "map") {
-					resultsMap.push_back(ret);
-				}
-			}
-			if (m->method == "All_Of") return Value::Bool(true);
-			if (m->method == "Any_Of") return Value::Bool(false);
-			if (m->method == "None_Of") return Value::Bool(true);
-			if (m->method == "One_Of") return Value::Bool(matchCount == 1);
-			if (m->method == "find") return Value::None();
-			auto reconstruct = [&](const vector<Value>& src) -> Value {
-				if (target.type == ValueType::LIST || target.type == ValueType::DICT) return Value::List(src);
-				if (target.type == ValueType::TUPLE) return Value::Tuple(src);
-				if (target.type == ValueType::SET) return Value::Set(src);
-				if (target.type == ValueType::VECTOR) {
-					vector<Value> nums;
-					bool allNums = true;
-					for (auto& v : src) {
-						if (!v.isNumber()) { allNums = false; break; }
-						nums.push_back(v);
-					}
-					if (allNums) return Value::Vector(nums);
-					return Value::List(src);
-				}
-				if (target.type == ValueType::STRING) {
-					string s = "";
-					bool allStr = true;
-					for (auto& v : src) {
-						if (v.type != ValueType::STRING) { allStr = false; break; }
-						s += v.asString();
-					}
-					if (allStr) return Value::String(s);
-					return Value::List(src);
-				}
-				return Value::List(src);
-				};
-			if (m->method == "select" || m->method == "reject") return reconstruct(resultsTrue);
-			if (m->method == "partition") return Value::List({ reconstruct(resultsTrue), reconstruct(resultsFalse) });
-			if (m->method == "map") {
-				if (target.type == ValueType::DICT) return Value::List(resultsMap);
-				return reconstruct(resultsMap);
-			}
-		}
-		// ------- STRING TRANSFORMATIONS -------
-		if (target.type == ValueType::STRING) {
-			if (m->method == "ascii") {
-				if (!m->args.empty()) error("ascii() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				if (str->value.empty()) return target;
-				if (str->value.size() != 1) error("string size cannot exceed 1", "ArgumentError");
-				return Value::Int(static_cast<int>(str->value[0]));
-			}
-			if (m->method == "capitalize") {
-				checkConst();
-				if (!m->args.empty()) error("capitalize() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value = capitalize(str->value);
-				return target;
-			}
-			if (m->method == "chars") {
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				int start = 0;
-				int end = -1;
-				if (m->args.size() >= 1) start = eval(m->args[0]).asInt();
-				if (m->args.size() >= 2) end = eval(m->args[1]).asInt();
-				std::vector<std::string> parts = chars(str->value, start, end);
-				std::vector<Value> valList;
-				valList.reserve(parts.size());
-				for (const auto& p : parts) valList.push_back(Value::String(p));
-				return Value::List(valList);
-			}
-			if (m->method == "casefold") {
-				checkConst();
-				if (!m->args.empty()) error("casefold() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value = casefold(str->value);
-				return target;
-			}
-			if (m->method == "center") {
-				checkConst();
-				if (m->args.empty() || m->args.size() > 2) error("center() needs 1 or 2 arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				if (m->args.size() == 1) {
-					str->value = center(str->value, eval(m->args[0]).asInt());
-					return target;
-				}
-				if (m->args.size() == 2) {
-					string a = eval(m->args[1]).asString();
-					if (a.empty() || a.size() > 1) error("padding can only be one character", "ValueError");
-					str->value = center(str->value, eval(m->args[0]).asInt(), a[0]);
-					return target;
-				}
-			}
-			if (m->method == "count") {
-				if (m->args.empty() || m->args.size() > 3) error("count() needs 1 to 3 arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				switch (m->args.size()) {
-				case 1:
-					return Value::Int(::count(str->value, eval(m->args[0]).asString()));
-				case 2:
-					if (eval(m->args[1]).asInt() < 0) error("starting position cannot be negative", "ValueError");
-					return Value::Int(::count(str->value, eval(m->args[0]).asString(), eval(m->args[1]).asInt()));
-				case 3:
-					if (eval(m->args[1]).asInt() < 0) error("starting position cannot be negative", "ValueError");
-					return Value::Int(::count(str->value, eval(m->args[0]).asString(), eval(m->args[1]).asInt(), eval(m->args[2]).asInt()));
-				}
-			}
-			if (m->method == "endswith") {
-				if (m->args.empty() || m->args.size() > 1) error("endswith() needs one argument", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				return Value::Bool(endswith(str->value, eval(m->args[0]).asString()));
-			}
-			if (m->method == "index") {
-				if (m->args.empty() || m->args.size() > 1) error("index() needs one argument", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				return Value::Int(index(str->value, eval(m->args[0]).asString()));
-			}
-			if (m->method == "isalnum") {
-				if (!m->args.empty()) error("isalnum() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				return Value::Bool(isalnum_str(str->value));
-			}
-			if (m->method == "isalpha") {
-				if (!m->args.empty()) error("isalpha() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				return Value::Bool(isalpha_str(str->value));
-			}
-			if (m->method == "isdecimal") {
-				if (!m->args.empty()) error("isdecimal() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				return Value::Bool(isdecimal_str(str->value));
-			}
-			if (m->method == "islower") {
-				if (!m->args.empty()) error("islower() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				return Value::Bool(islower_str(str->value));
-			}
-			if (m->method == "isupper") {
-				if (!m->args.empty()) error("isupper() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				return Value::Bool(isupper_str(str->value));
-			}
-			if (m->method == "ljust") {
-				checkConst();
-				if (m->args.empty() || m->args.size() > 2) error("ljust() needs 1 or 2 arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				if (m->args.size() == 1)
-					str->value = ljust(str->value, eval(m->args[0]).asInt());
-				else {
-					string p = eval(m->args[1]).asString();
-					if (p.size() != 1) error("padding can only be one character", "ValueError");
-					str->value = ljust(str->value, eval(m->args[0]).asInt(), p[0]);
-				}
-				return target;
-			}
-			if (m->method == "lower") {
-				checkConst();
-				if (!m->args.empty()) error("lower() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value = lower(str->value);
-				return target;
-			}
-			if (m->method == "lstrip") {
-				checkConst();
-				if (m->args.size() > 1) error("lstrip() takes at most one argument", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value = lstrip(str->value, m->args.size() == 1 ? eval(m->args[0]).asString() : " \t\n\r\v\f");
-				return target;
-			}
-			if (m->method == "rstrip") {
-				checkConst();
-				if (m->args.size() > 1) error("rstrip() takes at most one argument", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value = rstrip(str->value, m->args.size() == 1 ? eval(m->args[0]).asString() : " \t\n\r\v\f");
-				return target;
-			}
-			if (m->method == "strip") {
-				checkConst();
-				if (m->args.size() > 1) error("strip() takes at most one argument", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value = strip(str->value, m->args.size() == 1 ? eval(m->args[0]).asString() : " \t\n\r\v\f");
-				return target;
-			}
-			if (m->method == "split") {
-				string delimiter = " ";
-				if (!m->args.empty()) {
-					if (m->args.size() > 1) error("split() expects at most 1 argument", "ArgumentError");
-					Value delimVal = eval(m->args[0]);
-					if (delimVal.type != ValueType::STRING) error("split() delimiter must be a string", "TypeError");
-					delimiter = delimVal.asString();
-				}
-				vector<string> parts = split(target.asString(), delimiter);
-				vector<Value> resultList;
-				resultList.reserve(parts.size());
-				for (const auto& part : parts)  resultList.push_back(Value::String(part));
-				return Value::List(resultList);
-			}
-			if (m->method == "upper") {
-				checkConst();
-				if (!m->args.empty()) error("upper() does not accept arguments", "ArgumentError");
-				auto* str = static_cast<StringObject*>(target.ref.get());
-				str->value = upper(str->value);
-				return target;
-			}
-			error("Object '" + m->method + "' is not a string method", "AttributeError");
-		}
-		// ---------- RANGE METHODS ----------
-		if (target.type == ValueType::RANGE) {
-			if (m->method == "min") {
-				if (!m->args.empty()) error("min() does not accept arguments", "ArgumentError");
-				auto* rang = static_cast<RangeObject*>(target.ref.get());
-				if (!rang->isValid) error("min() arg is an empty range", "ValueError");
-				return Value::Int(rang->step < 0 ? (rang->endInclusive ? rang->end : rang->end - rang->step) : (rang->startInclusive ? rang->start : rang->start + rang->step));
-			}
-			if (m->method == "max") {
-				if (!m->args.empty()) error("max() does not accept arguments", "ArgumentError");
-				auto* rang = static_cast<RangeObject*>(target.ref.get());
-				if (!rang->isValid) error("max() arg is an empty range", "ValueError");
-
-				return Value::Int(rang->step < 0 ? (rang->startInclusive ? rang->start : rang->start + rang->step) : (rang->endInclusive ? rang->end : rang->end - rang->step));
-			}
-			if (m->method == "step") {
-				if (!m->args.empty()) error("step() does not accept arguments", "ArgumentError");
-				auto* rang = static_cast<RangeObject*>(target.ref.get());
-				if (!rang->isValid) error("step() arg is an empty range", "ValueError");
-				return Value::Int(rang->step);
-			}
-			error("Object '" + m->method + "' is not a range method", "AttributeError");
-		}
-		// ---------------- LIST METHODS ----------------
-		if (target.type == ValueType::LIST) {
-			auto* listObj = static_cast<ListObject*>(target.ref.get());
-			auto& elems = listObj->elements;
-			if (m->method == "get") {
-				if (m->args.size() != 1 && m->args.size() != 2) error("list.get() takes one mandatory argument index, and an optional argument default_return", "ArgumentError");
-				auto idx = eval(m->args[0]).asInt();
-				if (idx < 0 && elems.size() > elems.size() + idx) return elems[idx + elems.size()];
-				else if (idx >= 0 and elems.size() > idx) return elems[idx];
-				if (m->args.size() == 2) return eval(m->args[1]);
-				else return Value::None();
-			}
-			if (m->method == "count") {
-				if (m->args.size() != 1) error("list.count() takes exactly one argument", "ArgumentError");
-				Value needle = eval(m->args[0]);
-				long long c = 0;
-				for (const auto& el : elems) {
-					if (el.strictEquals(needle)) c++;
-				}
-				return Value::Int(c);
-			}
-			if (m->method == "index") {
-				if (m->args.size() != 1) error("list.index() takes exactly one argument", "ArgumentError");
-				Value needle = eval(m->args[0]);
-				for (size_t i = 0; i < elems.size(); i++) {
-					if (elems[i].strictEquals(needle)) return Value::Int((long long)i);
-				}
-				return Value::Int(-1);
-			}
-			if (m->method == "insert") {
-				checkConst();
-				if (m->args.size() != 2) error("insert() takes exactly two arguments (index, value)", "ArgumentError");
-				int idx = eval(m->args[0]).asInt();
-				Value val = eval(m->args[1]);
-				if (idx < 0 || idx >(int)elems.size()) error("Index out of bounds", "IndexError");
-				elems.insert(elems.begin() + idx, val);
-				return target;
-			}
-			if (m->method == "pop") {
-				checkConst();
-				if (m->args.size() > 1) error("pop() takes at most one argument", "ArgumentError");
-				if (elems.empty()) error("pop from empty list", "EmptyContainerError");
-				int idx = elems.size() - 1;
-				if (!m->args.empty()) idx = eval(m->args[0]).asInt();
-				if (idx < 0 || idx >= (int)elems.size()) error("pop index out of bounds", "IndexError");
-				Value val = elems[idx];
-				elems.erase(elems.begin() + idx);
-				return val;
-			}
-			if (m->method == "remove") {
-				checkConst();
-				if (m->args.size() != 1) error("remove() takes exactly one argument", "ArgumentError");
-				Value val = eval(m->args[0]);
-				for (auto it = elems.begin(); it != elems.end(); ++it) {
-					if (it->strictEquals(val)) {
-						elems.erase(it);
-						return Value::None();
-					}
-				}
-				error("list.remove(x): x not in list", "ValueError");
-			}
-			if (m->method == "clear") {
-				checkConst();
-				elems.clear();
-				return target;
-			}
-			if (m->method == "extend") {
-				checkConst();
-				if (m->args.size() != 1) error("extend() takes exactly one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type == ValueType::LIST) {
-					auto* o = static_cast<ListObject*>(other.ref.get());
-					elems.insert(elems.end(), o->elements.begin(), o->elements.end());
-				}
-				else if (other.type == ValueType::SET) {
-					auto* o = static_cast<SetObject*>(other.ref.get());
-					elems.insert(elems.end(), o->elements.begin(), o->elements.end());
-				}
-				else if (other.type == ValueType::RANGE) {
-					auto* r = static_cast<RangeObject*>(other.ref.get());
-					double current = r->start;
-					if (!r->startInclusive) current += r->step;
-					while (true) {
-						bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end)
-							: (r->endInclusive ? current >= r->end : current > r->end);
-						if (!cond) break;
-						elems.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
-						current += r->step;
-					}
-				}
-				else error("extend() requires an iterable (list, set, or range)", "TypeError");
-				return target;
-			}
-			if (m->method == "sum") {
-				double total = 0;
-				bool isFloat = false;
-				for (const auto& el : elems) {
-					if (el.type == ValueType::INT) total += el.asInt();
-					else if (el.type == ValueType::FLOAT) { total += el.asFloat(); isFloat = true; }
-					else error("sum() requires numeric values", "TypeError");
-				}
-				return isFloat ? Value::Float(total) : Value::Int((long long)total);
-			}
-			if (m->method == "min") {
-				if (elems.empty()) error("min() on empty list", "ValueError");
-				Value minVal = elems[0];
-				for (size_t i = 1; i < elems.size(); i++) {
-					bool smaller = false;
-					if (elems[i].type == ValueType::INT && minVal.type == ValueType::INT)
-						smaller = elems[i].asInt() < minVal.asInt();
-					else if (elems[i].type == ValueType::FLOAT || minVal.type == ValueType::FLOAT)
-						smaller = elems[i].asFloat() < minVal.asFloat();
-					else if (elems[i].type == ValueType::STRING && minVal.type == ValueType::STRING)
-						smaller = elems[i].asString() < minVal.asString();
-					if (smaller) minVal = elems[i];
-				}
-				return minVal;
-			}
-			if (m->method == "max") {
-				if (elems.empty()) error("max() on empty list", "ValueError");
-				Value maxVal = elems[0];
-				for (size_t i = 1; i < elems.size(); i++) {
-					bool larger = false;
-					if (elems[i].type == ValueType::INT && maxVal.type == ValueType::INT)
-						larger = elems[i].asInt() > maxVal.asInt();
-					else if (elems[i].type == ValueType::FLOAT || maxVal.type == ValueType::FLOAT)
-						larger = elems[i].asFloat() > maxVal.asFloat();
-					else if (elems[i].type == ValueType::STRING && maxVal.type == ValueType::STRING)
-						larger = elems[i].asString() > maxVal.asString();
-
-					if (larger) maxVal = elems[i];
-				}
-				return maxVal;
-			}
-			if (m->method == "average") {
-				if (elems.empty()) return Value::Float(0);
-				double total = 0;
-				for (const auto& el : elems) total += el.asFloat();
-				return Value::Float(total / elems.size());
-			}
-			if (m->method == "shuffle") {
-				checkConst();
-				if (elems.empty()) return Value::None();
-				static std::random_device rd;
-				static std::mt19937 gen(rd());
-				std::shuffle(elems.begin(), elems.end(), gen);
-				return target;
-			}
-			if (m->method == "sample") {
-				int k = eval(m->args[0]).asInt();
-				if (k > (int)elems.size()) error("Sample larger than population", "ValueError");
-				static std::random_device rd;
-				static std::mt19937 gen(rd());
-				vector<Value> result = elems;
-				for (int i = 0; i < k; i++) {
-					std::uniform_int_distribution<> dis(i, (int)result.size() - 1);
-					int j = dis(gen);
-					std::swap(result[i], result[j]);
-				}
-				result.resize(k);
-				return Value::List(result);
-			}
-			if (m->method == "flatten") {
-				checkConst();
-				vector<Value> flatResult;
-				std::function<void(const vector<Value>&)> recursiveFlatten;
-				recursiveFlatten = [&](const vector<Value>& currentElems) {
-					for (const auto& el : currentElems) {
-						if (el.type == ValueType::LIST) {
-							auto* sub = static_cast<ListObject*>(el.ref.get());
-							recursiveFlatten(sub->elements);
-						}
-						else flatResult.push_back(el);
-					}
-				};
-				recursiveFlatten(elems);
-				elems = flatResult;
-				return target;
-			}
-			if (m->method == "chunk") {
-				int size = eval(m->args[0]).asInt();
-				if (size <= 0) error("Chunk size must be > 0", "ValueError");
-				vector<Value> chunks;
-				vector<Value> current;
-				for (const auto& el : elems) {
-					current.push_back(el);
-					if (current.size() == size) {
-						chunks.push_back(Value::List(current));
-						current.clear();
-					}
-				}
-				if (!current.empty()) chunks.push_back(Value::List(current));
-				return Value::List(chunks);
-			}
-			if (m->method == "rotate") {
-				checkConst();
-				if (elems.empty()) return Value::None();
-				int n = eval(m->args[0]).asInt();
-				n %= (int)elems.size();
-				if (n < 0) n += elems.size();
-				std::rotate(elems.rbegin(), elems.rbegin() + n, elems.rend());
-				return target;
-			}
-			if (m->method == "unique") {
-				checkConst();
-				vector<Value> unique;
-				for (const auto& item : elems) {
-					bool exists = false;
-					for (const auto& u : unique) if (u.strictEquals(item)) { exists = true; break; }
-					if (!exists) unique.push_back(item);
-				}
-				elems = unique;
-				return target;
-			}
-			if (m->method == "join") {
-				string sep = "";
-				if (!m->args.empty()) sep = eval(m->args[0]).asString();
-				string res = "";
-				for (size_t i = 0; i < elems.size(); i++) {
-					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
-					else res += valueToString(elems[i]);
-					if (i + 1 < elems.size()) res += sep;
-				}
-				return Value::String(res);
-			}
-			if (m->method == "fill") {
-				checkConst();
-				Value val = eval(m->args[0]);
-				if (m->args.size() > 1) {
-					int count = eval(m->args[1]).asInt();
-					if (count < 0) count = 0;
-					elems.clear();
-					elems.reserve(count);
-					for (int i = 0; i < count; i++) elems.push_back(deepCopy(val));
-				}
-				else for (auto& el : elems) el = deepCopy(val);
-				return target;
-			}
-			error("Object '" + m->method + "' is not a list method", "AttributeError");
-		}
-		//--------- SET METHODS ----------
-		if (target.type == ValueType::SET) {
-			auto* setObj = static_cast<SetObject*>(target.ref.get());
-			//--- MODIFIERS ---
-			if (m->method == "add") {
-				checkConst();
-				if (m->args.size() != 1) error("add() takes exactly one argument", "ArgumentError");
-				setAdd(setObj->elements, eval(m->args[0]));
-				return target;
-			}
-			if (m->method == "remove") {
-				checkConst();
-				if (m->args.size() != 1) error("remove() takes exactly one argument", "ArgumentError");
-				Value val = eval(m->args[0]);
-				auto& elems = setObj->elements;
-				for (auto it = elems.begin(); it != elems.end(); ++it) {
-					if (it->strictEquals(val)) {
-						elems.erase(it);
-						return target;
-					}
-				}
-				error("KeyError: element not found in set", "KeyError");
-			}
-			if (m->method == "discard") {
-				checkConst();
-				if (m->args.size() != 1) error("discard() takes exactly one argument", "ArgumentError");
-				Value val = eval(m->args[0]);
-				auto& elems = setObj->elements;
-				for (auto it = elems.begin(); it != elems.end(); ++it) {
-					if (it->strictEquals(val)) {
-						elems.erase(it);
-						return target;
-					}
-				}
-				return target;
-			}
-			if (m->method == "pop") {
-				checkConst();
-				if (!m->args.empty()) error("pop() takes no arguments", "ArgumentError");
-				if (setObj->elements.empty()) error("pop from empty set", "EmptyContainerError");
-				Value val = setObj->elements.back();
-				setObj->elements.pop_back();
-				return val;
-			}
-			if (m->method == "clear") {
-				checkConst();
-				if (!m->args.empty()) error("clear() takes no arguments", "ArgumentError");
-				setObj->elements.clear();
-				return target;
-			}
-			//--- OPERATIONS ---
-			if (m->method == "union") {
-				if (m->args.size() != 1) error("union() takes one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::SET) error("union() requires a set", "TypeError");
-				vector<Value> result = setObj->elements;
-				auto* otherSet = static_cast<SetObject*>(other.ref.get());
-				for (const auto& v : otherSet->elements) setAdd(result, v);
-				return Value::Set(result);
-			}
-			if (m->method == "intersection") {
-				if (m->args.size() != 1) error("intersection() takes one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::SET) error("intersection() requires a set", "TypeError");
-				vector<Value> result;
-				auto* otherSet = static_cast<SetObject*>(other.ref.get());
-				for (const auto& v1 : setObj->elements) {
-					for (const auto& v2 : otherSet->elements) if (v1.strictEquals(v2)) { result.push_back(v1); break; }
-				}
-				return Value::Set(result);
-			}
-			if (m->method == "difference") {
-				if (m->args.size() != 1) error("difference() takes one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::SET) error("difference() requires a set", "TypeError");
-				vector<Value> result;
-				auto* otherSet = static_cast<SetObject*>(other.ref.get());
-				for (const auto& v1 : setObj->elements) {
-					bool found = false;
-					for (const auto& v2 : otherSet->elements) if (v1.strictEquals(v2)) { found = true; break; }
-					if (!found) result.push_back(v1);
-				}
-				return Value::Set(result);
-			}
-			if (m->method == "symmetric_difference") {
-				if (m->args.size() != 1) error("symmetric_difference() takes one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::SET) error("symmetric_difference() requires a set", "TypeError");
-				vector<Value> result;
-				auto* s2 = static_cast<SetObject*>(other.ref.get());
-				for (const auto& v1 : setObj->elements) {
-					bool found = false;
-					for (const auto& v2 : s2->elements) if (v1.strictEquals(v2)) { found = true; break; }
-					if (!found) result.push_back(v1);
-				}
-				for (const auto& v2 : s2->elements) {
-					bool found = false;
-					for (const auto& v1 : setObj->elements) if (v2.strictEquals(v1)) { found = true; break; }
-					if (!found) result.push_back(v2);
-				}
-				return Value::Set(result);
-			}
-			if (m->method == "issubset") {
-				if (m->args.size() != 1) error("issubset() takes one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::SET) error("issubset() requires a set", "TypeError");
-				auto* parent = static_cast<SetObject*>(other.ref.get());
-				for (const auto& childElem : setObj->elements) {
-					bool found = false;
-					for (const auto& pElem : parent->elements) if (childElem.strictEquals(pElem)) { found = true; break; }
-					if (!found) return Value::Bool(false);
-				}
-				return Value::Bool(true);
-			}
-			if (m->method == "issuperset") {
-				if (m->args.size() != 1) error("issuperset() takes one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::SET) error("issuperset() requires a set", "TypeError");
-				auto* child = static_cast<SetObject*>(other.ref.get());
-				for (const auto& cElem : child->elements) {
-					bool found = false;
-					for (const auto& pElem : setObj->elements) if (cElem.strictEquals(pElem)) { found = true; break; }
-					if (!found) return Value::Bool(false);
-				}
-				return Value::Bool(true);
-			}
-			if (m->method == "isdisjoint") {
-				if (m->args.size() != 1) error("isdisjoint() takes one argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::SET) error("isdisjoint() requires a set", "TypeError");
-				auto* otherSet = static_cast<SetObject*>(other.ref.get());
-				for (const auto& v1 : setObj->elements) {
-					for (const auto& v2 : otherSet->elements) if (v1.strictEquals(v2)) return Value::Bool(false);
-				}
-				return Value::Bool(true);
-			}
-			if (m->method == "join") {
-				string sep = "";
-				if (!m->args.empty()) sep = eval(m->args[0]).asString();
-				string res = "";
-				auto& elems = setObj->elements; // Access set elements
-				for (size_t i = 0; i < elems.size(); i++) {
-					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
-					else res += valueToString(elems[i]);
-					if (i + 1 < elems.size()) res += sep;
-				}
-				return Value::String(res);
-			}
-			if (m->method == "join") {
-				string sep = "";
-				if (!m->args.empty()) sep = eval(m->args[0]).asString();
-				string res = "";
-				auto& elems = setObj->elements;
-				for (size_t i = 0; i < elems.size(); i++) {
-					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
-					else res += valueToString(elems[i]);
-					if (i + 1 < elems.size()) res += sep;
-				}
-				return Value::String(res);
-			}
-			error("Object '" + m->method + "' is not a set method", "AttributeError");
-		}
-		//-------- TUPLE METHODS ---------
-		if (target.type == ValueType::TUPLE) {
-			auto* tObj = static_cast<TupleObject*>(target.ref.get());
-			if (m->method == "count") {
-				if (m->args.size() != 1) error("tuple.count() takes 1 arg", "ArgumentError");
-				Value needle = eval(m->args[0]);
-				long long c = 0;
-				for (const auto& el : tObj->elements) if (el.strictEquals(needle)) c++;
-				return Value::Int(c);
-			}
-			if (m->method == "index") {
-				if (m->args.size() != 1) error("tuple.index() takes 1 arg", "ArgumentError");
-				Value needle = eval(m->args[0]);
-				for (size_t i = 0; i < tObj->elements.size(); i++) {
-					if (tObj->elements[i].strictEquals(needle)) return Value::Int((long long)i);
-				}
-				return Value::Int(-1);
-			}
-			if (m->method == "join") {
-				string sep = "";
-				if (!m->args.empty()) sep = eval(m->args[0]).asString();
-				string res = "";
-				auto& elems = tObj->elements;
-				for (size_t i = 0; i < elems.size(); i++) {
-					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
-					else res += valueToString(elems[i]);
-					if (i + 1 < elems.size()) res += sep;
-				}
-				return Value::String(res);
-			}
-			auto elems = tObj->elements;
-			if (m->method == "sum") {
-				double total = 0;
-				bool isFloat = false;
-				for (const auto& el : elems) {
-					if (el.type == ValueType::INT) total += el.asInt();
-					else if (el.type == ValueType::FLOAT) { total += el.asFloat(); isFloat = true; }
-					else error("sum() requires numeric values", "TypeError");
-				}
-				return isFloat ? Value::Float(total) : Value::Int((long long)total);
-			}
-			if (m->method == "min") {
-				if (elems.empty()) error("min() on empty tuple", "ValueError");
-				Value minVal = elems[0];
-				for (size_t i = 1; i < elems.size(); i++) {
-					bool smaller = false;
-					if (elems[i].type == ValueType::INT && minVal.type == ValueType::INT)
-						smaller = elems[i].asInt() < minVal.asInt();
-					else if (elems[i].type == ValueType::FLOAT || minVal.type == ValueType::FLOAT)
-						smaller = elems[i].asFloat() < minVal.asFloat();
-					else if (elems[i].type == ValueType::STRING && minVal.type == ValueType::STRING)
-						smaller = elems[i].asString() < minVal.asString();
-					if (smaller) minVal = elems[i];
-				}
-				return minVal;
-			}
-			if (m->method == "max") {
-				if (elems.empty()) error("max() on empty tuple", "ValueError");
-				Value maxVal = elems[0];
-				for (size_t i = 1; i < elems.size(); i++) {
-					bool larger = false;
-					if (elems[i].type == ValueType::INT && maxVal.type == ValueType::INT)
-						larger = elems[i].asInt() > maxVal.asInt();
-					else if (elems[i].type == ValueType::FLOAT || maxVal.type == ValueType::FLOAT)
-						larger = elems[i].asFloat() > maxVal.asFloat();
-					else if (elems[i].type == ValueType::STRING && maxVal.type == ValueType::STRING)
-						larger = elems[i].asString() > maxVal.asString();
-
-					if (larger) maxVal = elems[i];
-				}
-				return maxVal;
-			}
-			if (m->method == "average") {
-				if (elems.empty()) return Value::Float(0);
-				double total = 0;
-				for (const auto& el : elems) total += el.asFloat();
-				return Value::Float(total / elems.size());
-			}
-			if (m->method == "sample") {
-				int k = eval(m->args[0]).asInt();
-				if (k > (int)elems.size()) error("Sample larger than population", "ValueError");
-				static std::random_device rd;
-				static std::mt19937 gen(rd());
-				vector<Value> result = elems;
-				for (int i = 0; i < k; i++) {
-					std::uniform_int_distribution<> dis(i, (int)result.size() - 1);
-					int j = dis(gen);
-					std::swap(result[i], result[j]);
-				}
-				result.resize(k);
-				return Value::Tuple(result);
-			}
-			error("Object '" + m->method + "' is not a tuple method", "AttributeError");
-		}
-		// -------- DICTIONARY METHODS ---------
-		if (target.type == ValueType::DICT) {
-			auto* d = static_cast<DictObject*>(target.ref.get());
-			if (m->method == "get") {
-				if (m->args.size() < 1 || m->args.size() > 2) error("get() takes 1 or 2 arguments", "ArgumentError");
-				Value key = eval(m->args[0]);
-				Value defVal = (m->args.size() == 2) ? eval(m->args[1]) : Value::None();
-
-				if (d->items.count(key)) return d->items.at(key);
-				return defVal;
-			}
-			if (m->method == "get_default") {
-				checkConst();
-				if (m->args.size() < 1 || m->args.size() > 2) error("get_default() takes 1 or 2 arguments", "ArgumentError");
-				Value key = eval(m->args[0]);
-				if (d->items.count(key)) return d->items.at(key);
-				Value defVal = (m->args.size() == 2) ? eval(m->args[1]) : Value::None();
-				Value insertKey = key;
-				if (insertKey.type == ValueType::LIST || insertKey.type == ValueType::SET) {
-					insertKey = deepCopy(insertKey);
-					insertKey.isConst = true;
-				}
-				if (insertKey.type == ValueType::DICT) error("Dictionary cannot be used as a key", "TypeError");
-				d->items[insertKey] = defVal;
-				return defVal;
-			}
-			if (m->method == "clear") {
-				checkConst();
-				d->items.clear();
-				return Value::None();
-			}
-			if (m->method == "update") {
-				checkConst();
-				if (m->args.size() != 1) error("update() takes exactly 1 argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::DICT) error("update() requires a dictionary argument", "TypeError");
-				auto* otherDict = static_cast<DictObject*>(other.ref.get());
-				for (const auto& [k, v] : otherDict->items) {
-					d->items[k] = v;
-				}
-				return Value::None();
-			}
-			if (m->method == "pop") {
-				checkConst();
-				if (m->args.size() > 1) error("pop() takes 0 or 1 argument", "ArgumentError");
-				if (m->args.empty()) {
-					if (d->items.empty()) error("pop from empty dictionary", "EmptyContainerError");
-					auto it = d->items.begin();
-					Value val = it->second;
-					d->items.erase(it);
-					return val;
-				}
-				else {
-					Value key = eval(m->args[0]);
-					auto it = d->items.find(key);
-					if (it == d->items.end()) error("KeyError: " + valueToString(key), "KeyError");
-					Value val = it->second;
-					d->items.erase(it);
-					return val;
-				}
-			}
-			if (m->method == "keys") {
-				vector<Value> keys;
-				keys.reserve(d->items.size());
-				for (auto& [k, v] : d->items) keys.push_back(k);
-				return Value::List(keys);
-			}
-			if (m->method == "values") {
-				vector<Value> vals;
-				vals.reserve(d->items.size());
-				for (auto& [k, v] : d->items) vals.push_back(v);
-				return Value::List(vals);
-			}
-			if (m->method == "items") {
-				vector<Value> pairs;
-				pairs.reserve(d->items.size());
-				for (auto& [k, v] : d->items) {
-					vector<Value> pair = { k, v };
-					pairs.push_back(Value::Tuple(pair));
-				}
-				return Value::List(pairs);
-			}
-			error("Object '" + m->method + "' is not a dict method", "AttributeError");
-		}
-		// ------------------ FILE METHODS ------------------
-		if (target.type == ValueType::FILE) {
-			auto* f = static_cast<FileObject*>(target.ref.get());
-			if (!f->isOpen && m->method != "IsOpen") throw FileClosedError("Cannot perform operation on closed file", m->line, m->col);
-			if (m->method == "IsOpen") {
-				if (!m->args.empty()) error("IsOpen() takes no arguments", "ArgumentError");
-				return Value::Bool(f->isOpen);
-			}
-			if (m->method == "Write") {
-				if (m->args.empty() || m->args.size() > 2) error("write() expects message and optional replace bool", "ArgumentError");
-				string msg = valueToString(eval(m->args[0]));
-				bool replace = false;
-				if (m->args.size() == 2) replace = eval(m->args[1]).asBool();
-				f->stream.clear();
-				if (replace) f->stream.seekp(0, std::ios::beg);
-				else f->stream.seekp(0, std::ios::end);
-				if (!(f->stream << msg)) throw PermissionError("Failed to write to file", m->line, m->col);
-				f->stream.flush();
-				return Value::None();
-			}
-			if (m->method == "Clear") {
-				if (!m->args.empty()) error("Clear() expects no arguments", "Arguments");
-				f->Reset();
-				return Value::None();
-			}
-			if (m->method == "Read") {
-				if (!m->args.empty()) error("Read() takes no arguments", "ArgumentError");
-				f->stream.clear();
-				f->stream.seekg(0, std::ios::beg);
-				std::stringstream buffer;
-				buffer << f->stream.rdbuf();
-				return Value::String(buffer.str());
-			}
-			if (m->method == "ReadLines") {
-				bool includeN = false;
-				if (m->args.size() == 1) includeN = eval(m->args[0]).asBool();
-				else if (m->args.size() > 1) error("ReadLines() takes optional boolean", "ArgumentError");
-				f->stream.clear();
-				f->stream.seekg(0, std::ios::beg);
-				vector<Value> lines;
-				string line;
-				while (std::getline(f->stream, line)) {
-					if (!line.empty() && line.back() == '\r') line.pop_back();
-					if (includeN) line += "\n";
-					lines.push_back(Value::String(line));
-				}
-				return Value::List(lines);
-			}
-			if (m->method == "Close") {
-				if (f->isOpen) {
-					f->stream.close();
-					f->isOpen = false;
-				}
-				return Value::None();
-			}
-			error("Object '" + m->method + "' is not a file method", "AttributeError");
-		}
-		//-------- VECTOR METHODS --------
-		if (target.type == ValueType::VECTOR) {
-			auto* v = static_cast<VectorObject*>(target.ref.get());
-			if (m->method == "dimension") {
-				if (!m->args.empty()) error("dimension() takes no arguments", "ArgumentError");
-				return Value::Int((long long)v->elements.size());
-			}
-			if (m->method == "magnitude") {
-				if (!m->args.empty()) error("magnitude() takes no arguments", "ArgumentError");
-				Value sum = Value::Int(0);
-				for (const auto& d : v->elements) {
-					Value sq;
-					if (d.type == ValueType::INT) {
-						long long r = d.iVal * d.iVal;
-						bool ovf = (d.iVal != 0 && r / d.iVal != d.iVal);
-						if (ovf) sq = BigIntObject::mul(Value::BigInt(d.iVal), Value::BigInt(d.iVal));
-						else sq = Value::Int(r);
-					}
-					else if (d.type == ValueType::BIGINT) sq = BigIntObject::mul(d, d);
-					else sq = Value::Float(d.asFloat() * d.asFloat());
-					if (sum.type == ValueType::INT && sq.type == ValueType::INT) {
-						long long r = sum.iVal + sq.iVal;
-						bool ovf = ((sum.iVal ^ r) & (sq.iVal ^ r)) < 0;
-						if (ovf) sum = BigIntObject::add(Value::BigInt(sum.iVal), Value::BigInt(sq.iVal));
-						else sum = Value::Int(r);
-					}
-					else if (sum.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) sum = BigIntObject::add(sum, sq);
-					else sum = Value::Float(sum.asFloat() + sq.asFloat());
-				}
-				return Value::Float(std::sqrt(sum.asFloat()));
-			}
-			if (m->method == "reverse") {
-				checkConst();
-				std::reverse(v->elements.begin(), v->elements.end());
-				return target;
-			}
-			if (m->method == "expand") {
-				checkConst();
-				if (m->args.size() != 1) error("expand() takes 1 argument", "ArgumentError");
-				long long n = eval(m->args[0]).asInt();
-				if (n < 0) error("Cannot expand by negative amount", "ValueError");
-				for (int i = 0; i < n; i++) v->elements.push_back(Value::Int(0));
-				return target;
-			}
-			if (m->method == "shrink") {
-				checkConst();
-				if (m->args.size() != 1) error("shrink() takes 1 argument", "ArgumentError");
-				long long n = eval(m->args[0]).asInt();
-				if (n < 0) error("Cannot shrink by negative amount", "ValueError");
-				if ((long long)v->elements.size() - n < 1) error("Vector cannot be shrunk below 1 dimension", "ValueError");
-				for (int i = 0; i < n; i++) v->elements.pop_back();
-				return target;
-			}
-			if (m->method == "unitVec") {
-				Value sum = Value::Int(0);
-				for (const auto& d : v->elements) {
-					Value sq;
-					if (d.type == ValueType::INT) {
-						long long r = d.iVal * d.iVal;
-						bool ovf = (d.iVal != 0 && r / d.iVal != d.iVal);
-						if (ovf) sq = BigIntObject::mul(Value::BigInt(d.iVal), Value::BigInt(d.iVal));
-						else sq = Value::Int(r);
-					}
-					else if (d.type == ValueType::BIGINT) sq = BigIntObject::mul(d, d);
-					else sq = Value::Float(d.asFloat() * d.asFloat());
-					if (sum.type == ValueType::INT && sq.type == ValueType::INT) {
-						long long r = sum.iVal + sq.iVal;
-						bool ovf = ((sum.iVal ^ r) & (sq.iVal ^ r)) < 0;
-						if (ovf) sum = BigIntObject::add(Value::BigInt(sum.iVal), Value::BigInt(sq.iVal));
-						else sum = Value::Int(r);
-					}
-					else if (sum.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) sum = BigIntObject::add(sum, sq);
-					else sum = Value::Float(sum.asFloat() + sq.asFloat());
-				}
-				double mag = std::sqrt(sum.asFloat());
-				if (mag == 0) error("Cannot get unit vector of zero vector", "MathError");
-				std::vector<Value> res;
-				res.reserve(v->elements.size());
-				for (auto d : v->elements) res.push_back(Value::Float(d.asFloat() / mag));
-				return Value::Vector(res);
-			}
-			if (m->method == "projectOnto") {
-				if (m->args.size() != 1) error("projectOnto() takes 1 argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
-				auto* u = v;
-				auto* v2 = static_cast<VectorObject*>(other.ref.get());
-				if (u->elements.size() != v2->elements.size()) error("Dimension mismatch", "ValueError");
-				Value dot = Value::Int(0);
-				Value mag2 = Value::Int(0);
-				for (size_t i = 0; i < u->elements.size(); i++) {
-					Value valU = u->elements[i];
-					Value valV = v2->elements[i];
-					Value prod;
-					if (valU.type == ValueType::INT && valV.type == ValueType::INT) {
-						long long r = valU.iVal * valV.iVal;
-						bool ovf = (valU.iVal != 0 && r / valU.iVal != valV.iVal);
-						if (ovf) prod = BigIntObject::mul(Value::BigInt(valU.iVal), Value::BigInt(valV.iVal));
-						else prod = Value::Int(r);
-					}
-					else if (valU.type == ValueType::BIGINT || valV.type == ValueType::BIGINT) prod = BigIntObject::mul(valU, valV);
-					else prod = Value::Float(valU.asFloat() * valV.asFloat());
-					if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
-						long long r = dot.iVal + prod.iVal;
-						bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
-						if (ovf) dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
-						else dot = Value::Int(r);
-					}
-					else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) dot = BigIntObject::add(dot, prod);
-					else dot = Value::Float(dot.asFloat() + prod.asFloat());
-					Value sq;
-					if (valV.type == ValueType::INT) {
-						long long r = valV.iVal * valV.iVal;
-						bool ovf = (valV.iVal != 0 && r / valV.iVal != valV.iVal);
-						if (ovf) sq = BigIntObject::mul(Value::BigInt(valV.iVal), Value::BigInt(valV.iVal));
-						else sq = Value::Int(r);
-					}
-					else if (valV.type == ValueType::BIGINT) sq = BigIntObject::mul(valV, valV);
-					else sq = Value::Float(valV.asFloat() * valV.asFloat());
-					if (mag2.type == ValueType::INT && sq.type == ValueType::INT) {
-						long long r = mag2.iVal + sq.iVal;
-						bool ovf = ((mag2.iVal ^ r) & (sq.iVal ^ r)) < 0;
-						if (ovf) mag2 = BigIntObject::add(Value::BigInt(mag2.iVal), Value::BigInt(sq.iVal));
-						else mag2 = Value::Int(r);
-					}
-					else if (mag2.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) mag2 = BigIntObject::add(mag2, sq);
-					else mag2 = Value::Float(mag2.asFloat() + sq.asFloat());
-				}
-				if (mag2.asFloat() == 0) error("Cannot project onto zero vector", "MathError");
-				double scalar = dot.asFloat() / mag2.asFloat();
-				std::vector<Value> res;
-				res.reserve(v2->elements.size());
-				for (auto d : v2->elements) res.push_back(Value::Float(d.asFloat() * scalar));
-				return Value::Vector(res);
-			}
-			if (m->method == "dot") {
-				if (m->args.size() != 1) error("dot() takes 1 argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
-				auto* v2 = static_cast<VectorObject*>(other.ref.get());
-				if (v->elements.size() != v2->elements.size()) error("Dimension mismatch", "ValueError");
-				Value dot = Value::Int(0);
-				for (size_t i = 0; i < v->elements.size(); i++) {
-					Value x = v->elements[i];
-					Value y = v2->elements[i];
-					Value prod;
-					if (x.type == ValueType::INT && y.type == ValueType::INT) {
-						long long r = x.iVal * y.iVal;
-						bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
-						if (ovf) prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
-						else prod = Value::Int(r);
-					}
-					else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) prod = BigIntObject::mul(x, y);
-					else prod = Value::Float(x.asFloat() * y.asFloat());
-					if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
-						long long r = dot.iVal + prod.iVal;
-						bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
-						if (ovf) dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
-						else dot = Value::Int(r);
-					}
-					else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) dot = BigIntObject::add(dot, prod);
-					else dot = Value::Float(dot.asFloat() + prod.asFloat());
-				}
-				return dot;
-			}
-			if (m->method == "cross") {
-				if (m->args.size() != 1) error("cross() takes 1 argument", "ArgumentError");
-				Value other = eval(m->args[0]);
-				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
-				auto* v2 = static_cast<VectorObject*>(other.ref.get());
-				size_t dim = v->elements.size();
-				if (dim != v2->elements.size()) error("Dimension mismatch", "ValueError");
-				auto safeMul = [](const Value& a, const Value& b) -> Value {
-					if (a.type == ValueType::INT && b.type == ValueType::INT) {
-						long long r = a.iVal * b.iVal;
-						bool ovf = (a.iVal != 0 && r / a.iVal != b.iVal);
-						if (ovf) return BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
-						return Value::Int(r);
-					}
-					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) return BigIntObject::mul(a, b);
-					return Value::Float(a.asFloat() * b.asFloat());
-				};
-				auto safeSub = [](const Value& a, const Value& b) -> Value {
-					if (a.type == ValueType::INT && b.type == ValueType::INT) {
-						long long r = a.iVal - b.iVal;
-						bool ovf = ((a.iVal ^ b.iVal) & (a.iVal ^ r)) < 0;
-						if (ovf) return BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
-						return Value::Int(r);
-					}
-					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) return BigIntObject::sub(a, b);
-					return Value::Float(a.asFloat() - b.asFloat());
-				};
-				if (dim == 1) return Value::Int(0);
-				else if (dim == 2) {
-					Value term1 = safeMul(v->elements[0], v2->elements[1]);
-					Value term2 = safeMul(v->elements[1], v2->elements[0]);
-					return safeSub(term1, term2);
-				}
-				else if (dim == 3) {
-					Value x = safeSub(safeMul(v->elements[1], v2->elements[2]), safeMul(v->elements[2], v2->elements[1]));
-					Value y = safeSub(safeMul(v->elements[2], v2->elements[0]), safeMul(v->elements[0], v2->elements[2]));
-					Value z = safeSub(safeMul(v->elements[0], v2->elements[1]), safeMul(v->elements[1], v2->elements[0]));
-					std::vector<Value> res = { x, y, z };
-					return Value::Vector(res);
-				}
-				else {
-					error("Binary cross product is not defined for dimensions > 3", "ValueError");
-				}
-			}
-			error("Object '" + m->method + "' is not a vector method", "AttributeError");
-		}
-		return Value::None();
-	}
+	Value Resolve_methods(MethodCallExpr* m);	
 	bool matchesError(const LangError& e, const string& typeName) {
 		// --- ROOT ---
 		if (typeName == "Error") return true;
@@ -8750,202 +5833,6 @@ private:
 	}
 };
 // ------------ BYTECODE VM ------------
-enum class OpCode : uint8_t {
-	// Literals & Constants
-	OP_CONSTANT, OP_CONSTANT_LONG, OP_TRUE, OP_FALSE, OP_NONE, OP_NOTYPE,
-	// Variables & Scope
-	OP_DEFINE_VAR, OP_GET_VAR, OP_SET_VAR, OP_DEEP_COPY, OP_REF_LOCAL,
-	OP_DEFINE_REF, OP_REF_VAR, OP_REF_INDEX, OP_SET_REF, OP_SHALLOW_COPY,
-	OP_MULTI_SET, OP_GET_LOCAL, OP_SET_LOCAL, OP_INC_LOCAL, OP_SET_FLAGS,
-	OP_REF_PROPERTY, OP_DELETE,
-	// Arithmetic & Logic
-	OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FLOOR_DIV, OP_MOD, OP_POW, OP_IADD,
-	OP_ISUB, OP_IMUL, OP_IDIV, OP_IFLOOR_DIV, OP_IMOD, OP_IPOW, OP_DUP, OP_DUP_2,
-	OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LTE, OP_GTE, OP_COLON, OP_STRICT_NEQ,
-	OP_NOT, OP_AND, OP_OR, OP_XOR, OP_IS, OP_IN, OP_IS_NOT, OP_STRICT_EQ,
-	OP_IS_IN, OP_IS_NOT_IN, OP_NXOR, OP_NAND, OP_NOR, OP_NEGATE, OP_INCREMENT, OP_DECREMENT,
-	// Containers
-	OP_BUILD_LIST, OP_BUILD_TUPLE, OP_BUILD_SET, OP_BUILD_DICT, OP_UNPACK_DICT,
-	OP_BUILD_RANGE, OP_BUILD_VECTOR, OP_BUILD_FSTRING, OP_BUILD_FILE, OP_BUILD_SLICE,
-	// OOP
-	OP_CLASS, OP_METHOD, OP_GET_PROPERTY, OP_SET_PROPERTY, OP_CLASS_FIELD, OP_SUPER,
-	// Comprehension
-	OP_LIST_APPEND, OP_SET_ADD, OP_DICT_SET, OP_LIST_TO_TUPLE, OP_LIST_TO_VECTOR,
-	// Access & Calls
-	OP_GET_INDEX, OP_SET_INDEX, OP_INVOKE, OP_CALL,
-	// Control Flow
-	OP_JUMP, OP_JUMP_IF_FALSE, OP_LOOP, OP_RETURN, OP_TO_STREAM, OP_JUMP_IF_NOT_LT,
-	OP_BREAK, OP_CONTINUE, OP_SKIP, OP_OMIT, OP_FOR_ITER, OP_SKIP_ITER, OP_SWITCH_TABLE,
-	// Errors & Systems
-	OP_THROW, OP_ASSERT, OP_IMPORT, OP_POP, OP_DEBUG_NAME, OP_TRY_ENTER, OP_TRY_EXIT,
-	OP_CATCH, OP_RETHROW, OP_END_FINALLY
-};
-static inline std::string OpCodeToString(OpCode num){
-	switch (num){
-		case OpCode::OP_CONSTANT: return "OP_CONSTANT";
-		case OpCode::OP_CONSTANT_LONG: return "OP_CONSTANT_LONG";
-		case OpCode::OP_TRUE: return "OP_TRUE";
-		case OpCode::OP_FALSE: return "OP_FALSE";
-		case OpCode::OP_NONE: return "OP_NONE";
-		case OpCode::OP_NOTYPE: return "OP_NOTYPE";
-		case OpCode::OP_DEFINE_VAR: return "OP_DEFINE_VAR";
-		case OpCode::OP_GET_VAR: return "OP_GET_VAR";
-		case OpCode::OP_SET_VAR: return "OP_SET_VAR";
-		case OpCode::OP_DEEP_COPY: return "OP_DEEP_COPY";
-		case OpCode::OP_REF_LOCAL: return "OP_REF_LOCAL";
-		case OpCode::OP_DEFINE_REF: return "OP_DEFINE_REF";
-		case OpCode::OP_REF_VAR: return "OP_REF_VAR";
-		case OpCode::OP_REF_INDEX: return "OP_REF_INDEX";
-		case OpCode::OP_SET_REF: return "OP_SET_REF";
-		case OpCode::OP_SHALLOW_COPY: return "OP_SHALLOW_COPY";
-		case OpCode::OP_MULTI_SET: return "OP_MULTI_LET";
-		case OpCode::OP_GET_LOCAL: return "OP_GET_LOCAL";
-		case OpCode::OP_SET_LOCAL: return "OP_SET_LOCAL";
-		case OpCode::OP_INC_LOCAL: return "OP_INC_LOCAL";
-		case OpCode::OP_SET_FLAGS: return "OP_SET_FLAGS";
-		case OpCode::OP_REF_PROPERTY: return "OP_REF_PROPERTY";
-		case OpCode::OP_DELETE: return "OP_DELETE";
-		case OpCode::OP_ADD: return "OP_ADD";
-		case OpCode::OP_SUB: return "OP_SUB";
-		case OpCode::OP_MUL: return "OP_MUL";
-		case OpCode::OP_DIV: return "OP_DIV";
-		case OpCode::OP_FLOOR_DIV: return "OP_FLOOR_DIV";
-		case OpCode::OP_MOD: return "OP_MOD";
-		case OpCode::OP_POW: return "OP_POW";
-		case OpCode::OP_IADD: return "OP_IADD";
-		case OpCode::OP_ISUB: return "OP_ISUB";
-		case OpCode::OP_IMUL: return "OP_IMUL";
-		case OpCode::OP_IDIV: return "OP_IDIV";
-		case OpCode::OP_IFLOOR_DIV: return "OP_IFLOOR_DIV";
-		case OpCode::OP_IMOD: return "OP_IMOD";
-		case OpCode::OP_IPOW: return "OP_IPOW";
-		case OpCode::OP_DUP: return "OP_DUP";
-		case OpCode::OP_DUP_2: return "OP_DUP_2";
-		case OpCode::OP_EQ: return "OP_EQ";
-		case OpCode::OP_NEQ: return "OP_NEQ";
-		case OpCode::OP_LT: return "OP_LT";
-		case OpCode::OP_GT: return "OP_GT";
-		case OpCode::OP_LTE: return "OP_LTE";
-		case OpCode::OP_GTE: return "OP_GTE";
-		case OpCode::OP_COLON: return "OP_COLON";
-		case OpCode::OP_STRICT_NEQ: return "OP_STRICT_NEQ";
-		case OpCode::OP_NOT: return "OP_NOT";
-		case OpCode::OP_AND: return "OP_AND";
-		case OpCode::OP_OR: return "OP_OR";
-		case OpCode::OP_XOR: return "OP_XOR";
-		case OpCode::OP_IS: return "OP_IS";
-		case OpCode::OP_IN: return "OP_IN";
-		case OpCode::OP_IS_NOT: return "OP_IS_NOT";
-		case OpCode::OP_STRICT_EQ: return "OP_STRICT_EQ";
-		case OpCode::OP_IS_IN: return "OP_IS_IN";
-		case OpCode::OP_IS_NOT_IN: return "OP_IS_NOT_IN";
-		case OpCode::OP_NXOR: return "OP_NXOR";
-		case OpCode::OP_NAND: return "OP_NAND";
-		case OpCode::OP_NOR: return "OP_NOR";
-		case OpCode::OP_NEGATE: return "OP_NEGATE";
-		case OpCode::OP_INCREMENT: return "OP_INCREMENT";
-		case OpCode::OP_DECREMENT: return "OP_DECREMENT";
-		case OpCode::OP_BUILD_LIST: return "OP_BUILD_LIST";
-		case OpCode::OP_BUILD_TUPLE: return "OP_BUILD_TUPLE";
-		case OpCode::OP_BUILD_SET: return "OP_BUILD_SET";
-		case OpCode::OP_BUILD_DICT: return "OP_BUILD_DICT";
-		case OpCode::OP_UNPACK_DICT: return "OP_UNPACK_DICT";
-		case OpCode::OP_BUILD_RANGE: return "OP_BUILD_RANGE";
-		case OpCode::OP_BUILD_VECTOR: return "OP_BUILD_VECTOR";
-		case OpCode::OP_BUILD_FSTRING: return "OP_BUILD_FSTRING";
-		case OpCode::OP_BUILD_FILE: return "OP_BUILD_FILE";
-		case OpCode::OP_BUILD_SLICE: return "OP_BUILD_SLICE";
-		case OpCode::OP_CLASS: return "OP_CLASS";
-		case OpCode::OP_METHOD: return "OP_METHOD";
-		case OpCode::OP_GET_PROPERTY: return "OP_GET_PROPERTY";
-		case OpCode::OP_SET_PROPERTY: return "OP_SET_PROPERTY";
-		case OpCode::OP_CLASS_FIELD: return "OP_CLASS_FIELD";
-		case OpCode::OP_SUPER: return "OP_SUPER";
-		case OpCode::OP_LIST_APPEND: return "OP_LIST_APPEND";
-		case OpCode::OP_SET_ADD: return "OP_SET_ADD";
-		case OpCode::OP_DICT_SET: return "OP_DICT_SET";
-		case OpCode::OP_LIST_TO_TUPLE: return "OP_LIST_TO_TUPLE";
-		case OpCode::OP_LIST_TO_VECTOR: return "OP_LIST_TO_VECTOR";
-		case OpCode::OP_GET_INDEX: return "OP_GET_INDEX";
-		case OpCode::OP_SET_INDEX: return "OP_SET_INDEX";
-		case OpCode::OP_INVOKE: return "OP_INVOKE";
-		case OpCode::OP_CALL: return "OP_CALL";
-		case OpCode::OP_JUMP: return "OP_JUMP";
-		case OpCode::OP_JUMP_IF_FALSE: return "OP_JUMP_IF_FALSE";
-		case OpCode::OP_LOOP: return "OP_LOOP";
-		case OpCode::OP_RETURN: return "OP_RETURN";
-		case OpCode::OP_TO_STREAM: return "OP_TO_STREAM";
-		case OpCode::OP_JUMP_IF_NOT_LT: return "OP_JUMP_IF_NOT_LT";
-		case OpCode::OP_BREAK: return "OP_BREAK";
-		case OpCode::OP_CONTINUE: return "OP_CONTINUE";
-		case OpCode::OP_SKIP: return "OP_SKIP";
-		case OpCode::OP_OMIT: return "OP_OMIT";
-		case OpCode::OP_FOR_ITER: return "OP_FOR_ITER";
-		case OpCode::OP_SKIP_ITER: return "OP_SKIP_ITER";
-		case OpCode::OP_SWITCH_TABLE: return "OP_SWITCH_TABLE";
-		case OpCode::OP_THROW: return "OP_THROW";
-		case OpCode::OP_ASSERT: return "OP_ASSET";
-		case OpCode::OP_IMPORT: return "OP_IMPORT";
-		case OpCode::OP_POP: return "OP_POP";
-		case OpCode::OP_DEBUG_NAME: return "OP_DEBUG_NAME";
-		case OpCode::OP_TRY_ENTER: return "OP_TRY_ENTER";
-		case OpCode::OP_TRY_EXIT: return "OP_TRY_EXIT";
-		case OpCode::OP_CATCH: return "OP_CATCH";
-		case OpCode::OP_RETHROW: return "OP_RETHROW";
-		case OpCode::OP_END_FINALLY: return "OP_END_FINALLY";
-		default: return "UNKNOWN";
-	}
-}
-struct Chunk {
-	vector<uint8_t> code;
-	vector<Value> constants;
-	vector<int> lines;
-	vector<int> columns;
-	void write(uint8_t byte, int line, int col) {
-		code.push_back(byte);
-		lines.push_back(line);
-		columns.push_back(col);
-	}
-	void write(OpCode op, int line, int col) {
-		write(static_cast<uint8_t>(op), line, col);
-	}
-	int addConstant(Value v) {
-		for (size_t i = 0; i < constants.size(); i++) {
-			if (constants[i].strictEquals(v)) {
-				return static_cast<int>(i);
-			}
-		}
-		constants.push_back(v);
-		return static_cast<int>(constants.size() - 1);
-	}
-};
-struct LoopContext {
-	int startAddress;
-	int stepAddress;
-	vector<int> breakJumps;
-	vector<int> continueJumps;
-	bool isForEach;
-	int startLocalCount;
-	int iteratorSlot;
-};
-struct Local {
-	string name;
-	int depth;
-};
-struct ExceptionHandler {
-	int catchAddress;
-	int finallyAddress;
-	int stackDepth;
-	int scopeDepth;
-	bool isInsideFinally = false;
-};
-struct CallFrame {
-	FunctionObject* function;
-	uint8_t* ip;
-	int basePointer;
-	vector<Value> cacheKey;
-	vector<ExceptionHandler> handlerStack;
-};
 struct ByteCodeCompiler {
 	Chunk* chunk;
 	vector<LoopContext> loopStack;
@@ -9040,8 +5927,8 @@ struct ByteCodeCompiler {
 			patchJump(exitJump);
 			emitByte(OpCode::OP_POP, comp->line, comp->col);
 			emitByte(OpCode::OP_POP, comp->line, comp->col);
-			emitByte(OpCode::OP_GET_LOCAL, comp->line, comp->col);
-			chunk->write((uint8_t)containerSlot, comp->line, comp->col);
+			// emitByte(OpCode::OP_GET_LOCAL, comp->line, comp->col);
+			// chunk->write((uint8_t)containerSlot, comp->line, comp->col);
 			if (isTuple) emitByte(OpCode::OP_LIST_TO_TUPLE, comp->line, comp->col);
 			else if (isVector) emitByte(OpCode::OP_LIST_TO_VECTOR, comp->line, comp->col);
 			locals.pop_back();
@@ -9486,6 +6373,7 @@ struct ByteCodeCompiler {
 				}
 				else {
 					emitIdentifier(OpCode::OP_DEFINE_VAR, c->name, c->line, 0);
+					chunk->write((uint8_t)0, c->line, 0);
 				}
 				break;
 			}
@@ -10220,8 +7108,34 @@ struct ByteCodeCompiler {
 		emitConstant(funcVal, f->line, f->col);
 	}
 };
+// 1. Detect the Compiler
+#if defined(__GNUC__) || defined(__clang__)
+   #define USE_COMPUTED_GOTOS
+#endif
+
+// 2. Define the cross-platform OpCode label
+#ifdef USE_COMPUTED_GOTOS
+   #define OP(name) TARGET_##name
+#else
+   #define OP(name) case OpCode::name
+#endif
+
+// 3. Define the jump mechanism!
+#ifdef USE_COMPUTED_GOTOS
+   #define DISPATCH()\
+      do {\
+            currentChunk = frame->function ? frame->function->chunk : &chunk;\
+            instruction = static_cast<OpCode>(*ip++);\
+            int offset = (int)(ip - currentChunk->code.data());\
+            line = currentChunk->lines[offset - 1];\
+            col = currentChunk->columns[offset - 1];\
+            goto *dispatch_table[static_cast<size_t>(instruction)];\
+         } while (false)
+#else
+   #define DISPATCH() goto loop_start
+#endif
 struct VM {
-	std::deque<Value> stack;
+	std::vector<Value> stack;
 	std::shared_ptr<Env> globals;
 	std::function<Value(MethodCallExpr*)> methodResolver;
 	std::vector<CallFrame> frames;
@@ -10231,6 +7145,7 @@ struct VM {
 	uint8_t* ip;
 	VM() {
 		globals = std::make_shared<Env>();
+		stack.reserve(65536);
 		frame = nullptr;
 		ip = nullptr;
 	}
@@ -10248,6 +7163,45 @@ struct VM {
 		bool isHandlingError = false;
 		int line = 0;
 		int col = 0;
+		#ifdef USE_COMPUTED_GOTOS
+        static void* dispatch_table[] = {
+            &&TARGET_OP_CONSTANT, &&TARGET_OP_CONSTANT_LONG, &&TARGET_OP_TRUE, &&TARGET_OP_FALSE, &&TARGET_OP_NONE, &&TARGET_OP_NOTYPE,
+            
+            // Variables & Scope
+            &&TARGET_OP_DEFINE_VAR, &&TARGET_OP_GET_VAR, &&TARGET_OP_SET_VAR, &&TARGET_OP_DEEP_COPY, &&TARGET_OP_REF_LOCAL,
+            &&TARGET_OP_DEFINE_REF, &&TARGET_OP_REF_VAR, &&TARGET_OP_REF_INDEX, &&TARGET_OP_SET_REF, &&TARGET_OP_SHALLOW_COPY,
+            &&TARGET_OP_MULTI_SET, &&TARGET_OP_GET_LOCAL, &&TARGET_OP_SET_LOCAL, &&TARGET_OP_INC_LOCAL, &&TARGET_OP_SET_FLAGS,
+            &&TARGET_OP_REF_PROPERTY, &&TARGET_OP_DELETE,
+            
+            // Arithmetic & Logic
+            &&TARGET_OP_ADD, &&TARGET_OP_SUB, &&TARGET_OP_MUL, &&TARGET_OP_DIV, &&TARGET_OP_FLOOR_DIV, &&TARGET_OP_MOD, &&TARGET_OP_POW, &&TARGET_OP_IADD,
+            &&TARGET_OP_ISUB, &&TARGET_OP_IMUL, &&TARGET_OP_IDIV, &&TARGET_OP_IFLOOR_DIV, &&TARGET_OP_IMOD, &&TARGET_OP_IPOW, &&TARGET_OP_DUP, &&TARGET_OP_DUP_2,
+            &&TARGET_OP_EQ, &&TARGET_OP_NEQ, &&TARGET_OP_LT, &&TARGET_OP_GT, &&TARGET_OP_LTE, &&TARGET_OP_GTE, &&TARGET_OP_COLON, &&TARGET_OP_STRICT_NEQ,
+            &&TARGET_OP_NOT, &&TARGET_OP_AND, &&TARGET_OP_OR, &&TARGET_OP_XOR, &&TARGET_OP_IS, &&TARGET_OP_IN, &&TARGET_OP_IS_NOT, &&TARGET_OP_STRICT_EQ,
+            &&TARGET_OP_IS_IN, &&TARGET_OP_IS_NOT_IN, &&TARGET_OP_NXOR, &&TARGET_OP_NAND, &&TARGET_OP_NOR, &&TARGET_OP_NEGATE, &&TARGET_OP_INCREMENT, &&TARGET_OP_DECREMENT,
+            
+            // Containers
+            &&TARGET_OP_BUILD_LIST, &&TARGET_OP_BUILD_TUPLE, &&TARGET_OP_BUILD_SET, &&TARGET_OP_BUILD_DICT, &&TARGET_OP_UNPACK_DICT,
+            &&TARGET_OP_BUILD_RANGE, &&TARGET_OP_BUILD_VECTOR, &&TARGET_OP_BUILD_FSTRING, &&TARGET_OP_BUILD_FILE, &&TARGET_OP_BUILD_SLICE,
+            
+            // OOP
+            &&TARGET_OP_CLASS, &&TARGET_OP_METHOD, &&TARGET_OP_GET_PROPERTY, &&TARGET_OP_SET_PROPERTY, &&TARGET_OP_CLASS_FIELD, &&TARGET_OP_SUPER,
+            
+            // Comprehension
+            &&TARGET_OP_LIST_APPEND, &&TARGET_OP_SET_ADD, &&TARGET_OP_DICT_SET, &&TARGET_OP_LIST_TO_TUPLE, &&TARGET_OP_LIST_TO_VECTOR,
+            
+            // Access & Calls
+            &&TARGET_OP_GET_INDEX, &&TARGET_OP_SET_INDEX, &&TARGET_OP_INVOKE, &&TARGET_OP_CALL,
+            
+            // Control Flow
+            &&TARGET_OP_JUMP, &&TARGET_OP_JUMP_IF_FALSE, &&TARGET_OP_LOOP, &&TARGET_OP_RETURN, &&TARGET_OP_TO_STREAM, &&TARGET_OP_JUMP_IF_NOT_LT,
+            &&TARGET_OP_BREAK, &&TARGET_OP_CONTINUE, &&TARGET_OP_SKIP, &&TARGET_OP_OMIT, &&TARGET_OP_FOR_ITER, &&TARGET_OP_SKIP_ITER, &&TARGET_OP_SWITCH_TABLE,
+            
+            // Errors & Systems
+            &&TARGET_OP_THROW, &&TARGET_OP_ASSERT, &&TARGET_OP_IMPORT, &&TARGET_OP_POP, &&TARGET_OP_DEBUG_NAME, &&TARGET_OP_TRY_ENTER, &&TARGET_OP_TRY_EXIT,
+            &&TARGET_OP_CATCH, &&TARGET_OP_RETHROW, &&TARGET_OP_END_FINALLY
+        };
+#endif
 		auto invokeBinaryDunder = [&](Value a, Value b, const string& leftOp, const string& rightOp, int line, int col) -> bool {
 			if (a.type == ValueType::INSTANCE) {
 				auto* instanceA = static_cast<InstanceObject*>(a.ref.get());
@@ -10315,19 +7269,28 @@ struct VM {
 		while (true) {
 			Chunk* currentChunk = frame->function ? frame->function->chunk : &chunk;
 			try {
+				OpCode instruction;
 				// --- DEBUGGER START ---
-				if(DEBUGGER_MODE_IS_ENABLED){
-					int currentOffset = (int)(ip - currentChunk->code.data());
-					std::cout << "LINE: " << std::left << std::setw(4) <<line<<" | ";
-					std::cout<< std::left<< std::setw(18)<<OpCodeToString((OpCode)*ip) <<" | "<< PrintStackForDebug(stack) << "\n";
-				}
+				#ifdef VM_DEBUG_MODE
+					if(DEBUGGER_MODE_IS_ENABLED){
+						int currentOffset = (int)(ip - currentChunk->code.data());
+						std::cout << "LINE: " << std::left << std::setw(4) <<line<<" | ";
+						std::cout<< std::left<< std::setw(18)<<OpCodeToString((OpCode)*ip) <<" | "<< PrintStackForDebug(stack) << "\n";
+					}
+				#endif
 				// --- DEBUGGER END ---
-				OpCode instruction = static_cast<OpCode>(*ip++);
-				int offset = (int)(ip - currentChunk->code.data());
-				line = currentChunk->lines[offset - 1];
-				col = currentChunk->columns[offset - 1];
-				switch (instruction) {
-				case OpCode::OP_CLASS: {
+				#ifdef USE_COMPUTED_GOTOS
+					DISPATCH();
+				#else
+					loop_start:
+					instruction = static_cast<OpCode>(*ip++);
+					int offset = (int)(ip - currentChunk->code.data());
+					line = currentChunk->lines[offset - 1];
+					col = currentChunk->columns[offset - 1];
+					switch (instruction) 
+				#endif
+				{
+				OP(OP_CLASS): {
 					uint8_t parentCount = *ip++;
 					string name = pop().asString();
 					Value classVal = Value::Class(name);
@@ -10340,9 +7303,9 @@ struct VM {
 					std::reverse(newClassObj->parents.begin(), newClassObj->parents.end());
 					newClassObj->computeMRO();
 					stack.push_back(classVal);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SUPER: {
+				OP(OP_SUPER): {
 					Value self = stack[frame->basePointer];
 					if (self.type != ValueType::INSTANCE) throw RuntimeError("super() must be called on an instance", line, col);
 					FunctionObject* currentFunc = frame->function;
@@ -10366,9 +7329,9 @@ struct VM {
 					v.type = ValueType::SUPER;
 					v.ref = make_shared<SuperObject>(self, superTarget);
 					stack.push_back(v);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_METHOD: {
+				OP(OP_METHOD): {
 					uint8_t accessByte = *ip++;
 					AccessLevel access = (AccessLevel)accessByte;
 					Value funcVal = pop();
@@ -10379,9 +7342,9 @@ struct VM {
 					func->owner = cls;
 					cls->methods[func->name] = { funcVal, access };
 					// Don't pop the class! We might add more methods.
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_GET_PROPERTY: {
+				OP(OP_GET_PROPERTY): {
 					uint8_t nameIdx = *ip++;
 					string name = currentChunk->constants[nameIdx].asString();
 					Value obj = pop();
@@ -10425,9 +7388,9 @@ struct VM {
 						if (!found) throw AttributeError("Class '" + cls->name + "' has no attribute '" + name + "'", line, col);
 					}
 					else throw AttributeError("Only instances and classes have properties", line, col);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_REF_PROPERTY: {
+				OP(OP_REF_PROPERTY): {
                uint8_t nameIdx = *ip++;
                string name = currentChunk->constants[nameIdx].asString();
                Value obj = pop();
@@ -10445,9 +7408,9 @@ struct VM {
                else {
                   throw TypeError("Cannot take reference of property on non-object", line, col);
                }
-               break;
+               DISPATCH();
             }
-				case OpCode::OP_SET_PROPERTY: {
+				OP(OP_SET_PROPERTY): {
 					uint8_t nameIdx = *ip++;
 					string name = currentChunk->constants[nameIdx].asString();
 					Value val = pop();
@@ -10463,9 +7426,9 @@ struct VM {
 					}
 					else throw AttributeError("Cannot set property on non-object", line, col);
 					stack.push_back(val);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_CLASS_FIELD: {
+				OP(OP_CLASS_FIELD): {
 					uint8_t accessByte = *ip++;
 					AccessLevel access = (AccessLevel)accessByte;
 					uint8_t nameIdx = *ip++;
@@ -10476,21 +7439,22 @@ struct VM {
 					auto* cls = static_cast<ClassObject*>(classVal.ref.get());
 					cls->fieldAccess[name] = access;
 					if (val.type != ValueType::NOTYPE) cls->staticFields[name] = val;
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DUP: {
+				OP(OP_DUP): {
 					stack.push_back(stack.back());
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DUP_2: {
+				OP(OP_DUP_2): {
 					if (stack.size() < 2) throw UnderflowError("Stack underflow for DUP_2", line, col);
 					Value top = stack.back();
 					Value under = stack[stack.size() - 2];
 					stack.push_back(under);
 					stack.push_back(top);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_CALL: {
+				OP(OP_CALL): {
+					if (stack.size() > 65000) throw RecursionError("Stack Overflow Maximum call stack size exceeded.", line, col);
 					uint8_t argCount = *ip++;
 					Value callee = pop();
 					if (callee.type == ValueType::NATIVE_FUNCTION) {
@@ -10521,9 +7485,9 @@ struct VM {
 						}
 					}
 					else callValue(callee, argCount, line, col);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IMPORT: {
+				OP(OP_IMPORT): {
 					uint8_t count = *ip++;
 					std::vector<std::string> symbols;
 					for (int i = 0; i < count; i++) symbols.push_back(pop().asString());
@@ -10601,46 +7565,46 @@ struct VM {
 						};
 						for (const auto& sym : symbols) stack.push_back(findVal(sym));
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DEBUG_NAME: {
+				OP(OP_DEBUG_NAME): {
 					uint8_t nameIndex = *ip++;
 					string name = currentChunk->constants[nameIndex].asString();
 					#ifdef VM_DEBUG_MODE
 						stack.back().__DEBUGGING__NAME__ = name;
 					#endif
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SET_FLAGS: {
+				OP(OP_SET_FLAGS): {
 					uint8_t flags = *ip++;
 					if (stack.empty()) throw UnderflowError("Stack underflow", line, col);
 					stack.back().isConst = (flags & 0x01);
 					stack.back().isLocked = (flags & 0x02);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_LIST_APPEND: {
+				OP(OP_LIST_APPEND): {
 					uint8_t slot = *ip++;
 					Value val = pop();
-					Value& listVal = stack[frame->basePointer + slot];
+					Value& listVal = stack[stack.size() - 4];
 					if (listVal.type != ValueType::LIST) throw TypeError("Append target is not a list", line, col);
 					auto* list = static_cast<ListObject*>(listVal.ref.get());
 					list->elements.push_back(val);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SET_ADD: {
+				OP(OP_SET_ADD): {
 					uint8_t slot = *ip++;
 					Value val = pop();
-					Value& setVal = stack[frame->basePointer + slot];
+					Value& setVal = stack[stack.size() - 4];
 					if (setVal.type != ValueType::SET) throw TypeError("Add target is not a set", line, col);
 					auto* set = static_cast<SetObject*>(setVal.ref.get());
 					setAdd(set->elements,val);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DICT_SET: {
+				OP(OP_DICT_SET): {
 					uint8_t slot = *ip++;
 					Value val = pop();
 					Value key = pop();
-					Value& dictVal = stack[frame->basePointer + slot];
+					Value& dictVal = stack[stack.size() - 4];
 					if (dictVal.type != ValueType::DICT) throw TypeError("Target is not a dict", line, col);
 					auto* dict = static_cast<DictObject*>(dictVal.ref.get());
 					if (key.type == ValueType::LIST || key.type == ValueType::SET || key.type == ValueType::DICT) {
@@ -10649,24 +7613,24 @@ struct VM {
 						key.isConst = true;
 					}
 					dict->items[key] = val;
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_LIST_TO_TUPLE: {
+				OP(OP_LIST_TO_TUPLE): {
 					Value v = pop();
 					if (v.type != ValueType::LIST) throw TypeError("Expected list for tuple conversion", line, col);
 					auto* list = static_cast<ListObject*>(v.ref.get());
 					stack.push_back(Value::Tuple(list->elements));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_LIST_TO_VECTOR: {
+				OP(OP_LIST_TO_VECTOR): {
 					Value v = pop();
 					if (v.type != ValueType::LIST) throw TypeError("Expected list for vector conversion", line, col);
 					auto* list = static_cast<ListObject*>(v.ref.get());
 					for (const auto& el : list->elements) if (!el.isNumber()) throw TypeError("Vector elements must be numbers", line, col);
 					stack.push_back(Value::Vector(list->elements));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_BUILD_FSTRING: {
+				OP(OP_BUILD_FSTRING): {
 					uint8_t count = *ip++;
 					int startPos = stack.size() - count;
 					std::string finalStr = "";
@@ -10676,16 +7640,16 @@ struct VM {
 					}
 					for (int i = 0; i < count; i++) stack.pop_back();
 					stack.push_back(Value::String(finalStr));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_GET_LOCAL: {
+				OP(OP_GET_LOCAL): {
 					uint8_t slot = *ip++;
 					Value val = stack[frame->basePointer + slot];
 					if (val.type == ValueType::REFERENCE) stack.push_back(*val.ptr);
 					else stack.push_back(val);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SET_LOCAL: {
+				OP(OP_SET_LOCAL): {
 					uint8_t slot = *ip++;
 					Value& slotVal = stack[frame->basePointer + slot];
 					Value newVal = stack.back();
@@ -10713,24 +7677,24 @@ struct VM {
 						slotVal.isConst = wasConst;
 						slotVal.isLocked = wasLocked;
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_REF_LOCAL: {
+				OP(OP_REF_LOCAL): {
 					uint8_t slot = *ip++;
 					Value* ptr = &stack[frame->basePointer + slot];
 					if (ptr->type == ValueType::REFERENCE) ptr = ptr->ptr;
 					stack.push_back(Value::Reference(ptr));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_REF_VAR: {
+				OP(OP_REF_VAR): {
 					uint8_t nameIndex = *ip++;
 					string name = currentChunk->constants[nameIndex].asString();
 					Var& v = globals->lookup(name);
 					Value* ptr = v.alias ? v.alias : &v.value;
 					stack.push_back(Value::Reference(ptr));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_REF_INDEX: {
+				OP(OP_REF_INDEX): {
 					Value index = pop();
 					Value base = pop();
 					Value* ptr = nullptr;
@@ -10746,17 +7710,17 @@ struct VM {
 					}
 					else throw OwnershipError("Cannot take reference of this type", line, col);
 					stack.push_back(Value::Reference(ptr));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_INC_LOCAL: {
+				OP(OP_INC_LOCAL): {
 					uint8_t slot = *ip++;
 					int idx = frame->basePointer + slot;
 					if (stack[idx].type == ValueType::INT) stack[idx].iVal++;
 					else if (stack[idx].type == ValueType::FLOAT) stack[idx].fVal++;
-					else stack[slot].fVal++;
-					break;
+					else stack[idx].fVal++;
+					DISPATCH();
 				}
-				case OpCode::OP_JUMP_IF_NOT_LT: {
+				OP(OP_JUMP_IF_NOT_LT): {
 					uint8_t slot = *ip++;
 					uint8_t constIdx = *ip++;
 					uint16_t offset = (ip[0] << 8) | ip[1];
@@ -10768,9 +7732,9 @@ struct VM {
 						 if (localVal >= constVal) ip += offset;
 					}
 					else throw TypeError("Optimized loop requires integer", line, col);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SWITCH_TABLE: {
+				OP(OP_SWITCH_TABLE): {
 					Value val = stack.back();
 					uint8_t minIdx = *ip++;
 					uint8_t count = *ip++;
@@ -10785,41 +7749,41 @@ struct VM {
 						else ip += (count * 2);
 					}
 					else ip += (count * 2);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_CONSTANT: {
+				OP(OP_CONSTANT): {
 					uint8_t index = *ip++;
 					stack.push_back(currentChunk->constants[index]);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_CONSTANT_LONG: {
+				OP(OP_CONSTANT_LONG): {
 					uint8_t hi = *ip++;
 					uint8_t lo = *ip++;
 					uint16_t index = (hi << 8) | lo;
 					stack.push_back(currentChunk->constants[index]);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_TRUE:  stack.push_back(Value::Bool(true)); break;
-				case OpCode::OP_FALSE: stack.push_back(Value::Bool(false)); break;
-				case OpCode::OP_NONE:  stack.push_back(Value::None()); break;
-				case OpCode::OP_NOTYPE:  stack.push_back(Value::NoType()); break;
-				case OpCode::OP_POP: {
+				OP(OP_TRUE):  {stack.push_back(Value::Bool(true)); DISPATCH();}
+				OP(OP_FALSE): {stack.push_back(Value::Bool(false)); DISPATCH();}
+				OP(OP_NONE):  {stack.push_back(Value::None()); DISPATCH();}
+				OP(OP_NOTYPE):  {stack.push_back(Value::NoType()); DISPATCH();}
+				OP(OP_POP): {
 					if (!stack.empty()) stack.pop_back();
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IADD: {
+				OP(OP_IADD): {
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__plus_eq__", "", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__plus_eq__", "", line, col)) DISPATCH();
 					stack.push_back(a);
 					stack.push_back(b);
 					goto execute_op_add;
 				}
-				case OpCode::OP_ADD: {
+				OP(OP_ADD): {
 					execute_op_add:
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__plus__", "__r_plus__", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__plus__", "__r_plus__", line, col)) DISPATCH();
 					if (a.type == ValueType::INT && b.type == ValueType::INT) {
 						long long res = a.iVal + b.iVal;
 						bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;
@@ -10855,20 +7819,20 @@ struct VM {
 						stack.push_back(Value::Vector(res));
 					}
 					else stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_ISUB: {
+				OP(OP_ISUB): {
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__minus_eq__", "", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__minus_eq__", "", line, col)) DISPATCH();
 					stack.push_back(a); stack.push_back(b);
 					goto execute_op_sub;
 				}
-				case OpCode::OP_SUB: {
+				OP(OP_SUB): {
 					execute_op_sub:
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__minus__", "__r_minus__", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__minus__", "__r_minus__", line, col)) DISPATCH();
 					if (a.type == ValueType::INT && b.type == ValueType::INT) {
 						long long res = a.iVal - b.iVal;
 						bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
@@ -10900,20 +7864,20 @@ struct VM {
 						stack.push_back(Value::Vector(res));
 					}
 					else stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IDIV: {
+				OP(OP_IDIV): {
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__divide_eq__", "", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__divide_eq__", "", line, col)) DISPATCH();
 					stack.push_back(a); stack.push_back(b);
 					goto execute_op_div;
 				}
-				case OpCode::OP_DIV: {
+				OP(OP_DIV): {
 					execute_op_div:
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__divide__", "__r_divide__", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__divide__", "__r_divide__", line, col)) DISPATCH();
 					if (a.type == ValueType::VECTOR) {
 						if (!b.isNumber()) throw TypeError("Vector can only be divided by a number", line, col);
 						if (b.asFloat() == 0) throw DivisionByZeroError("Vector division by zero", line, col);
@@ -10930,20 +7894,20 @@ struct VM {
 						if (db == 0) throw DivisionByZeroError("Division by zero", line, col);
 						stack.push_back(Value::Float(a.asFloat() / db));
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IMUL: {
+				OP(OP_IMUL): {
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__times_eq__", "", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__times_eq__", "", line, col)) DISPATCH();
 					stack.push_back(a); stack.push_back(b);
 					goto execute_op_mul;
 				}
-				case OpCode::OP_MUL: {
+				OP(OP_MUL): {
 					execute_op_mul:
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__times__", "__r_times__", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__times__", "__r_times__", line, col)) DISPATCH();
 					if (a.type == ValueType::STRING && b.type == ValueType::INT) {
 						string res = "";
 						string base = a.asString();
@@ -11077,20 +8041,20 @@ struct VM {
 					}
 					else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) stack.push_back(BigIntObject::mul(a, b));
 					else stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IFLOOR_DIV: {
+				OP(OP_IFLOOR_DIV): {
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__int_divide_eq__", "", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__int_divide_eq__", "", line, col)) DISPATCH();
 					stack.push_back(a); stack.push_back(b);
 					goto execute_op_int_div;
 				}
-				case OpCode::OP_FLOOR_DIV: {
+				OP(OP_FLOOR_DIV): {
 					execute_op_int_div:
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__int_divide__", "__r_int_divide__", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__int_divide__", "__r_int_divide__", line, col)) DISPATCH();
 					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 						if (b.asFloat() == 0) throw DivisionByZeroError("Division by zero", line, col);
 						stack.push_back(BigIntObject::div(a, b));
@@ -11100,20 +8064,20 @@ struct VM {
 						if (db == 0) throw DivisionByZeroError("Division by zero", line, col);
 						stack.push_back(Value::Int((long long)(a.asFloat() / db)));
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IMOD: {
+				OP(OP_IMOD): {
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__modulo_eq__", "", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__modulo_eq__", "", line, col)) DISPATCH();
 					stack.push_back(a); stack.push_back(b);
 					goto execute_op_mod;
 				}
-				case OpCode::OP_MOD: {
+				OP(OP_MOD): {
 					execute_op_mod:
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__modulo__", "__r_modulo__", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__modulo__", "__r_modulo__", line, col)) DISPATCH();
 					if (a.type == ValueType::INT && b.type == ValueType::INT) {
 						if (b.iVal == 0) throw DivisionByZeroError("Modulo by zero", line, col);
 						stack.push_back(Value::Int(a.iVal % b.iVal));
@@ -11123,20 +8087,20 @@ struct VM {
 						if (b.asFloat() == 0) throw DivisionByZeroError("Modulo by zero", line, col);
 						stack.push_back(Value::Float(fmod(a.asFloat(), b.asFloat())));
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IPOW: {
+				OP(OP_IPOW): {
 					Value b = pop();
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__power_eq__", "", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__power_eq__", "", line, col)) DISPATCH();
 					stack.push_back(a); stack.push_back(b);
 					goto execute_op_pow;
 				}
-				case OpCode::OP_POW: {
+				OP(OP_POW): {
 					execute_op_pow:
 					Value b = pop(); 
 					Value a = pop();
-					if (invokeBinaryDunder(a, b, "__power__", "__r_power__", line, col)) break;
+					if (invokeBinaryDunder(a, b, "__power__", "__r_power__", line, col)) DISPATCH();
 					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 						stack.push_back(BigIntObject::pow(a, b));
 					}
@@ -11147,27 +8111,66 @@ struct VM {
 						else stack.push_back(Value::Int(static_cast<long long>(pow(a.asInt(),b.asInt()))));
 					}
 					else stack.push_back(Value::Float(pow(a.asFloat(), b.asFloat())));
-					break;
+					DISPATCH();
 				}
 				// --- Comparisons ---
-				case OpCode::OP_GT: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() > b.asFloat())); break; }
-				case OpCode::OP_GTE: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() >= b.asFloat())); break; }
-				case OpCode::OP_LT: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() < b.asFloat())); break; }
-				case OpCode::OP_LTE: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.asFloat() <= b.asFloat())); break; }
-				case OpCode::OP_EQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.looseEquals(b))); break; }
-				case OpCode::OP_NEQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.looseEquals(b)))); break; }
-				case OpCode::OP_STRICT_EQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.strictEquals(b))); break; }
-				case OpCode::OP_STRICT_NEQ: { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.strictEquals(b)))); break; }
-				case OpCode::OP_IS: {
+				OP(OP_GT): { 
+					Value b = pop(); 
+					Value a = pop(); 
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						stack.push_back(Value::Bool(a.iVal > b.iVal));
+					} 
+					else {
+						stack.push_back(Value::Bool(a.asFloat() > b.asFloat()));
+					} 
+					DISPATCH(); 
+				}
+				OP(OP_GTE): { 
+					Value b = pop(); 
+					Value a = pop(); 
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						stack.push_back(Value::Bool(a.iVal >= b.iVal));
+					} 
+					else {
+						stack.push_back(Value::Bool(a.asFloat() >= b.asFloat()));
+					} 
+					DISPATCH();	
+				}
+				OP(OP_LT): {
+					Value b = pop();
+					Value a = pop();
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						stack.push_back(Value::Bool(a.iVal < b.iVal));
+					} 
+					else {
+						stack.push_back(Value::Bool(a.asFloat() < b.asFloat()));
+					}
+					DISPATCH();
+				}
+				OP(OP_LTE): {
+					Value b = pop();
+					Value a = pop();
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						stack.push_back(Value::Bool(a.iVal <= b.iVal));
+					} else {
+						stack.push_back(Value::Bool(a.asFloat() <= b.asFloat()));
+					}
+					DISPATCH();
+				}
+				OP(OP_EQ): { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.looseEquals(b))); DISPATCH(); }
+				OP(OP_NEQ): { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.looseEquals(b)))); DISPATCH(); }
+				OP(OP_STRICT_EQ): { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(a.strictEquals(b))); DISPATCH(); }
+				OP(OP_STRICT_NEQ): { Value b = pop(); Value a = pop(); stack.push_back(Value::Bool(!(a.strictEquals(b)))); DISPATCH(); }
+				OP(OP_IS): {
 					Value b = pop(); Value a = pop();
 					const Value& valA = (a.type == ValueType::REFERENCE && a.ptr) ? *a.ptr : a;
 					const Value& valB = (b.type == ValueType::REFERENCE && b.ptr) ? *b.ptr : b;
 					bool same = false;
 					if (valA.type == valB.type) same = (valA.ref.get() == valB.ref.get());
 					stack.push_back(Value::Bool(same));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IS_NOT: {
+				OP(OP_IS_NOT): {
 					Value b = pop(); 
 					Value a = pop();
 					const Value& valA = (a.type == ValueType::REFERENCE && a.ptr) ? *a.ptr : a;
@@ -11175,34 +8178,34 @@ struct VM {
 					bool same = false;
 					if (valA.type == valB.type) same = (valA.ref.get() == valB.ref.get());
 					stack.push_back(Value::Bool(!same));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_XOR: {
+				OP(OP_XOR): {
 					Value b = pop(); Value a = pop();
 					stack.push_back(Value::Bool(a.isTruthy() != b.isTruthy()));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_NXOR: {
+				OP(OP_NXOR): {
 					Value b = pop(); Value a = pop();
 					stack.push_back(Value::Bool(a.isTruthy() == b.isTruthy()));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_NAND: {
+				OP(OP_NAND): {
 					Value b = pop(); Value a = pop();
 					stack.push_back(Value::Bool(!(a.isTruthy() && b.isTruthy())));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_NOR: {
+				OP(OP_NOR): {
 					Value b = pop(); Value a = pop();
 					stack.push_back(Value::Bool(!(a.isTruthy() || b.isTruthy())));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_NOT: {
+				OP(OP_NOT): {
 					Value v = pop();
 					stack.push_back(Value::Bool(!v.isTruthy()));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_NEGATE: {
+				OP(OP_NEGATE): {
 					Value v = pop();
 					if (v.type == ValueType::INT) {
 						if (v.iVal == LLONG_MIN) stack.push_back(BigIntObject::mul(Value::BigInt(v.iVal), Value::BigInt(-1)));
@@ -11230,10 +8233,10 @@ struct VM {
 						stack.push_back(Value::Vector(res));
 					}
 					else stack.push_back(Value::Float(-v.asFloat()));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_IS_IN: 
-				case OpCode::OP_IS_NOT_IN: {
+				OP(OP_IS_IN): 
+				OP(OP_IS_NOT_IN): {
 					Value rhs = pop();
 					Value lhs = pop();
 					bool found = false;
@@ -11275,16 +8278,16 @@ struct VM {
 					}
 					bool finalResult = (instruction == OpCode::OP_IS_IN) ? found : !found;
 					stack.push_back(Value::Bool(finalResult));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_LOOP: {
+				OP(OP_LOOP): {
 					uint8_t hi = *ip++;
 					uint8_t lo = *ip++;
 					uint16_t offset = (hi << 8) | lo;
 					ip -= offset;
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DEFINE_VAR: {
+				OP(OP_DEFINE_VAR): {
 					uint8_t nameIndex = *ip++;
 					uint8_t flags = *ip++;
 					string name = currentChunk->constants[nameIndex].asString();
@@ -11295,34 +8298,34 @@ struct VM {
 					bool isConst = (flags & 0x01) != 0;
 					bool isLocked = (flags & 0x02) != 0;
 					globals->set(name, val, isLocked, isConst);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_GET_VAR: {
+				OP(OP_GET_VAR): {
 					uint8_t nameIndex = *ip++;
 					string name = currentChunk->constants[nameIndex].asString();
 					if (!globals->exists(name)) throw NameError("Undefined variable '" + name + "'", line, col);
 					Var& v = globals->lookup(name);
 					if (v.alias) stack.push_back(*v.alias);
 					else stack.push_back(v.value);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_JUMP_IF_FALSE: {
+				OP(OP_JUMP_IF_FALSE): {
 					uint8_t hi = *ip++;
 					uint8_t lo = *ip++;
 					uint16_t offset = (hi << 8) | lo;
 					if (!stack.back().isTruthy()) {
 						ip += offset;
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_JUMP: {
+				OP(OP_JUMP): {
 					uint8_t hi = *ip++;
 					uint8_t lo = *ip++;
 					uint16_t offset = (hi << 8) | lo;
 					ip += offset;
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_UNPACK_DICT: {
+				OP(OP_UNPACK_DICT): {
 					Value v = pop();
 					if (v.type != ValueType::DICT) {
 						throw TypeError("Cannot unpack non-dictionary", line, col);
@@ -11336,9 +8339,9 @@ struct VM {
 					}
 					stack.push_back(Value::List(keys->elements));
 					stack.push_back(Value::List(vals->elements));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SET_VAR: {
+				OP(OP_SET_VAR): {
 					uint8_t nameIndex = *ip++;
 					string name = currentChunk->constants[nameIndex].asString();
 					Value val = stack.back();
@@ -11364,9 +8367,9 @@ struct VM {
 						if (v.isLocked && v.value.type != val.type) throw TypeError("Cannot change type of locked variable '" + name + "'", line, col);
 						v.value = val;
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DEFINE_REF: {
+				OP(OP_DEFINE_REF): {
 					uint8_t nameIdx = *ip++;
 					string newVarName = currentChunk->constants[nameIdx].asString();
 					OpCode subOp = static_cast<OpCode>(*ip++);
@@ -11388,9 +8391,9 @@ struct VM {
 							globals->vars[newVarName] = aliasVar;
 						}
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SET_REF: {
+				OP(OP_SET_REF): {
 					uint8_t nameIdx = *ip++;
 					string varName = currentChunk->constants[nameIdx].asString();
 					if (!globals->exists(varName)) throw NameError("Undefined variable"+ varName, line, col);
@@ -11400,22 +8403,22 @@ struct VM {
 						Var& targetVar = globals->lookup(target);
 						globals->vars[varName].alias = targetVar.alias ? targetVar.alias : &targetVar.value;
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_COLON: {
+				OP(OP_COLON): {
 					Value v = pop();
 					Value k = pop();
 					vector<std::pair<Value, Value>> p;
 					p.push_back({ k, v });
 					stack.push_back(Value::Paired(p));
-						break;
+					DISPATCH();
 				}
-				case OpCode::OP_TO_STREAM: {
+				OP(OP_TO_STREAM): {
 					Value v = pop();
 					stack.push_back(prepareIterable(v, line, col));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_FOR_ITER: {
+				OP(OP_FOR_ITER): {
 					uint8_t* jumpOffsetAddr = ip;
 					uint16_t offset = (jumpOffsetAddr[0] << 8) | jumpOffsetAddr[1];
 					ip += 2;
@@ -11468,9 +8471,9 @@ struct VM {
 						stack[stack.size() - 1 - count].iVal++;
 					}
 					else ip = jumpOffsetAddr + 2 + offset;
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SKIP_ITER: {
+				OP(OP_SKIP_ITER): {
 					uint8_t slot = *ip++;
 					Value amount = pop();
 					if (!amount.isNumber()) throw TypeError("skip amount must be a number", line, col);
@@ -11478,9 +8481,9 @@ struct VM {
 					int absoluteSlot = frame->basePointer + slot;
 					if (absoluteSlot >= stack.size()) throw IndexError("Skip iterator slot out of bounds", line, col);
 					stack[absoluteSlot].iVal += skipN;
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_BUILD_SLICE: {
+				OP(OP_BUILD_SLICE): {
 					Value step = pop();
 					Value end = pop();
 					Value start = pop();
@@ -11489,10 +8492,10 @@ struct VM {
 					v.type = ValueType::SLICE;
 					v.ref = slice;
 					stack.push_back(v);
-					break;
+					DISPATCH();
 				}
 				//CONTAINERS
-				case OpCode::OP_BUILD_LIST: {
+				OP(OP_BUILD_LIST): {
 					uint8_t count = *ip++;
 					auto list = std::make_shared<ListObject>();
 					if (stack.size() < count) throw EmptyContainerError("Stack underflow during list build", line, col);
@@ -11501,9 +8504,9 @@ struct VM {
 						list->elements[i] = pop();
 					}
 					stack.push_back(Value::List(list->elements));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_BUILD_DICT: {
+				OP(OP_BUILD_DICT): {
 					uint8_t count = *ip++;
 					auto dict = std::make_shared<DictObject>();
 					for (int i = 0; i < count; i++) {
@@ -11521,23 +8524,23 @@ struct VM {
 						}
 					}
 					stack.push_back(Value::Dict(dict->items));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_BUILD_SET: {
+				OP(OP_BUILD_SET): {
 					uint8_t count = *ip++;
 					auto set = std::make_shared<SetObject>();
 					for (int i = 0; i < count; i++) setAdd(set->elements, pop());
 					stack.push_back(Value::Set(set->elements));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_BUILD_TUPLE: {
+				OP(OP_BUILD_TUPLE): {
 					uint8_t count = *ip++;
 					vector<Value> elems(count);
 					for (int i = count - 1; i >= 0; i--) elems[i] = pop();
 					stack.push_back(Value::Tuple(elems));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_BUILD_VECTOR: {
+				OP(OP_BUILD_VECTOR): {
 					uint8_t count = *ip++;
 					vector<Value> elems;
 					elems.resize(count);
@@ -11547,33 +8550,33 @@ struct VM {
 						elems[i] = v;
 					}
 					stack.push_back(Value::Vector(elems));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_BUILD_RANGE: {
+				OP(OP_BUILD_RANGE): {
 					Value step = pop();
 					Value end = pop();
 					Value start = pop();
 					bool isFloat = (start.type == ValueType::FLOAT || end.type == ValueType::FLOAT || step.type == ValueType::FLOAT);
 					stack.push_back(Value::Range(start.asFloat(), end.asFloat(), step.asFloat(), true, false, isFloat));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SHALLOW_COPY: {
+				OP(OP_SHALLOW_COPY): {
 					Value v = pop();
 					Value res = shallowCopy(v);
 					res.isConst = false;
 					res.isLocked = false;
 					stack.push_back(res);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DEEP_COPY: {
+				OP(OP_DEEP_COPY): {
 					Value v = pop();
 					Value res = deepCopy(v);
 					res.isConst = false;
 					res.isLocked = false;
 					stack.push_back(res);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_GET_INDEX: {
+				OP(OP_GET_INDEX): {
 					Value index = pop();
 					Value base = pop();
 					auto getSliceIndices = [&](size_t rawLen) -> std::vector<long long> {
@@ -11731,9 +8734,9 @@ struct VM {
 						}
 						default: throw TypeError("Object is not subscriptable", line, col); break;
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_SET_INDEX: {
+				OP(OP_SET_INDEX): {
 					Value val = pop();
 					Value index = pop();
 					Value base = pop();
@@ -11781,10 +8784,10 @@ struct VM {
 					else if (base.type == ValueType::TUPLE) throw MutationError("Tuple object does not support item assignment", line, col);
 					else throw MutationError("Object does not support item assignment", line, col);
 					stack.push_back(val);
-					break;
+					DISPATCH();
 				}
 				// ENVOKE
-				case OpCode::OP_INVOKE: {
+				OP(OP_INVOKE): {
 					uint8_t nameIdx = *ip++;
 					uint8_t argCount = *ip++;
 					string methodName = currentChunk->constants[nameIdx].asString();
@@ -11818,6 +8821,20 @@ struct VM {
 							}
 						}
 						if (!methodOwner || !methodInfo) {
+							bool foundStatic = false;
+							for (auto* ancestor : startClass->mro) {
+								if (ancestor->staticFields.count(methodName)) {
+									Value staticCallable = ancestor->staticFields[methodName];
+									vector<Value> tempArgs(argCount);
+									for (int i = argCount - 1; i >= 0; i--) tempArgs[i] = pop();
+									pop();
+									for (const auto& v : tempArgs) stack.push_back(v);
+									callValue(staticCallable, argCount, line, col);
+									foundStatic = true;
+									break;
+								}
+							}
+							if (foundStatic) DISPATCH();
 							throw AttributeError("'" + startClass->name + "' object has no attribute '" + methodName + "'", line, col);
 						}
 						if (methodInfo->access != AccessLevel::PUBLIC) {
@@ -11853,7 +8870,7 @@ struct VM {
 						stack.push_back(objVal);
 						for (const auto& v : args) stack.push_back(v);
 						callValue(methodToCall, argCount + 2, line, col);
-						break;
+						DISPATCH();
 					}
 					vector<Expr*> dummyArgs(argCount);
 					for (int i = argCount - 1; i >= 0; i--) dummyArgs[i] = new ValueExpr(pop());
@@ -11866,9 +8883,9 @@ struct VM {
 					delete dummyObject;
 					for (auto* a : dummyArgs) delete a;
 					stack.push_back(result);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_TRY_ENTER: {
+				OP(OP_TRY_ENTER): {
 					uint8_t cHi = *ip++; uint8_t cLo = *ip++;
 					uint8_t fHi = *ip++; uint8_t fLo = *ip++;
 					int catchOffset = (cHi << 8) | cLo;
@@ -11879,14 +8896,14 @@ struct VM {
 					h.catchAddress = currentOffset + catchOffset;
 					h.finallyAddress = (finallyOffset == 0) ? -1 : currentOffset + finallyOffset;
 					frame->handlerStack.push_back(h);
-					break;
+					DISPATCH();
 				}
 
-				case OpCode::OP_TRY_EXIT: {
+				OP(OP_TRY_EXIT): {
 					if (!frame->handlerStack.empty()) frame->handlerStack.pop_back();
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_THROW: {
+				OP(OP_THROW): {
 					Value typeVal = pop();
 					Value msgVal = pop();
 					string t = typeVal.asString();
@@ -11945,9 +8962,9 @@ struct VM {
 					auto it = errorFactory.find(t);
 					if (it != errorFactory.end()) it->second(m, line, col);
 					else throw LangError(t, m, -1, line, col);
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_CATCH: {
+				OP(OP_CATCH): {
 					uint8_t count = *ip++;
 					Value errorVal = stack.back();
 					bool match = false;
@@ -12017,17 +9034,17 @@ struct VM {
 					}
 					else ip += count;
 					stack.push_back(Value::Bool(match));
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_RETHROW: {
+				OP(OP_RETHROW): {
 					Value errorVal = pop();
 					if (errorVal.type == ValueType::ERROR) {
 						auto* errObj = static_cast<ErrorObject*>(errorVal.ref.get());
 						throw LangError(errObj->errType, errObj->message, errObj->code, errObj->line, errObj->col);
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_END_FINALLY: {
+				OP(OP_END_FINALLY): {
 					if (isHandlingError) {
 						isHandlingError = false;
 						auto* errObj = static_cast<ErrorObject*>(pendingError.ref.get());
@@ -12038,9 +9055,9 @@ struct VM {
 						stack.push_back(pendingReturn);
 						goto execute_return;
 					}
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_DELETE: {
+				OP(OP_DELETE): {
 					Value refVal = pop();
 					if (refVal.type != ValueType::REFERENCE || !refVal.ptr)
 						throw RuntimeError("Cannot delete a non-reference value", line, col);
@@ -12062,13 +9079,13 @@ struct VM {
 							objVal.ref = std::shared_ptr<HeapObject>(cls, [](HeapObject*) {});
 							stack.push_back(objVal);
 							callValue(delMethod->func, 2, line, col);
-							break;
+							DISPATCH();
 						}
 					}
 					stack.push_back(Value::None());
-					break;
+					DISPATCH();
 				}
-				case OpCode::OP_RETURN: {
+				OP(OP_RETURN): {
 				execute_return:
 					if (!frame->handlerStack.empty()) {
 						ExceptionHandler& h = frame->handlerStack.back();
@@ -12077,7 +9094,7 @@ struct VM {
 							pendingReturn = pop();
 							h.isInsideFinally = true;
 							ip = currentChunk->code.data() + h.finallyAddress;
-							break;
+							DISPATCH();
 						}
 					}
 					Value result = pop();
@@ -12181,9 +9198,27 @@ struct VM {
 					ip = frame->ip;
 					stack.resize(returnSlot);
 					stack.push_back(result);
-					break;
+					DISPATCH();
 				}
-				default: throw UnexpectedTokenError("Unknown OpCode encountered", line, col);
+				OP(OP_MULTI_SET):
+				OP(OP_AND):
+				OP(OP_OR):
+				OP(OP_IN):
+				OP(OP_INCREMENT):
+				OP(OP_DECREMENT):
+				OP(OP_BUILD_FILE):
+				OP(OP_BREAK):
+				OP(OP_CONTINUE):
+				OP(OP_SKIP):
+				OP(OP_OMIT):
+				OP(OP_ASSERT):
+				{
+					throw InternalError("Optimized or unimplemented OpCode was executed!", line, col);
+					DISPATCH();
+				}
+				#ifndef USE_COMPUTED_GOTOS
+					default: throw UnexpectedTokenError("Unknown OpCode encountered", line, col);
+				#endif
 				}
 			}
 			catch (const LangError& e) {
@@ -12229,11 +9264,50 @@ private:
 			nativeObj = static_cast<NativeFunctionObject*>(callee.ref.get());
 		}
 		else if (callee.type == ValueType::OVERLOAD) {
-			// [KEEP YOUR EXACT OVERLOAD LOGIC HERE]
-			// You need to peek at the stack args without popping them yet.
-			// Use stack[stack.size() - argCount + i] to access args.
-			// ... (Copy your overload selection loop) ...
-			// function = candidate;
+			auto* ov = static_cast<OverloadObject*>(callee.ref.get());
+			bool found = false;
+			for (int i = (int)ov->overloads.size() - 1; i >= 0; i--) {
+				Value candVal = ov->overloads[i];
+				if (candVal.type == ValueType::FUNCTION) {
+					auto* candidate = static_cast<FunctionObject*>(candVal.ref.get());
+					size_t minArgs = 0;
+					bool isVariadic = false;
+					for (const auto& p : candidate->params) {
+						if (p.isVariadic || p.isKwargs) isVariadic = true;
+						else if (p.defaultValue == nullptr) minArgs++;
+					}
+					if (argCount < minArgs && !isVariadic) continue;
+					if (!isVariadic && argCount > candidate->params.size()) continue;
+					bool typesMatch = true;
+					size_t paramIdx = 0;
+					for (int argIdx = 0; argIdx < argCount; argIdx++) {
+						if (paramIdx >= candidate->params.size()) {
+							if (!isVariadic) { typesMatch = false; break; }
+							break;
+						}
+						const ParamSpec& p = candidate->params[paramIdx];
+						if (p.isVariadic || p.isKwargs) break;
+						Value argVal = stack[stack.size() - argCount + argIdx];
+						if (p.type != ValueType::NOTYPE && argVal.type != p.type) {
+							if (!(p.type == ValueType::FLOAT && argVal.type == ValueType::INT)) {
+								typesMatch = false; break;
+							}
+						}
+						paramIdx++;
+					}
+					if (typesMatch) {
+						function = candidate;
+						found = true;
+						break;
+					}
+				}
+				else if (candVal.type == ValueType::NATIVE_FUNCTION) {
+					nativeObj = static_cast<NativeFunctionObject*>(candVal.ref.get());
+					found = true;
+					break;
+				}
+			}
+			if (!found) throw TypeError("No matching overload found with provided arguments", line, col);
 		}
 		else throw TypeError("Object is not callable", line, col);
 		if (nativeObj) {
@@ -12243,7 +9317,6 @@ private:
 			stack.push_back(nativeObj->func(args, line, 0));
 			return;
 		}
-		
 		vector<Value> providedArgs;
 		providedArgs.resize(argCount);
 		for (int i = argCount - 1; i >= 0; i--) providedArgs[i] = pop();
@@ -12387,8 +9460,8 @@ private:
 		else throw TypeError("Object is not iterable", line, col);
 		return Value::List(list->elements);
 	}
-	Value pop() {
-		if (stack.empty()) throw UnderflowError("Stack underflow", 0, 0);
+	inline Value pop() {
+		//if (stack.empty()) throw UnderflowError("Stack underflow", 0, 0);
 		Value v = stack.back();
 		stack.pop_back();
 		return v;
@@ -12456,3 +9529,3474 @@ Value Interpreter::nativePrint(const vector<Value>& args, int l, int c) {
 	std::cout << "\n";
 	return Value::None();
 }
+Value Interpreter::Resolve_methods(MethodCallExpr* m) {
+		auto error = [&](const string& msg, const string& type = "RuntimeError") {
+			if (type == "TypeError") throw TypeError(msg, m->line, m->col);
+			if (type == "ValueError") throw ValueError(msg, m->line, m->col);
+			if (type == "IndexError") throw IndexError(msg, m->line, m->col);
+			if (type == "ConstError") throw ConstError(msg, m->line, m->col);
+			if (type == "KeyError") throw KeyError(msg, m->line, m->col);
+			if (type == "ArgumentError") throw ArgumentError(msg, m->line, m->col);
+			if (type == "EmptyContainerError") throw EmptyContainerError(msg, m->line, m->col);
+			if (type == "AttributeError") throw AttributeError(msg, m->line, m->col);
+			throw RuntimeError(msg, m->line, m->col);
+		};
+		Value* targetPtr = nullptr;
+		Value tempVal;
+		bool isConstView = false;
+		if (dynamic_cast<VarExpr*>(m->object) || dynamic_cast<IndexExpr*>(m->object)) {
+			LValue lv = resolveLValue(m->object);
+			targetPtr = lv.ref;
+			isConstView = lv.isConstView;
+		}
+		else {
+			tempVal = eval(m->object);
+			targetPtr = &tempVal;
+			isConstView = tempVal.isConst;
+		}
+		Value& target = *targetPtr;
+		auto checkConst = [&]() {
+			if (target.isConst || isConstView) {
+				error("Cannot call mutating method '" + m->method + "' on const object", "ConstError");
+			}
+		};
+		// if (m->method == "swap") {
+		// 	if (m->args.size() != 1) error("swap() takes one argument", "ArgumentError");
+		// 	auto* base = &eval(m->args[0]);
+		// 	//std::swap(base, target);
+		// 	auto* temp = base;
+		// 	base = targetPtr;
+		// 	targetPtr = temp;
+		// 	return Value::None();
+		// }
+		if (m->method == "adress") {
+			if (!m->args.empty()) error("adress() takes no arguments", "ArgumentError");
+			if (target.ref) {
+				return Value::pInt(target.ref.get());
+			}
+			if (dynamic_cast<VarExpr*>(m->object) || dynamic_cast<IndexExpr*>(m->object)) {
+				return Value::pInt(targetPtr);
+			}
+			return Value::pInt(nullptr);
+		}
+		if (m->method == "base") {
+			if (m->args.size() != 1) error("base() takes exactly one argument", "ArgumentError");
+			int base = eval(m->args[0]).asInt();
+			if (base < 2 || base > 36) error("base() target must be between 2 and 36", "ValueError");
+			if (target.type == ValueType::INT || target.type == ValueType::FLOAT) {
+				string res = "";
+				bool isNeg = false;
+				double val = target.asFloat();
+				if (val < 0) { isNeg = true; val = -val; }
+				long long intPart = (long long)val;
+				double fracPart = val - intPart;
+				if (intPart == 0) res = "0";
+				else {
+					while (intPart > 0) {
+						int rem = intPart % base;
+						res += (rem < 10 ? '0' + rem : 'A' + (rem - 10));
+						intPart /= base;
+					}
+				}
+				if (isNeg) res += '-';
+				std::reverse(res.begin(), res.end());
+				if (fracPart > 0) {
+					res += '.';
+					int precision = 8;
+					while (fracPart > 0 && precision-- > 0) {
+						fracPart *= base;
+						int digit = (int)fracPart;
+						res += (digit < 10 ? '0' + digit : 'A' + (digit - 10));
+						fracPart -= digit;
+						if (fracPart < 1e-9) break;
+					}
+				}
+				return Value::String(res);
+			}
+			error("base() requires an int or float", "TypeError");
+		}
+		// ---------------- REVERSE ---------------
+		if (m->method == "reverse") {
+			checkConst();
+			if (!m->args.empty()) error("reverse() does not accept arguments", "ArgumentError");
+			if (target.type == ValueType::STRING) {
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				if (str->value.size() < 2) return target;
+				std::reverse(str->value.begin(), str->value.end());
+				return target;
+			}
+			if (target.type == ValueType::LIST) {
+				auto* list = static_cast<ListObject*>(target.ref.get());
+				if (list->elements.size() < 2) return target;
+				std::reverse(list->elements.begin(), list->elements.end());
+				return target;
+			}
+			if (target.type == ValueType::RANGE) {
+				auto* rang = static_cast<RangeObject*>(target.ref.get());
+				std::swap(rang->start, rang->end);
+				std::swap(rang->startInclusive, rang->endInclusive);
+				rang->step = -rang->step;
+				return target;
+			}
+			if (target.type == ValueType::SET) {
+				auto* set = static_cast<SetObject*>(target.ref.get());
+				if (set->elements.size() < 2) return target;
+				reverse(set->elements.begin(),set->elements.end());
+				return target;
+			}
+			error("reverse() not supported on this type", "TypeError");
+		}
+		// ---------------- APPEND ----------------
+		if (m->method == "append") {
+			checkConst();
+			if (m->args.size() != 1) error("append() takes exactly one argument", "ArgumentError");
+			Value v = eval(m->args[0]);
+			if (target.type == ValueType::LIST) {
+				auto* list = static_cast<ListObject*>(target.ref.get());
+				list->elements.push_back(v);
+				return target;
+			}
+			if (target.type == ValueType::STRING) {
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value += valueToString(v);
+				return target;
+			}
+			error("append() not supported on this type", "TypeError");
+		}
+		// ---------------- SORT ----------------
+		if (m->method == "sort") {
+			checkConst();
+			if (m->args.size() > 1) error("sort() takes zero or one argument", "ArgumentError");
+
+			bool reverseSort = false;
+			if (!m->args.empty()) reverseSort = eval(m->args[0]).asBool();
+
+			if (target.type == ValueType::STRING) {
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				if (str->value.size() <= 1) return Value::String(str->value);
+				std::sort(str->value.begin(), str->value.end());
+				if (reverseSort) std::reverse(str->value.begin(), str->value.end());
+				return target;
+			}
+			if (target.type == ValueType::LIST) {
+				auto* list = static_cast<ListObject*>(target.ref.get());
+				auto& elems = list->elements;
+				if (elems.size() <= 1) return Value::List(list->elements);
+
+				ValueType t = elems[0].type;
+				for (size_t i = 1; i < elems.size(); ++i) {
+					if (elems[i].type != t) error("cannot sort list with mixed types", "TypeError");
+				}
+				if (t != ValueType::INT && t != ValueType::FLOAT &&
+					t != ValueType::STRING && t != ValueType::BOOL && t != ValueType::LIST) {
+					error("unsupported type in sort()", "TypeError");
+				}
+				std::sort(elems.begin(), elems.end(), [](const Value& a, const Value& b) { return lessValue(a, b); });
+				if (reverseSort) std::reverse(elems.begin(), elems.end());
+				return target;
+			}
+			error("sort() only works on mutable types", "TypeError");
+		}
+		// ---------------- FUNCTIONAL METHODS ----------------
+		if (m->method == "All_Of" || m->method == "Any_Of" || m->method == "None_Of" || m->method == "One_Of" ||
+			m->method == "find" || m->method == "select" || m->method == "reject" ||
+			m->method == "partition" || m->method == "map") {
+			if (m->args.size() != 1) error(m->method + "() expects exactly one argument (a lambda function)", "ArgumentError");
+			Value lambda = eval(m->args[0]);
+			if (lambda.type != ValueType::FUNCTION) error(m->method + "() argument must be a function or lambda", "TypeError");
+			vector<Value> elements;
+			if (target.type == ValueType::LIST) elements = static_cast<ListObject*>(target.ref.get())->elements;
+			else if (target.type == ValueType::SET) elements = static_cast<SetObject*>(target.ref.get())->elements;
+			else if (target.type == ValueType::TUPLE) elements = static_cast<TupleObject*>(target.ref.get())->elements;
+			else if (target.type == ValueType::VECTOR) {
+				for (auto d : static_cast<VectorObject*>(target.ref.get())->elements) elements.push_back(d);
+			}
+			else if (target.type == ValueType::DICT) {
+				auto* d = static_cast<DictObject*>(target.ref.get());
+				for (auto& pair : d->items) elements.push_back(pair.first); // Iterate keys
+			}
+			else if (target.type == ValueType::STRING) {
+				string& s = static_cast<StringObject*>(target.ref.get())->value;
+				for (char c : s) elements.push_back(Value::String(string(1, c)));
+			}
+			else error("Method '" + m->method + "' requires a container (List, Set, Tuple, Vector, Dict, or String)", "TypeError");
+			vector<Value> resultsTrue;
+			vector<Value> resultsFalse;
+			vector<Value> resultsMap;
+			int matchCount = 0;
+			for (const auto& elem : elements) {
+				Chunk tempChunk;
+            int lambdaIdx = tempChunk.addConstant(lambda);
+            int argIdx = tempChunk.addConstant(elem);
+            tempChunk.write(OpCode::OP_CONSTANT, m->line, m->col);
+            tempChunk.write((uint8_t)argIdx, m->line, m->col);
+            tempChunk.write(OpCode::OP_CONSTANT, m->line, m->col);
+            tempChunk.write((uint8_t)lambdaIdx, m->line, m->col);
+            tempChunk.write(OpCode::OP_CALL, m->line, m->col);
+            tempChunk.write((uint8_t)1, m->line, m->col);
+            tempChunk.write(OpCode::OP_RETURN, m->line, m->col);
+            VM tempVM;
+            tempVM.globals = this->env;
+            tempVM.methodResolver = [&](MethodCallExpr* m) {
+					return this->Resolve_methods(m);
+				};
+            tempVM.run(tempChunk);
+            Value ret = tempVM.stack.empty() ? Value::None() : tempVM.stack.back();
+            bool matches = ret.isTruthy();
+				if (m->method == "All_Of") {
+					if (!matches) return Value::Bool(false);
+				}
+				else if (m->method == "Any_Of") {
+					if (matches) return Value::Bool(true);
+				}
+				else if (m->method == "None_Of") {
+					if (matches) return Value::Bool(false);
+				}
+				else if (m->method == "One_Of") {
+					if (matches) {
+						matchCount++;
+						if (matchCount > 1) return Value::Bool(false);
+					}
+				}
+				else if (m->method == "find") {
+					if (matches) return elem;
+				}
+				else if (m->method == "select") {
+					if (matches) resultsTrue.push_back(elem);
+				}
+				else if (m->method == "reject") {
+					if (!matches) resultsTrue.push_back(elem);
+				}
+				else if (m->method == "partition") {
+					if (matches) resultsTrue.push_back(elem);
+					else resultsFalse.push_back(elem);
+				}
+				else if (m->method == "map") {
+					resultsMap.push_back(ret);
+				}
+			}
+			if (m->method == "All_Of") return Value::Bool(true);
+			if (m->method == "Any_Of") return Value::Bool(false);
+			if (m->method == "None_Of") return Value::Bool(true);
+			if (m->method == "One_Of") return Value::Bool(matchCount == 1);
+			if (m->method == "find") return Value::None();
+			auto reconstruct = [&](const vector<Value>& src) -> Value {
+				if (target.type == ValueType::LIST || target.type == ValueType::DICT) return Value::List(src);
+				if (target.type == ValueType::TUPLE) return Value::Tuple(src);
+				if (target.type == ValueType::SET) return Value::Set(src);
+				if (target.type == ValueType::VECTOR) {
+					vector<Value> nums;
+					bool allNums = true;
+					for (auto& v : src) {
+						if (!v.isNumber()) { allNums = false; break; }
+						nums.push_back(v);
+					}
+					if (allNums) return Value::Vector(nums);
+					return Value::List(src);
+				}
+				if (target.type == ValueType::STRING) {
+					string s = "";
+					bool allStr = true;
+					for (auto& v : src) {
+						if (v.type != ValueType::STRING) { allStr = false; break; }
+						s += v.asString();
+					}
+					if (allStr) return Value::String(s);
+					return Value::List(src);
+				}
+				return Value::List(src);
+				};
+			if (m->method == "select" || m->method == "reject") return reconstruct(resultsTrue);
+			if (m->method == "partition") return Value::List({ reconstruct(resultsTrue), reconstruct(resultsFalse) });
+			if (m->method == "map") {
+				if (target.type == ValueType::DICT) return Value::List(resultsMap);
+				return reconstruct(resultsMap);
+			}
+		}
+		// ------- STRING TRANSFORMATIONS -------
+		if (target.type == ValueType::STRING) {
+			if (m->method == "ascii") {
+				if (!m->args.empty()) error("ascii() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				if (str->value.empty()) return target;
+				if (str->value.size() != 1) error("string size cannot exceed 1", "ArgumentError");
+				return Value::Int(static_cast<int>(str->value[0]));
+			}
+			if (m->method == "capitalize") {
+				checkConst();
+				if (!m->args.empty()) error("capitalize() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = capitalize(str->value);
+				return target;
+			}
+			if (m->method == "chars") {
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				int start = 0;
+				int end = -1;
+				if (m->args.size() >= 1) start = eval(m->args[0]).asInt();
+				if (m->args.size() >= 2) end = eval(m->args[1]).asInt();
+				std::vector<std::string> parts = chars(str->value, start, end);
+				std::vector<Value> valList;
+				valList.reserve(parts.size());
+				for (const auto& p : parts) valList.push_back(Value::String(p));
+				return Value::List(valList);
+			}
+			if (m->method == "casefold") {
+				checkConst();
+				if (!m->args.empty()) error("casefold() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = casefold(str->value);
+				return target;
+			}
+			if (m->method == "center") {
+				checkConst();
+				if (m->args.empty() || m->args.size() > 2) error("center() needs 1 or 2 arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				if (m->args.size() == 1) {
+					str->value = center(str->value, eval(m->args[0]).asInt());
+					return target;
+				}
+				if (m->args.size() == 2) {
+					string a = eval(m->args[1]).asString();
+					if (a.empty() || a.size() > 1) error("padding can only be one character", "ValueError");
+					str->value = center(str->value, eval(m->args[0]).asInt(), a[0]);
+					return target;
+				}
+			}
+			if (m->method == "count") {
+				if (m->args.empty() || m->args.size() > 3) error("count() needs 1 to 3 arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				switch (m->args.size()) {
+				case 1:
+					return Value::Int(::count(str->value, eval(m->args[0]).asString()));
+				case 2:
+					if (eval(m->args[1]).asInt() < 0) error("starting position cannot be negative", "ValueError");
+					return Value::Int(::count(str->value, eval(m->args[0]).asString(), eval(m->args[1]).asInt()));
+				case 3:
+					if (eval(m->args[1]).asInt() < 0) error("starting position cannot be negative", "ValueError");
+					return Value::Int(::count(str->value, eval(m->args[0]).asString(), eval(m->args[1]).asInt(), eval(m->args[2]).asInt()));
+				}
+			}
+			if (m->method == "endswith") {
+				if (m->args.empty() || m->args.size() > 1) error("endswith() needs one argument", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				return Value::Bool(endswith(str->value, eval(m->args[0]).asString()));
+			}
+			if (m->method == "index") {
+				if (m->args.empty() || m->args.size() > 1) error("index() needs one argument", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				return Value::Int(index(str->value, eval(m->args[0]).asString()));
+			}
+			if (m->method == "isalnum") {
+				if (!m->args.empty()) error("isalnum() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				return Value::Bool(isalnum_str(str->value));
+			}
+			if (m->method == "isalpha") {
+				if (!m->args.empty()) error("isalpha() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				return Value::Bool(isalpha_str(str->value));
+			}
+			if (m->method == "isdecimal") {
+				if (!m->args.empty()) error("isdecimal() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				return Value::Bool(isdecimal_str(str->value));
+			}
+			if (m->method == "islower") {
+				if (!m->args.empty()) error("islower() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				return Value::Bool(islower_str(str->value));
+			}
+			if (m->method == "isupper") {
+				if (!m->args.empty()) error("isupper() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				return Value::Bool(isupper_str(str->value));
+			}
+			if (m->method == "ljust") {
+				checkConst();
+				if (m->args.empty() || m->args.size() > 2) error("ljust() needs 1 or 2 arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				if (m->args.size() == 1)
+					str->value = ljust(str->value, eval(m->args[0]).asInt());
+				else {
+					string p = eval(m->args[1]).asString();
+					if (p.size() != 1) error("padding can only be one character", "ValueError");
+					str->value = ljust(str->value, eval(m->args[0]).asInt(), p[0]);
+				}
+				return target;
+			}
+			if (m->method == "lower") {
+				checkConst();
+				if (!m->args.empty()) error("lower() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = lower(str->value);
+				return target;
+			}
+			if (m->method == "lstrip") {
+				checkConst();
+				if (m->args.size() > 1) error("lstrip() takes at most one argument", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = lstrip(str->value, m->args.size() == 1 ? eval(m->args[0]).asString() : " \t\n\r\v\f");
+				return target;
+			}
+			if (m->method == "rstrip") {
+				checkConst();
+				if (m->args.size() > 1) error("rstrip() takes at most one argument", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = rstrip(str->value, m->args.size() == 1 ? eval(m->args[0]).asString() : " \t\n\r\v\f");
+				return target;
+			}
+			if (m->method == "rjust") {
+				if (m->args.size() > 2) error("rjust() needs 1 or 2 arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = rjust(str->value, eval(m->args[0]).asInt(), m->args.size() == 1? ' ' : eval(m->args[1]).asString()[0]);
+				return target;
+			}
+			if (m->method == "strip") {
+				checkConst();
+				if (m->args.size() > 1) error("strip() takes at most one argument", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = strip(str->value, m->args.size() == 1 ? eval(m->args[0]).asString() : " \t\n\r\v\f");
+				return target;
+			}
+			if (m->method == "split") {
+				string delimiter = " ";
+				if (!m->args.empty()) {
+					if (m->args.size() > 1) error("split() expects at most 1 argument", "ArgumentError");
+					Value delimVal = eval(m->args[0]);
+					if (delimVal.type != ValueType::STRING) error("split() delimiter must be a string", "TypeError");
+					delimiter = delimVal.asString();
+				}
+				vector<string> parts = split(target.asString(), delimiter);
+				vector<Value> resultList;
+				resultList.reserve(parts.size());
+				for (const auto& part : parts)  resultList.push_back(Value::String(part));
+				return Value::List(resultList);
+			}
+			if (m->method == "upper") {
+				checkConst();
+				if (!m->args.empty()) error("upper() does not accept arguments", "ArgumentError");
+				auto* str = static_cast<StringObject*>(target.ref.get());
+				str->value = upper(str->value);
+				return target;
+			}
+			error("Object '" + m->method + "' is not a string method", "AttributeError");
+		}
+		// ---------- RANGE METHODS ----------
+		if (target.type == ValueType::RANGE) {
+			if (m->method == "min") {
+				if (!m->args.empty()) error("min() does not accept arguments", "ArgumentError");
+				auto* rang = static_cast<RangeObject*>(target.ref.get());
+				if (!rang->isValid) error("min() arg is an empty range", "ValueError");
+				return Value::Int(rang->step < 0 ? (rang->endInclusive ? rang->end : rang->end - rang->step) : (rang->startInclusive ? rang->start : rang->start + rang->step));
+			}
+			if (m->method == "max") {
+				if (!m->args.empty()) error("max() does not accept arguments", "ArgumentError");
+				auto* rang = static_cast<RangeObject*>(target.ref.get());
+				if (!rang->isValid) error("max() arg is an empty range", "ValueError");
+
+				return Value::Int(rang->step < 0 ? (rang->startInclusive ? rang->start : rang->start + rang->step) : (rang->endInclusive ? rang->end : rang->end - rang->step));
+			}
+			if (m->method == "step") {
+				if (!m->args.empty()) error("step() does not accept arguments", "ArgumentError");
+				auto* rang = static_cast<RangeObject*>(target.ref.get());
+				if (!rang->isValid) error("step() arg is an empty range", "ValueError");
+				return Value::Int(rang->step);
+			}
+			error("Object '" + m->method + "' is not a range method", "AttributeError");
+		}
+		// ---------------- LIST METHODS ----------------
+		if (target.type == ValueType::LIST) {
+			auto* listObj = static_cast<ListObject*>(target.ref.get());
+			auto& elems = listObj->elements;
+			if (m->method == "get") {
+				if (m->args.size() != 1 && m->args.size() != 2) error("list.get() takes one mandatory argument index, and an optional argument default_return", "ArgumentError");
+				auto idx = eval(m->args[0]).asInt();
+				if (idx < 0 && elems.size() > elems.size() + idx) return elems[idx + elems.size()];
+				else if (idx >= 0 and elems.size() > idx) return elems[idx];
+				if (m->args.size() == 2) return eval(m->args[1]);
+				else return Value::None();
+			}
+			if (m->method == "count") {
+				if (m->args.size() != 1) error("list.count() takes exactly one argument", "ArgumentError");
+				Value needle = eval(m->args[0]);
+				long long c = 0;
+				for (const auto& el : elems) {
+					if (el.strictEquals(needle)) c++;
+				}
+				return Value::Int(c);
+			}
+			if (m->method == "index") {
+				if (m->args.size() != 1) error("list.index() takes exactly one argument", "ArgumentError");
+				Value needle = eval(m->args[0]);
+				for (size_t i = 0; i < elems.size(); i++) {
+					if (elems[i].strictEquals(needle)) return Value::Int((long long)i);
+				}
+				return Value::Int(-1);
+			}
+			if (m->method == "insert") {
+				checkConst();
+				if (m->args.size() != 2) error("insert() takes exactly two arguments (index, value)", "ArgumentError");
+				int idx = eval(m->args[0]).asInt();
+				Value val = eval(m->args[1]);
+				if (idx < 0 || idx >(int)elems.size()) error("Index out of bounds", "IndexError");
+				elems.insert(elems.begin() + idx, val);
+				return target;
+			}
+			if (m->method == "pop") {
+				checkConst();
+				if (m->args.size() > 1) error("pop() takes at most one argument", "ArgumentError");
+				if (elems.empty()) error("pop from empty list", "EmptyContainerError");
+				int idx = elems.size() - 1;
+				if (!m->args.empty()) idx = eval(m->args[0]).asInt();
+				if (idx < 0 || idx >= (int)elems.size()) error("pop index out of bounds", "IndexError");
+				Value val = elems[idx];
+				elems.erase(elems.begin() + idx);
+				return val;
+			}
+			if (m->method == "remove") {
+				checkConst();
+				if (m->args.size() != 1) error("remove() takes exactly one argument", "ArgumentError");
+				Value val = eval(m->args[0]);
+				for (auto it = elems.begin(); it != elems.end(); ++it) {
+					if (it->strictEquals(val)) {
+						elems.erase(it);
+						return Value::None();
+					}
+				}
+				error("list.remove(x): x not in list", "ValueError");
+			}
+			if (m->method == "clear") {
+				checkConst();
+				elems.clear();
+				return target;
+			}
+			if (m->method == "extend") {
+				checkConst();
+				if (m->args.size() != 1) error("extend() takes exactly one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type == ValueType::LIST) {
+					auto* o = static_cast<ListObject*>(other.ref.get());
+					elems.insert(elems.end(), o->elements.begin(), o->elements.end());
+				}
+				else if (other.type == ValueType::SET) {
+					auto* o = static_cast<SetObject*>(other.ref.get());
+					elems.insert(elems.end(), o->elements.begin(), o->elements.end());
+				}
+				else if (other.type == ValueType::RANGE) {
+					auto* r = static_cast<RangeObject*>(other.ref.get());
+					double current = r->start;
+					if (!r->startInclusive) current += r->step;
+					while (true) {
+						bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end)
+							: (r->endInclusive ? current >= r->end : current > r->end);
+						if (!cond) break;
+						elems.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
+						current += r->step;
+					}
+				}
+				else error("extend() requires an iterable (list, set, or range)", "TypeError");
+				return target;
+			}
+			if (m->method == "sum") {
+				double total = 0;
+				bool isFloat = false;
+				for (const auto& el : elems) {
+					if (el.type == ValueType::INT) total += el.asInt();
+					else if (el.type == ValueType::FLOAT) { total += el.asFloat(); isFloat = true; }
+					else error("sum() requires numeric values", "TypeError");
+				}
+				return isFloat ? Value::Float(total) : Value::Int((long long)total);
+			}
+			if (m->method == "min") {
+				if (elems.empty()) error("min() on empty list", "ValueError");
+				Value minVal = elems[0];
+				for (size_t i = 1; i < elems.size(); i++) {
+					bool smaller = false;
+					if (elems[i].type == ValueType::INT && minVal.type == ValueType::INT)
+						smaller = elems[i].asInt() < minVal.asInt();
+					else if (elems[i].type == ValueType::FLOAT || minVal.type == ValueType::FLOAT)
+						smaller = elems[i].asFloat() < minVal.asFloat();
+					else if (elems[i].type == ValueType::STRING && minVal.type == ValueType::STRING)
+						smaller = elems[i].asString() < minVal.asString();
+					if (smaller) minVal = elems[i];
+				}
+				return minVal;
+			}
+			if (m->method == "max") {
+				if (elems.empty()) error("max() on empty list", "ValueError");
+				Value maxVal = elems[0];
+				for (size_t i = 1; i < elems.size(); i++) {
+					bool larger = false;
+					if (elems[i].type == ValueType::INT && maxVal.type == ValueType::INT)
+						larger = elems[i].asInt() > maxVal.asInt();
+					else if (elems[i].type == ValueType::FLOAT || maxVal.type == ValueType::FLOAT)
+						larger = elems[i].asFloat() > maxVal.asFloat();
+					else if (elems[i].type == ValueType::STRING && maxVal.type == ValueType::STRING)
+						larger = elems[i].asString() > maxVal.asString();
+
+					if (larger) maxVal = elems[i];
+				}
+				return maxVal;
+			}
+			if (m->method == "average") {
+				if (elems.empty()) return Value::Float(0);
+				double total = 0;
+				for (const auto& el : elems) total += el.asFloat();
+				return Value::Float(total / elems.size());
+			}
+			if (m->method == "shuffle") {
+				checkConst();
+				if (elems.empty()) return Value::None();
+				static std::random_device rd;
+				static std::mt19937 gen(rd());
+				std::shuffle(elems.begin(), elems.end(), gen);
+				return target;
+			}
+			if (m->method == "sample") {
+				int k = eval(m->args[0]).asInt();
+				if (k > (int)elems.size()) error("Sample larger than population", "ValueError");
+				static std::random_device rd;
+				static std::mt19937 gen(rd());
+				vector<Value> result = elems;
+				for (int i = 0; i < k; i++) {
+					std::uniform_int_distribution<> dis(i, (int)result.size() - 1);
+					int j = dis(gen);
+					std::swap(result[i], result[j]);
+				}
+				result.resize(k);
+				return Value::List(result);
+			}
+			if (m->method == "flatten") {
+				checkConst();
+				vector<Value> flatResult;
+				std::function<void(const vector<Value>&)> recursiveFlatten;
+				recursiveFlatten = [&](const vector<Value>& currentElems) {
+					for (const auto& el : currentElems) {
+						if (el.type == ValueType::LIST) {
+							auto* sub = static_cast<ListObject*>(el.ref.get());
+							recursiveFlatten(sub->elements);
+						}
+						else flatResult.push_back(el);
+					}
+				};
+				recursiveFlatten(elems);
+				elems = flatResult;
+				return target;
+			}
+			if (m->method == "chunk") {
+				int size = eval(m->args[0]).asInt();
+				if (size <= 0) error("Chunk size must be > 0", "ValueError");
+				vector<Value> chunks;
+				vector<Value> current;
+				for (const auto& el : elems) {
+					current.push_back(el);
+					if (current.size() == size) {
+						chunks.push_back(Value::List(current));
+						current.clear();
+					}
+				}
+				if (!current.empty()) chunks.push_back(Value::List(current));
+				return Value::List(chunks);
+			}
+			if (m->method == "rotate") {
+				checkConst();
+				if (elems.empty()) return Value::None();
+				int n = eval(m->args[0]).asInt();
+				n %= (int)elems.size();
+				if (n < 0) n += elems.size();
+				std::rotate(elems.rbegin(), elems.rbegin() + n, elems.rend());
+				return target;
+			}
+			if (m->method == "unique") {
+				checkConst();
+				vector<Value> unique;
+				for (const auto& item : elems) {
+					bool exists = false;
+					for (const auto& u : unique) if (u.strictEquals(item)) { exists = true; break; }
+					if (!exists) unique.push_back(item);
+				}
+				elems = unique;
+				return target;
+			}
+			if (m->method == "join") {
+				string sep = "";
+				if (!m->args.empty()) sep = eval(m->args[0]).asString();
+				string res = "";
+				for (size_t i = 0; i < elems.size(); i++) {
+					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
+					else res += valueToString(elems[i]);
+					if (i + 1 < elems.size()) res += sep;
+				}
+				return Value::String(res);
+			}
+			if (m->method == "fill") {
+				checkConst();
+				Value val = eval(m->args[0]);
+				if (m->args.size() > 1) {
+					int count = eval(m->args[1]).asInt();
+					if (count < 0) count = 0;
+					elems.clear();
+					elems.reserve(count);
+					for (int i = 0; i < count; i++) elems.push_back(deepCopy(val));
+				}
+				else for (auto& el : elems) el = deepCopy(val);
+				return target;
+			}
+			error("Object '" + m->method + "' is not a list method", "AttributeError");
+		}
+		//--------- SET METHODS ----------
+		if (target.type == ValueType::SET) {
+			auto* setObj = static_cast<SetObject*>(target.ref.get());
+			//--- MODIFIERS ---
+			if (m->method == "add") {
+				checkConst();
+				if (m->args.size() != 1) error("add() takes exactly one argument", "ArgumentError");
+				setAdd(setObj->elements, eval(m->args[0]));
+				return target;
+			}
+			if (m->method == "remove") {
+				checkConst();
+				if (m->args.size() != 1) error("remove() takes exactly one argument", "ArgumentError");
+				Value val = eval(m->args[0]);
+				auto& elems = setObj->elements;
+				for (auto it = elems.begin(); it != elems.end(); ++it) {
+					if (it->strictEquals(val)) {
+						elems.erase(it);
+						return target;
+					}
+				}
+				error("KeyError: element not found in set", "KeyError");
+			}
+			if (m->method == "discard") {
+				checkConst();
+				if (m->args.size() != 1) error("discard() takes exactly one argument", "ArgumentError");
+				Value val = eval(m->args[0]);
+				auto& elems = setObj->elements;
+				for (auto it = elems.begin(); it != elems.end(); ++it) {
+					if (it->strictEquals(val)) {
+						elems.erase(it);
+						return target;
+					}
+				}
+				return target;
+			}
+			if (m->method == "pop") {
+				checkConst();
+				if (!m->args.empty()) error("pop() takes no arguments", "ArgumentError");
+				if (setObj->elements.empty()) error("pop from empty set", "EmptyContainerError");
+				Value val = setObj->elements.back();
+				setObj->elements.pop_back();
+				return val;
+			}
+			if (m->method == "clear") {
+				checkConst();
+				if (!m->args.empty()) error("clear() takes no arguments", "ArgumentError");
+				setObj->elements.clear();
+				return target;
+			}
+			//--- OPERATIONS ---
+			if (m->method == "union") {
+				if (m->args.size() != 1) error("union() takes one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::SET) error("union() requires a set", "TypeError");
+				vector<Value> result = setObj->elements;
+				auto* otherSet = static_cast<SetObject*>(other.ref.get());
+				for (const auto& v : otherSet->elements) setAdd(result, v);
+				return Value::Set(result);
+			}
+			if (m->method == "intersection") {
+				if (m->args.size() != 1) error("intersection() takes one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::SET) error("intersection() requires a set", "TypeError");
+				vector<Value> result;
+				auto* otherSet = static_cast<SetObject*>(other.ref.get());
+				for (const auto& v1 : setObj->elements) {
+					for (const auto& v2 : otherSet->elements) if (v1.strictEquals(v2)) { result.push_back(v1); break; }
+				}
+				return Value::Set(result);
+			}
+			if (m->method == "difference") {
+				if (m->args.size() != 1) error("difference() takes one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::SET) error("difference() requires a set", "TypeError");
+				vector<Value> result;
+				auto* otherSet = static_cast<SetObject*>(other.ref.get());
+				for (const auto& v1 : setObj->elements) {
+					bool found = false;
+					for (const auto& v2 : otherSet->elements) if (v1.strictEquals(v2)) { found = true; break; }
+					if (!found) result.push_back(v1);
+				}
+				return Value::Set(result);
+			}
+			if (m->method == "symmetric_difference") {
+				if (m->args.size() != 1) error("symmetric_difference() takes one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::SET) error("symmetric_difference() requires a set", "TypeError");
+				vector<Value> result;
+				auto* s2 = static_cast<SetObject*>(other.ref.get());
+				for (const auto& v1 : setObj->elements) {
+					bool found = false;
+					for (const auto& v2 : s2->elements) if (v1.strictEquals(v2)) { found = true; break; }
+					if (!found) result.push_back(v1);
+				}
+				for (const auto& v2 : s2->elements) {
+					bool found = false;
+					for (const auto& v1 : setObj->elements) if (v2.strictEquals(v1)) { found = true; break; }
+					if (!found) result.push_back(v2);
+				}
+				return Value::Set(result);
+			}
+			if (m->method == "issubset") {
+				if (m->args.size() != 1) error("issubset() takes one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::SET) error("issubset() requires a set", "TypeError");
+				auto* parent = static_cast<SetObject*>(other.ref.get());
+				for (const auto& childElem : setObj->elements) {
+					bool found = false;
+					for (const auto& pElem : parent->elements) if (childElem.strictEquals(pElem)) { found = true; break; }
+					if (!found) return Value::Bool(false);
+				}
+				return Value::Bool(true);
+			}
+			if (m->method == "issuperset") {
+				if (m->args.size() != 1) error("issuperset() takes one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::SET) error("issuperset() requires a set", "TypeError");
+				auto* child = static_cast<SetObject*>(other.ref.get());
+				for (const auto& cElem : child->elements) {
+					bool found = false;
+					for (const auto& pElem : setObj->elements) if (cElem.strictEquals(pElem)) { found = true; break; }
+					if (!found) return Value::Bool(false);
+				}
+				return Value::Bool(true);
+			}
+			if (m->method == "isdisjoint") {
+				if (m->args.size() != 1) error("isdisjoint() takes one argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::SET) error("isdisjoint() requires a set", "TypeError");
+				auto* otherSet = static_cast<SetObject*>(other.ref.get());
+				for (const auto& v1 : setObj->elements) {
+					for (const auto& v2 : otherSet->elements) if (v1.strictEquals(v2)) return Value::Bool(false);
+				}
+				return Value::Bool(true);
+			}
+			if (m->method == "join") {
+				string sep = "";
+				if (!m->args.empty()) sep = eval(m->args[0]).asString();
+				string res = "";
+				auto& elems = setObj->elements; // Access set elements
+				for (size_t i = 0; i < elems.size(); i++) {
+					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
+					else res += valueToString(elems[i]);
+					if (i + 1 < elems.size()) res += sep;
+				}
+				return Value::String(res);
+			}
+			if (m->method == "join") {
+				string sep = "";
+				if (!m->args.empty()) sep = eval(m->args[0]).asString();
+				string res = "";
+				auto& elems = setObj->elements;
+				for (size_t i = 0; i < elems.size(); i++) {
+					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
+					else res += valueToString(elems[i]);
+					if (i + 1 < elems.size()) res += sep;
+				}
+				return Value::String(res);
+			}
+			error("Object '" + m->method + "' is not a set method", "AttributeError");
+		}
+		//-------- TUPLE METHODS ---------
+		if (target.type == ValueType::TUPLE) {
+			auto* tObj = static_cast<TupleObject*>(target.ref.get());
+			if (m->method == "count") {
+				if (m->args.size() != 1) error("tuple.count() takes 1 arg", "ArgumentError");
+				Value needle = eval(m->args[0]);
+				long long c = 0;
+				for (const auto& el : tObj->elements) if (el.strictEquals(needle)) c++;
+				return Value::Int(c);
+			}
+			if (m->method == "index") {
+				if (m->args.size() != 1) error("tuple.index() takes 1 arg", "ArgumentError");
+				Value needle = eval(m->args[0]);
+				for (size_t i = 0; i < tObj->elements.size(); i++) {
+					if (tObj->elements[i].strictEquals(needle)) return Value::Int((long long)i);
+				}
+				return Value::Int(-1);
+			}
+			if (m->method == "join") {
+				string sep = "";
+				if (!m->args.empty()) sep = eval(m->args[0]).asString();
+				string res = "";
+				auto& elems = tObj->elements;
+				for (size_t i = 0; i < elems.size(); i++) {
+					if (elems[i].type == ValueType::STRING) res += elems[i].asString();
+					else res += valueToString(elems[i]);
+					if (i + 1 < elems.size()) res += sep;
+				}
+				return Value::String(res);
+			}
+			auto elems = tObj->elements;
+			if (m->method == "sum") {
+				double total = 0;
+				bool isFloat = false;
+				for (const auto& el : elems) {
+					if (el.type == ValueType::INT) total += el.asInt();
+					else if (el.type == ValueType::FLOAT) { total += el.asFloat(); isFloat = true; }
+					else error("sum() requires numeric values", "TypeError");
+				}
+				return isFloat ? Value::Float(total) : Value::Int((long long)total);
+			}
+			if (m->method == "min") {
+				if (elems.empty()) error("min() on empty tuple", "ValueError");
+				Value minVal = elems[0];
+				for (size_t i = 1; i < elems.size(); i++) {
+					bool smaller = false;
+					if (elems[i].type == ValueType::INT && minVal.type == ValueType::INT)
+						smaller = elems[i].asInt() < minVal.asInt();
+					else if (elems[i].type == ValueType::FLOAT || minVal.type == ValueType::FLOAT)
+						smaller = elems[i].asFloat() < minVal.asFloat();
+					else if (elems[i].type == ValueType::STRING && minVal.type == ValueType::STRING)
+						smaller = elems[i].asString() < minVal.asString();
+					if (smaller) minVal = elems[i];
+				}
+				return minVal;
+			}
+			if (m->method == "max") {
+				if (elems.empty()) error("max() on empty tuple", "ValueError");
+				Value maxVal = elems[0];
+				for (size_t i = 1; i < elems.size(); i++) {
+					bool larger = false;
+					if (elems[i].type == ValueType::INT && maxVal.type == ValueType::INT)
+						larger = elems[i].asInt() > maxVal.asInt();
+					else if (elems[i].type == ValueType::FLOAT || maxVal.type == ValueType::FLOAT)
+						larger = elems[i].asFloat() > maxVal.asFloat();
+					else if (elems[i].type == ValueType::STRING && maxVal.type == ValueType::STRING)
+						larger = elems[i].asString() > maxVal.asString();
+
+					if (larger) maxVal = elems[i];
+				}
+				return maxVal;
+			}
+			if (m->method == "average") {
+				if (elems.empty()) return Value::Float(0);
+				double total = 0;
+				for (const auto& el : elems) total += el.asFloat();
+				return Value::Float(total / elems.size());
+			}
+			if (m->method == "sample") {
+				int k = eval(m->args[0]).asInt();
+				if (k > (int)elems.size()) error("Sample larger than population", "ValueError");
+				static std::random_device rd;
+				static std::mt19937 gen(rd());
+				vector<Value> result = elems;
+				for (int i = 0; i < k; i++) {
+					std::uniform_int_distribution<> dis(i, (int)result.size() - 1);
+					int j = dis(gen);
+					std::swap(result[i], result[j]);
+				}
+				result.resize(k);
+				return Value::Tuple(result);
+			}
+			error("Object '" + m->method + "' is not a tuple method", "AttributeError");
+		}
+		// -------- DICTIONARY METHODS ---------
+		if (target.type == ValueType::DICT) {
+			auto* d = static_cast<DictObject*>(target.ref.get());
+			if (m->method == "get") {
+				if (m->args.size() < 1 || m->args.size() > 2) error("get() takes 1 or 2 arguments", "ArgumentError");
+				Value key = eval(m->args[0]);
+				Value defVal = (m->args.size() == 2) ? eval(m->args[1]) : Value::None();
+
+				if (d->items.count(key)) return d->items.at(key);
+				return defVal;
+			}
+			if (m->method == "get_default") {
+				checkConst();
+				if (m->args.size() < 1 || m->args.size() > 2) error("get_default() takes 1 or 2 arguments", "ArgumentError");
+				Value key = eval(m->args[0]);
+				if (d->items.count(key)) return d->items.at(key);
+				Value defVal = (m->args.size() == 2) ? eval(m->args[1]) : Value::None();
+				Value insertKey = key;
+				if (insertKey.type == ValueType::LIST || insertKey.type == ValueType::SET) {
+					insertKey = deepCopy(insertKey);
+					insertKey.isConst = true;
+				}
+				if (insertKey.type == ValueType::DICT) error("Dictionary cannot be used as a key", "TypeError");
+				d->items[insertKey] = defVal;
+				return defVal;
+			}
+			if (m->method == "clear") {
+				checkConst();
+				d->items.clear();
+				return Value::None();
+			}
+			if (m->method == "update") {
+				checkConst();
+				if (m->args.size() != 1) error("update() takes exactly 1 argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::DICT) error("update() requires a dictionary argument", "TypeError");
+				auto* otherDict = static_cast<DictObject*>(other.ref.get());
+				for (const auto& [k, v] : otherDict->items) {
+					d->items[k] = v;
+				}
+				return Value::None();
+			}
+			if (m->method == "pop") {
+				checkConst();
+				if (m->args.size() > 1) error("pop() takes 0 or 1 argument", "ArgumentError");
+				if (m->args.empty()) {
+					if (d->items.empty()) error("pop from empty dictionary", "EmptyContainerError");
+					auto it = d->items.begin();
+					Value val = it->second;
+					d->items.erase(it);
+					return val;
+				}
+				else {
+					Value key = eval(m->args[0]);
+					auto it = d->items.find(key);
+					if (it == d->items.end()) error("KeyError: " + valueToString(key), "KeyError");
+					Value val = it->second;
+					d->items.erase(it);
+					return val;
+				}
+			}
+			if (m->method == "keys") {
+				vector<Value> keys;
+				keys.reserve(d->items.size());
+				for (auto& [k, v] : d->items) keys.push_back(k);
+				return Value::List(keys);
+			}
+			if (m->method == "values") {
+				vector<Value> vals;
+				vals.reserve(d->items.size());
+				for (auto& [k, v] : d->items) vals.push_back(v);
+				return Value::List(vals);
+			}
+			if (m->method == "items") {
+				vector<Value> pairs;
+				pairs.reserve(d->items.size());
+				for (auto& [k, v] : d->items) {
+					vector<Value> pair = { k, v };
+					pairs.push_back(Value::Tuple(pair));
+				}
+				return Value::List(pairs);
+			}
+			error("Object '" + m->method + "' is not a dict method", "AttributeError");
+		}
+		// ------------------ FILE METHODS ------------------
+		if (target.type == ValueType::FILE) {
+			auto* f = static_cast<FileObject*>(target.ref.get());
+			if (!f->isOpen && m->method != "IsOpen") throw FileClosedError("Cannot perform operation on closed file", m->line, m->col);
+			if (m->method == "IsOpen") {
+				if (!m->args.empty()) error("IsOpen() takes no arguments", "ArgumentError");
+				return Value::Bool(f->isOpen);
+			}
+			if (m->method == "Write") {
+				if (m->args.empty() || m->args.size() > 2) error("write() expects message and optional replace bool", "ArgumentError");
+				string msg = valueToString(eval(m->args[0]));
+				bool replace = false;
+				if (m->args.size() == 2) replace = eval(m->args[1]).asBool();
+				f->stream.clear();
+				if (replace) f->stream.seekp(0, std::ios::beg);
+				else f->stream.seekp(0, std::ios::end);
+				if (!(f->stream << msg)) throw PermissionError("Failed to write to file", m->line, m->col);
+				f->stream.flush();
+				return Value::None();
+			}
+			if (m->method == "Clear") {
+				if (!m->args.empty()) error("Clear() expects no arguments", "Arguments");
+				f->Reset();
+				return Value::None();
+			}
+			if (m->method == "Read") {
+				if (!m->args.empty()) error("Read() takes no arguments", "ArgumentError");
+				f->stream.clear();
+				f->stream.seekg(0, std::ios::beg);
+				std::stringstream buffer;
+				buffer << f->stream.rdbuf();
+				return Value::String(buffer.str());
+			}
+			if (m->method == "ReadLines") {
+				bool includeN = false;
+				if (m->args.size() == 1) includeN = eval(m->args[0]).asBool();
+				else if (m->args.size() > 1) error("ReadLines() takes optional boolean", "ArgumentError");
+				f->stream.clear();
+				f->stream.seekg(0, std::ios::beg);
+				vector<Value> lines;
+				string line;
+				while (std::getline(f->stream, line)) {
+					if (!line.empty() && line.back() == '\r') line.pop_back();
+					if (includeN) line += "\n";
+					lines.push_back(Value::String(line));
+				}
+				return Value::List(lines);
+			}
+			if (m->method == "Close") {
+				if (f->isOpen) {
+					f->stream.close();
+					f->isOpen = false;
+				}
+				return Value::None();
+			}
+			error("Object '" + m->method + "' is not a file method", "AttributeError");
+		}
+		//-------- VECTOR METHODS --------
+		if (target.type == ValueType::VECTOR) {
+			auto* v = static_cast<VectorObject*>(target.ref.get());
+			if (m->method == "dimension") {
+				if (!m->args.empty()) error("dimension() takes no arguments", "ArgumentError");
+				return Value::Int((long long)v->elements.size());
+			}
+			if (m->method == "magnitude") {
+				if (!m->args.empty()) error("magnitude() takes no arguments", "ArgumentError");
+				Value sum = Value::Int(0);
+				for (const auto& d : v->elements) {
+					Value sq;
+					if (d.type == ValueType::INT) {
+						long long r = d.iVal * d.iVal;
+						bool ovf = (d.iVal != 0 && r / d.iVal != d.iVal);
+						if (ovf) sq = BigIntObject::mul(Value::BigInt(d.iVal), Value::BigInt(d.iVal));
+						else sq = Value::Int(r);
+					}
+					else if (d.type == ValueType::BIGINT) sq = BigIntObject::mul(d, d);
+					else sq = Value::Float(d.asFloat() * d.asFloat());
+					if (sum.type == ValueType::INT && sq.type == ValueType::INT) {
+						long long r = sum.iVal + sq.iVal;
+						bool ovf = ((sum.iVal ^ r) & (sq.iVal ^ r)) < 0;
+						if (ovf) sum = BigIntObject::add(Value::BigInt(sum.iVal), Value::BigInt(sq.iVal));
+						else sum = Value::Int(r);
+					}
+					else if (sum.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) sum = BigIntObject::add(sum, sq);
+					else sum = Value::Float(sum.asFloat() + sq.asFloat());
+				}
+				return Value::Float(std::sqrt(sum.asFloat()));
+			}
+			if (m->method == "reverse") {
+				checkConst();
+				std::reverse(v->elements.begin(), v->elements.end());
+				return target;
+			}
+			if (m->method == "expand") {
+				checkConst();
+				if (m->args.size() != 1) error("expand() takes 1 argument", "ArgumentError");
+				long long n = eval(m->args[0]).asInt();
+				if (n < 0) error("Cannot expand by negative amount", "ValueError");
+				for (int i = 0; i < n; i++) v->elements.push_back(Value::Int(0));
+				return target;
+			}
+			if (m->method == "shrink") {
+				checkConst();
+				if (m->args.size() != 1) error("shrink() takes 1 argument", "ArgumentError");
+				long long n = eval(m->args[0]).asInt();
+				if (n < 0) error("Cannot shrink by negative amount", "ValueError");
+				if ((long long)v->elements.size() - n < 1) error("Vector cannot be shrunk below 1 dimension", "ValueError");
+				for (int i = 0; i < n; i++) v->elements.pop_back();
+				return target;
+			}
+			if (m->method == "unitVec") {
+				Value sum = Value::Int(0);
+				for (const auto& d : v->elements) {
+					Value sq;
+					if (d.type == ValueType::INT) {
+						long long r = d.iVal * d.iVal;
+						bool ovf = (d.iVal != 0 && r / d.iVal != d.iVal);
+						if (ovf) sq = BigIntObject::mul(Value::BigInt(d.iVal), Value::BigInt(d.iVal));
+						else sq = Value::Int(r);
+					}
+					else if (d.type == ValueType::BIGINT) sq = BigIntObject::mul(d, d);
+					else sq = Value::Float(d.asFloat() * d.asFloat());
+					if (sum.type == ValueType::INT && sq.type == ValueType::INT) {
+						long long r = sum.iVal + sq.iVal;
+						bool ovf = ((sum.iVal ^ r) & (sq.iVal ^ r)) < 0;
+						if (ovf) sum = BigIntObject::add(Value::BigInt(sum.iVal), Value::BigInt(sq.iVal));
+						else sum = Value::Int(r);
+					}
+					else if (sum.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) sum = BigIntObject::add(sum, sq);
+					else sum = Value::Float(sum.asFloat() + sq.asFloat());
+				}
+				double mag = std::sqrt(sum.asFloat());
+				if (mag == 0) error("Cannot get unit vector of zero vector", "MathError");
+				std::vector<Value> res;
+				res.reserve(v->elements.size());
+				for (auto d : v->elements) res.push_back(Value::Float(d.asFloat() / mag));
+				return Value::Vector(res);
+			}
+			if (m->method == "projectOnto") {
+				if (m->args.size() != 1) error("projectOnto() takes 1 argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
+				auto* u = v;
+				auto* v2 = static_cast<VectorObject*>(other.ref.get());
+				if (u->elements.size() != v2->elements.size()) error("Dimension mismatch", "ValueError");
+				Value dot = Value::Int(0);
+				Value mag2 = Value::Int(0);
+				for (size_t i = 0; i < u->elements.size(); i++) {
+					Value valU = u->elements[i];
+					Value valV = v2->elements[i];
+					Value prod;
+					if (valU.type == ValueType::INT && valV.type == ValueType::INT) {
+						long long r = valU.iVal * valV.iVal;
+						bool ovf = (valU.iVal != 0 && r / valU.iVal != valV.iVal);
+						if (ovf) prod = BigIntObject::mul(Value::BigInt(valU.iVal), Value::BigInt(valV.iVal));
+						else prod = Value::Int(r);
+					}
+					else if (valU.type == ValueType::BIGINT || valV.type == ValueType::BIGINT) prod = BigIntObject::mul(valU, valV);
+					else prod = Value::Float(valU.asFloat() * valV.asFloat());
+					if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
+						long long r = dot.iVal + prod.iVal;
+						bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
+						if (ovf) dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
+						else dot = Value::Int(r);
+					}
+					else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) dot = BigIntObject::add(dot, prod);
+					else dot = Value::Float(dot.asFloat() + prod.asFloat());
+					Value sq;
+					if (valV.type == ValueType::INT) {
+						long long r = valV.iVal * valV.iVal;
+						bool ovf = (valV.iVal != 0 && r / valV.iVal != valV.iVal);
+						if (ovf) sq = BigIntObject::mul(Value::BigInt(valV.iVal), Value::BigInt(valV.iVal));
+						else sq = Value::Int(r);
+					}
+					else if (valV.type == ValueType::BIGINT) sq = BigIntObject::mul(valV, valV);
+					else sq = Value::Float(valV.asFloat() * valV.asFloat());
+					if (mag2.type == ValueType::INT && sq.type == ValueType::INT) {
+						long long r = mag2.iVal + sq.iVal;
+						bool ovf = ((mag2.iVal ^ r) & (sq.iVal ^ r)) < 0;
+						if (ovf) mag2 = BigIntObject::add(Value::BigInt(mag2.iVal), Value::BigInt(sq.iVal));
+						else mag2 = Value::Int(r);
+					}
+					else if (mag2.type == ValueType::BIGINT || sq.type == ValueType::BIGINT) mag2 = BigIntObject::add(mag2, sq);
+					else mag2 = Value::Float(mag2.asFloat() + sq.asFloat());
+				}
+				if (mag2.asFloat() == 0) error("Cannot project onto zero vector", "MathError");
+				double scalar = dot.asFloat() / mag2.asFloat();
+				std::vector<Value> res;
+				res.reserve(v2->elements.size());
+				for (auto d : v2->elements) res.push_back(Value::Float(d.asFloat() * scalar));
+				return Value::Vector(res);
+			}
+			if (m->method == "dot") {
+				if (m->args.size() != 1) error("dot() takes 1 argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
+				auto* v2 = static_cast<VectorObject*>(other.ref.get());
+				if (v->elements.size() != v2->elements.size()) error("Dimension mismatch", "ValueError");
+				Value dot = Value::Int(0);
+				for (size_t i = 0; i < v->elements.size(); i++) {
+					Value x = v->elements[i];
+					Value y = v2->elements[i];
+					Value prod;
+					if (x.type == ValueType::INT && y.type == ValueType::INT) {
+						long long r = x.iVal * y.iVal;
+						bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
+						if (ovf) prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
+						else prod = Value::Int(r);
+					}
+					else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) prod = BigIntObject::mul(x, y);
+					else prod = Value::Float(x.asFloat() * y.asFloat());
+					if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
+						long long r = dot.iVal + prod.iVal;
+						bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
+						if (ovf) dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
+						else dot = Value::Int(r);
+					}
+					else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) dot = BigIntObject::add(dot, prod);
+					else dot = Value::Float(dot.asFloat() + prod.asFloat());
+				}
+				return dot;
+			}
+			if (m->method == "cross") {
+				if (m->args.size() != 1) error("cross() takes 1 argument", "ArgumentError");
+				Value other = eval(m->args[0]);
+				if (other.type != ValueType::VECTOR) error("Argument must be a vector", "TypeError");
+				auto* v2 = static_cast<VectorObject*>(other.ref.get());
+				size_t dim = v->elements.size();
+				if (dim != v2->elements.size()) error("Dimension mismatch", "ValueError");
+				auto safeMul = [](const Value& a, const Value& b) -> Value {
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						long long r = a.iVal * b.iVal;
+						bool ovf = (a.iVal != 0 && r / a.iVal != b.iVal);
+						if (ovf) return BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
+						return Value::Int(r);
+					}
+					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) return BigIntObject::mul(a, b);
+					return Value::Float(a.asFloat() * b.asFloat());
+				};
+				auto safeSub = [](const Value& a, const Value& b) -> Value {
+					if (a.type == ValueType::INT && b.type == ValueType::INT) {
+						long long r = a.iVal - b.iVal;
+						bool ovf = ((a.iVal ^ b.iVal) & (a.iVal ^ r)) < 0;
+						if (ovf) return BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
+						return Value::Int(r);
+					}
+					if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) return BigIntObject::sub(a, b);
+					return Value::Float(a.asFloat() - b.asFloat());
+				};
+				if (dim == 1) return Value::Int(0);
+				else if (dim == 2) {
+					Value term1 = safeMul(v->elements[0], v2->elements[1]);
+					Value term2 = safeMul(v->elements[1], v2->elements[0]);
+					return safeSub(term1, term2);
+				}
+				else if (dim == 3) {
+					Value x = safeSub(safeMul(v->elements[1], v2->elements[2]), safeMul(v->elements[2], v2->elements[1]));
+					Value y = safeSub(safeMul(v->elements[2], v2->elements[0]), safeMul(v->elements[0], v2->elements[2]));
+					Value z = safeSub(safeMul(v->elements[0], v2->elements[1]), safeMul(v->elements[1], v2->elements[0]));
+					std::vector<Value> res = { x, y, z };
+					return Value::Vector(res);
+				}
+				else {
+					error("Binary cross product is not defined for dimensions > 3", "ValueError");
+				}
+			}
+			error("Object '" + m->method + "' is not a vector method", "AttributeError");
+		}
+		return Value::None();
+	}
+void Interpreter::registerStdLib(){
+		modules["FileStream"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("FileStream");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			define("Open", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Open() expects exactly 1 argument (path)", l, c);
+				string path = valueToString(args[0]);
+				auto* fObj = new FileObject(path);
+				if (!fObj->isOpen) { delete fObj; throw FileNotFoundError("Cannot find or open file: " + path, l, c); }
+				Value v; v.type = ValueType::FILE; v.ref = std::shared_ptr<HeapObject>(fObj);
+				return v;
+			});
+			define("SafeOpen", [](const vector<Value>& args, int l, int c) {
+				if (args.size() < 1 || args.size() > 2) throw ArgumentError("SafeOpen() expects path and optional failure value", l, c);
+				string path = valueToString(args[0]);
+				Value failVal = (args.size() == 2) ? args[1] : Value::None();
+				auto* fObj = new FileObject(path);
+				if (!fObj->isOpen) { delete fObj; return failVal; }
+				Value v; v.type = ValueType::FILE; v.ref = std::shared_ptr<HeapObject>(fObj);
+				return v;
+			});
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("FileStream", modVal, false, false);
+		};
+		modules["Os"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Os");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			define("Make", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("Make() expects (path, name)", l, c);
+				string loc = valueToString(args[0]);
+				string name = valueToString(args[1]);
+				string fullPath = loc;
+				if (!fullPath.empty() && fullPath.back() != '/' && fullPath.back() != '\\') fullPath += "/";
+				fullPath += name;
+				std::ofstream outfile(fullPath);
+				if (!outfile) throw PermissionError("Cannot create file at: " + fullPath, l, c);
+				outfile.close();
+				return Value::None();
+			});
+			define("Remove", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Remove() expects 1 argument (path)", l, c);
+				string path = valueToString(args[0]);
+				if (std::remove(path.c_str()) != 0) throw PermissionError("Cannot remove: " + path, l, c);
+				return Value::None();
+			});
+			define("Exists", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("Exists() expects 2 arguments (path, name)", l, c);
+				string loc = valueToString(args[0]);
+				string name = valueToString(args[1]);
+				string fullPath = loc;
+				if (!fullPath.empty() && fullPath.back() != '/' && fullPath.back() != '\\') fullPath += "/";
+				fullPath += name;
+				std::ifstream f(fullPath);
+				return Value::Bool(f.good());
+			});
+			define("ListNames", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("ListNames() expects 1 argument (path)", l, c);
+				string pathStr = valueToString(args[0]);
+				fs::path p(pathStr);
+				if (!fs::exists(p)) throw FileNotFoundError("Path not found: " + pathStr, l, c);
+				vector<Value> results;
+				if (fs::is_directory(p)) {
+					for (const auto& entry : fs::directory_iterator(p)) {
+						results.push_back(Value::String(entry.path().filename().string()));
+					}
+				}
+				else if (fs::is_regular_file(p)) {
+					std::ifstream file(p);
+					string line;
+					while (std::getline(file, line)) {
+						if (!line.empty() && line.back() == '\r') line.pop_back();
+						results.push_back(Value::String(line));
+					}
+				}
+				else throw FileNotFoundError("Path is not a valid file or directory: " + pathStr, l, c);
+				return Value::List(results);
+			});
+			define("MkDir", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("MkDir() expects 1 argument (path)", l, c);
+				string path = valueToString(args[0]);
+				if (!fs::create_directories(path)) {
+				}
+				return Value::None();
+			});
+			define("RmDir", [](const vector<Value>& args, int l, int c) {
+				if (args.size() < 1 || args.size() > 2) throw ArgumentError("RmDir() expects 2 arguments (path, recursive?)", l, c);
+				string path = valueToString(args[0]);
+				bool recursive = (args.size() == 2) ? args[1].asBool() : false;
+				if (recursive) fs::remove_all(path);
+				else fs::remove(path);
+				return Value::None();
+			});
+			define("Cwd", [](const vector<Value>& args, int l, int c) {
+				return Value::String(fs::current_path().string());
+			});
+			define("Cd", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Cd() expects 1 argument (path)", l, c);
+				string path = valueToString(args[0]);
+				try {
+					fs::current_path(path);
+				}
+				catch (const fs::filesystem_error& e) {
+					throw FileNotFoundError("Cannot change directory to: " + path, l, c);
+				}
+				return Value::None();
+			});
+			define("Rename", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("Rename() expects 2 arguments (old, new)", l, c);
+				string oldP = valueToString(args[0]);
+				string newP = valueToString(args[1]);
+				try {
+					fs::rename(oldP, newP);
+				}
+				catch (...) {
+					throw PermissionError("Rename failed", l, c);
+				}
+				return Value::None();
+			});
+			define("Env", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Env() expects 1 argument (name)", l, c);
+				const char* val = std::getenv(valueToString(args[0]).c_str());
+				return val ? Value::String(val) : Value::None();
+			});
+			define("Console", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Console() expects 1 argument (command)", l, c);
+				string cmd = valueToString(args[0]);
+				int result = std::system(cmd.c_str());
+				return Value::Int(result);
+			});
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Os", modVal, false, false);
+		};
+		modules["Time"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Time");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			define("Sleep", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Sleep(milliseconds)", l, c);
+				long long ms = args[0].asInt();
+				std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+				return Value::None();
+			});
+			define("Now", [](const vector<Value>& args, int l, int c) {
+				auto now = std::chrono::system_clock::now();
+				auto duration = now.time_since_epoch();
+				double seconds = std::chrono::duration<double>(duration).count();
+				return Value::Float(seconds);
+			});
+			define("Clock", [](const vector<Value>& args, int l, int c) {
+				auto now = std::chrono::high_resolution_clock::now();
+				double ms = std::chrono::duration<double, std::milli>(now.time_since_epoch()).count();
+				return Value::Float(ms);
+			});
+			define("Format", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("Format(timestamp, formatStr)", l, c);
+				time_t rawTime = (time_t)args[0].asFloat();
+				string fmt = valueToString(args[1]);
+				struct tm* timeInfo = std::localtime(&rawTime);
+				char buffer[80];
+				std::strftime(buffer, 80, fmt.c_str(), timeInfo);
+				return Value::String(string(buffer));
+			});
+			define("Local", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Local(timestamp)", l, c);
+				time_t rawTime = (time_t)args[0].asFloat();
+				struct tm* t = std::localtime(&rawTime);
+				unordered_map<Value, Value, ValueHash, ValueEqual> parts;
+				parts[Value::String("year")] = Value::Int(t->tm_year + 1900);
+				parts[Value::String("month")] = Value::Int(t->tm_mon + 1);
+				parts[Value::String("day")] = Value::Int(t->tm_mday);
+				parts[Value::String("hour")] = Value::Int(t->tm_hour);
+				parts[Value::String("min")] = Value::Int(t->tm_min);
+				parts[Value::String("sec")] = Value::Int(t->tm_sec);
+				return Value::Dict(parts);
+			});
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Time", modVal, false, false);
+		};
+		modules["System"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("System");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			define("Exit", [](const vector<Value>& args, int l, int c) {
+				int code = (args.size() > 0) ? (int)args[0].asInt() : 0;
+				exit(code);
+				return Value::None(); // Never reached
+			});
+			define("Platform", [](const vector<Value>& args, int l, int c) {
+				#ifdef _WIN32
+					return Value::String("windows");
+				#elif __APPLE__
+					return Value::String("macos");
+				#elif __linux__
+					return Value::String("linux");
+				#else
+					return Value::String("unknown");
+				#endif
+			});
+			define("Color", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("Color() expects 2 arguments (text, colorName)", l, c);
+				string text = valueToString(args[0]);
+				string color = valueToString(args[1]);
+				string code = "37";
+				if (color == "red") code = "31";
+				else if (color == "green") code = "32";
+				else if (color == "yellow") code = "33";
+				else if (color == "blue") code = "34";
+				else if (color == "magenta") code = "35";
+				else if (color == "cyan") code = "36";
+				else if (color == "white") code = "37";
+				else if (color == "reset") code = "0";
+				else throw ValueError("invalid color", l, c);
+				return Value::String("\033[" + code + "m" + text + "\033[0m");
+			});
+			define("Beep", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("Beep() expects 2 arguments (frequency, duration)",l,c);
+				if (args[0].asFloat()<=0 || args[1].asFloat()<=0) throw ValueError("Frequency or duration should be positive",l,c);
+				#ifdef _WIN32
+					Beep(args[0].asFloat(), args[1].asFloat());
+				#endif
+				return Value::None();
+			});
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("System", modVal, false, false);
+		};
+		modules["Math"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Math");
+			moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			auto valueToFloat = [&](const Value& v, int l, int c) -> double {
+				if (v.type == ValueType::FLOAT) return v.asFloat();
+				if (v.type == ValueType::INT) return (double)v.iVal;
+				if (v.type == ValueType::BOOL) return v.asBool() ? 1.0 : 0.0;
+				if (v.type == ValueType::BIGINT) {
+					try { return std::stod(valueToString(v)); }
+					catch (...) { return INFINITY; }
+				}
+				throw TypeError("Expected a number", l, c);
+			};
+			// Constants
+			env->set("PI", Value::Float(3.141592653589793), true, true);
+			env->set("E", Value::Float(2.718281828459045), true, true);
+			env->set("PHI", Value::Float(1.618033988749894), true, true);
+			env->set("G", Value::Float(6.6743e-11), true, true);
+			env->set("G_EARTH", Value::Float(9.80665), true, true);
+			env->set("EPSILON_0", Value::Float(8.8541878128e-12), true, true);
+			env->set("PLANCK_H", Value::Float(6.62607015e-34), true, true);
+			// Basic Functions
+			define("Abs", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Abs() expects 1 argument (num)", l, c);
+				const Value& v = args[0];
+				if (v.type == ValueType::INT) return Value::Int(std::abs(v.asInt()));
+				if (v.type == ValueType::FLOAT) return Value::Float(std::abs(v.asFloat()));
+				if (v.type == ValueType::BIGINT) {
+					auto* big = static_cast<BigIntObject*>(v.ref.get());
+					if (!big->isNegative) return v;
+					auto copy = std::make_shared<BigIntObject>(*big);
+					copy->isNegative = false;
+					return Value::BigInt(copy);
+				}
+				return Value::Float(std::abs(valueToFloat(v, l, c)));
+			});
+			define("Floor", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Floor() expects 1 argument (num)", l, c);
+				if (args[0].type == ValueType::INT || args[0].type == ValueType::BIGINT) return args[0];
+				return Value::Int((long long)std::floor(valueToFloat(args[0], l, c)));
+			});
+			define("Ceil", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Ceil() expects 1 argument (num)", l, c);
+				if (args[0].type == ValueType::INT || args[0].type == ValueType::BIGINT) return args[0];
+				return Value::Int((long long)std::ceil(valueToFloat(args[0], l, c)));
+			});
+			define("Sqrt", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Sqrt() expects 1 argument (num)", l, c);
+				double val = valueToFloat(args[0], l, c);
+				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
+				return Value::Float(std::sqrt(val));
+			});
+			define("Cbrt", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Cbrt() expects 1 argument (num)", l, c);
+				return Value::Float(std::cbrt(valueToFloat(args[0], l, c)));
+			});
+			define("Sgn", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Sgn() expects 1 argument (num)", l, c);
+				double val = valueToFloat(args[0], l, c);
+				if (val > 0.0) return Value::Int(1);
+				else if (val < 0.0) return Value::Int(-1);
+				else return Value::Int(0);
+			});
+			define("RadToDeg", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("RadToDeg() expects 1 argument (num)", l, c);
+				return Value::Float(valueToFloat(args[0], l, c) * (long double)180 / 3.141592653589793);
+			});
+			define("DegToRad", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("DegToRad() expects 1 argument (num)", l, c);
+				return Value::Float(valueToFloat(args[0], l, c) * 3.141592653589793 / (long double)180);
+			});
+			// Trig
+			define("Sin", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Sin() expects 1 argument (num)", l, c);
+				return Value::Float(std::sin(valueToFloat(args[0], l, c)));
+			});
+			define("Cos", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Cos() expects 1 argument (num)", l, c);
+				return Value::Float(std::cos(valueToFloat(args[0], l, c)));
+			});
+			define("Tan", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Tan() expects 1 argument (num)", l, c);
+				return Value::Float(std::tan(valueToFloat(args[0], l, c)));
+			});
+			define("Sinh", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Sinh() expects 1 argument (num)", l, c);
+				return Value::Float(std::sinh(valueToFloat(args[0], l, c)));
+			});
+			define("Cosh", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Cosh() expects 1 argument (num)", l, c);
+				return Value::Float(std::cosh(valueToFloat(args[0], l, c)));
+			});
+			define("Tanh", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Tanh() expects 1 argument (num)", l, c);
+				return Value::Float(std::tanh(valueToFloat(args[0], l, c)));
+			});
+			// Arc
+			define("Arcsin", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Arcsin() expects 1 argument (num)", l, c);
+				return Value::Float(std::asin(valueToFloat(args[0], l, c)));
+			});
+			define("Arccos", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Arccos() expects 1 argument (num)", l, c);
+				return Value::Float(std::acos(valueToFloat(args[0], l, c)));
+			});
+			define("Arctan", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Arctan() expects 1 argument (num)", l, c);
+				return Value::Float(std::atan(valueToFloat(args[0], l, c)));
+			});
+			define("Arcsinh", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Arcsinh() expects 1 argument (num)", l, c);
+				return Value::Float(std::asinh(valueToFloat(args[0], l, c)));
+			});
+			define("Arccosh", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Arccosh() expects 1 argument (num)", l, c);
+				return Value::Float(std::acosh(valueToFloat(args[0], l, c)));
+			});
+			define("Arctanh", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Arctanh() expects 1 argument (num)", l, c);
+				return Value::Float(std::atanh(valueToFloat(args[0], l, c)));
+			});
+			// Log
+			define("Log", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Log() expects 1 argument (num)", l, c);
+				double val = valueToFloat(args[0], l, c);
+				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
+				return Value::Float(std::log(val));
+			});
+			define("Log2", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Log2() expects 1 argument (num)", l, c);
+				double val = valueToFloat(args[0], l, c);
+				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
+				return Value::Float(std::log2(val));
+			});
+			define("Log10", [&](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Log10() expects 1 argument (num)", l, c);
+				double val = valueToFloat(args[0], l, c);
+				if (val < 0.0) throw ValueError("argument cannot be negative", l, c);
+				return Value::Float(std::log10(val));
+			});
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Math", modVal, false, false);
+		};
+		modules["Random"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Random");
+			moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			auto getGen = []() -> std::mt19937& {
+				static std::random_device rd;
+				static std::mt19937 gen(rd());
+				return gen;
+			};
+			define("RandFloat", [=](const vector<Value>& args, int l, int c) {
+				std::uniform_real_distribution<> dis(0.0, 1.0);
+				return Value::Float(dis(getGen()));
+			});
+			define("RandChoice", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("RandChoice() expects 1 argument", l, c);
+				Value v = args[0];
+				auto pickIndex = [&](size_t size) {
+					if (size == 0) throw EmptyContainerError("Cannot choose from empty container", l, c);
+					std::uniform_int_distribution<size_t> dis(0, size - 1);
+					return dis(getGen());
+				};
+				if (v.type == ValueType::LIST) {
+					auto* list = static_cast<ListObject*>(v.ref.get());
+					return list->elements[pickIndex(list->elements.size())];
+				}
+				if (v.type == ValueType::TUPLE) {
+					auto* tuple = static_cast<TupleObject*>(v.ref.get());
+					return tuple->elements[pickIndex(tuple->elements.size())];
+				}
+				if (v.type == ValueType::STRING) {
+					const string& str = v.asString();
+					char c_char = str[pickIndex(str.size())];
+					return Value::String(string(1, c_char));
+				}
+				if (v.type == ValueType::SET) {
+					auto* set = static_cast<SetObject*>(v.ref.get());
+					size_t idx = pickIndex(set->elements.size());
+					return set->elements[idx];
+				}
+				if (v.type == ValueType::RANGE) {
+					auto* r = static_cast<RangeObject*>(v.ref.get());
+					if (!r->isValid) throw EmptyContainerError("Cannot choose from invalid range", l, c);
+					double diff = std::abs(r->end - r->start);
+					double steps = diff / std::abs(r->step);
+					long long count = 0;
+					if (r->step > 0 && r->end > r->start) count = (long long)(r->endInclusive ? floor(steps) + 1 : ceil(steps));
+					else if (r->step < 0 && r->end < r->start) count = (long long)(r->endInclusive ? floor(steps) + 1 : ceil(steps));
+					if (count <= 0) throw EmptyContainerError("Cannot choose from empty range", l, c);
+					std::uniform_int_distribution<long long> dis(0, count - 1);
+					long long offset = dis(getGen());
+					double val = r->start + (offset * r->step);
+					return r->isFloat ? Value::Float(val) : Value::Int((long long)val);
+				}
+				throw TypeError("RandChoice requires a container (list, set, tuple, string, range)", l, c);
+			});
+			define("Shuffle", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Shuffle() expects 1 argument", l, c);
+				Value v = args[0];
+				if (v.type == ValueType::LIST) {
+					Value newVal = deepCopy(v);
+					auto* list = static_cast<ListObject*>(newVal.ref.get());
+					std::shuffle(list->elements.begin(), list->elements.end(), getGen());
+					return newVal;
+				}
+				if (v.type == ValueType::TUPLE) {
+					Value newVal = deepCopy(v);
+					auto* t = static_cast<TupleObject*>(newVal.ref.get());
+					std::shuffle(t->elements.begin(), t->elements.end(), getGen());
+					return newVal;
+				}
+				if (v.type == ValueType::STRING) {
+					string s = v.asString();
+					std::shuffle(s.begin(), s.end(), getGen());
+					return Value::String(s);
+				}
+				if (v.type == ValueType::SET) {
+					Value newVal = deepCopy(v);
+					auto* s = static_cast<SetObject*>(newVal.ref.get());
+					std::shuffle(s->elements.begin(), s->elements.end(), getGen());
+					return newVal;
+				}
+				if (v.type == ValueType::RANGE) {
+					Value listVer = Value::List({});
+					throw TypeError("Cannot shuffle a Range (result would not be a range). Use Sample(range, len) to get a shuffled list.", l, c);
+				}
+				throw TypeError("Shuffle requires a mutable sequence or string", l, c);
+			});
+			define("Sample", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("Sample() expects 2 arguments (container, count)", l, c);
+				Value v = args[0];
+				long long k = args[1].asInt();
+				if (k < 0) throw ValueError("Sample count cannot be negative", l, c);
+				vector<Value> pool;
+				bool isString = (v.type == ValueType::STRING);
+				if (v.type == ValueType::LIST) pool = static_cast<ListObject*>(v.ref.get())->elements;
+				else if (v.type == ValueType::TUPLE) pool = static_cast<TupleObject*>(v.ref.get())->elements;
+				else if (v.type == ValueType::SET) pool = static_cast<SetObject*>(v.ref.get())->elements;
+				else if (v.type == ValueType::RANGE) {
+					auto* r = static_cast<RangeObject*>(v.ref.get());
+					double cur = r->start;
+					if (!r->startInclusive) cur += r->step;
+					while (true) {
+						bool cond = (r->step > 0) ? (r->endInclusive ? cur <= r->end : cur < r->end)
+							: (r->endInclusive ? cur >= r->end : cur > r->end);
+						if (!cond) break;
+						pool.push_back(r->isFloat ? Value::Float(cur) : Value::Int((long long)cur));
+						cur += r->step;
+					}
+				}
+				else if (isString) {
+					string s = v.asString();
+					for (char ch : s) pool.push_back(Value::String(string(1, ch)));
+				}
+				else throw TypeError("Sample requires a container", l, c);
+				if (k > (long long)pool.size()) throw ValueError("Sample larger than population", l, c);
+				vector<Value> result;
+				result.reserve(k);
+				std::sample(pool.begin(), pool.end(), std::back_inserter(result), k, getGen());
+				std::shuffle(result.begin(), result.end(), getGen());
+				vector<Value> deepResult;
+				for (auto& val : result) deepResult.push_back(deepCopy(val));
+
+				if (v.type == ValueType::LIST || v.type == ValueType::RANGE) return Value::List(deepResult);
+				if (v.type == ValueType::TUPLE) return Value::Tuple(deepResult);
+				if (v.type == ValueType::SET) return Value::Set(deepResult);
+				if (isString) {
+					string s = "";
+					for (const auto& val : deepResult) s += val.asString();
+					return Value::String(s);
+				}
+				return Value::None();
+			});
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Random", modVal, true, true);
+		};
+		modules["Vector"] = [&](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			this->vectorEnabled = true;
+			auto vecConstructor = [](const vector<Value>& args, int l, int c) {
+				vector<Value> elems;
+				if (args.empty()) elems = { Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) };
+				else {
+					for (const auto& arg : args) {
+						if (!arg.isNumber()) throw TypeError("Vector arguments must be numbers", l, c);
+						elems.push_back(arg);
+					}
+				}
+				return Value::Vector(elems);
+			};
+			if (symbols.empty()) env->set("vector", Value::Native(vecConstructor), true);
+			else for (const auto& s : symbols) if (s == "vector") env->set("vector", Value::Native(vecConstructor), true);
+		};
+		modules["Raylib"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Raylib");
+			moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			static auto colorClass = std::make_shared<ClassObject>("Color");
+			static auto imageClass = std::make_shared<ClassObject>("Image");
+			static auto textureClass = std::make_shared<ClassObject>("Texture2D");
+			static auto fontClass = std::make_shared<ClassObject>("Font");
+			static auto soundClass = std::make_shared<ClassObject>("Sound");
+			static auto musicClass = std::make_shared<ClassObject>("Music");
+			auto ImageToValue = [&](const Image& img) -> Value {
+				auto inst = std::make_shared<InstanceObject>(imageClass.get());
+				inst->fields["data"] = Value::pInt(img.data);
+				inst->fields["width"] = Value::Int(img.width);
+				inst->fields["height"] = Value::Int(img.height);
+				inst->fields["mipmaps"] = Value::Int(img.mipmaps);
+				inst->fields["format"] = Value::Int(img.format);
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			};
+			auto ValueToImage = [&](Value v, int l, int c) -> Image {
+				if (v.type != ValueType::INSTANCE) throw TypeError("Expected Image instance", l, c);
+				auto inst = static_cast<InstanceObject*>(v.ref.get());
+				if (inst->klass->name != "Image") throw TypeError("Expected Image instance", l, c);
+				Image img;
+				img.data = inst->fields["data"].aspInt();
+				img.width = (int)inst->fields["width"].asInt();
+				img.height = (int)inst->fields["height"].asInt();
+				img.mipmaps = (int)inst->fields["mipmaps"].asInt();
+				img.format = (int)inst->fields["format"].asInt();
+				return img;
+			};
+			auto TextureToValue = [&](const Texture2D& tex) -> Value {
+				auto inst = std::make_shared<InstanceObject>(textureClass.get());
+				inst->fields["id"] = Value::Int(tex.id); // Store OpenGL Texture ID
+				inst->fields["width"] = Value::Int(tex.width);
+				inst->fields["height"] = Value::Int(tex.height);
+				inst->fields["mipmaps"] = Value::Int(tex.mipmaps);
+				inst->fields["format"] = Value::Int(tex.format);
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			};
+			auto ValueToTexture = [&](Value v, int l, int c) -> Texture2D {
+				if (v.type != ValueType::INSTANCE) throw TypeError("Expected Texture2D instance", l, c);
+				auto inst = static_cast<InstanceObject*>(v.ref.get());
+				if (inst->klass->name != "Texture2D") throw TypeError("Expected Texture2D instance", l, c);
+				Texture2D tex;
+				tex.id = (unsigned int)inst->fields["id"].asInt();
+				tex.width = (int)inst->fields["width"].asInt();
+				tex.height = (int)inst->fields["height"].asInt();
+				tex.mipmaps = (int)inst->fields["mipmaps"].asInt();
+				tex.format = (int)inst->fields["format"].asInt();
+				return tex;
+			};
+			auto MakeColor = [&](int r, int g, int b, int a) -> Value {
+				auto inst = std::make_shared<InstanceObject>(colorClass.get());
+				inst->fields["r"] = Value::Int(r);
+				inst->fields["g"] = Value::Int(g);
+				inst->fields["b"] = Value::Int(b);
+				inst->fields["a"] = Value::Int(a);
+
+				Value v;
+				v.type = ValueType::INSTANCE;
+				v.ref = inst;
+				v.isConst = true; // Important: Make default colors constant!
+				return v;
+			};
+			auto FontToValue = [&](const Font& font) -> Value {
+				auto inst = std::make_shared<InstanceObject>(fontClass.get());
+				inst->fields["baseSize"] = Value::Int(font.baseSize);
+				inst->fields["glyphCount"] = Value::Int(font.glyphCount);
+				inst->fields["glyphPadding"] = Value::Int(font.glyphPadding);
+				inst->fields["texture"] = TextureToValue(font.texture);
+				inst->fields["recs"] = Value::pInt(font.recs);
+				inst->fields["glyphs"] = Value::pInt(font.glyphs);
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			};
+			auto ValueToFont = [&](Value v, int l, int c) -> Font {
+				if (v.type != ValueType::INSTANCE) throw TypeError("Expected Font instance", l, c);
+				auto inst = static_cast<InstanceObject*>(v.ref.get());
+				if (inst->klass->name != "Font") throw TypeError("Expected Font instance", l, c);
+				Font font;
+				font.baseSize = (int)inst->fields["baseSize"].asInt();
+				font.glyphCount = (int)inst->fields["glyphCount"].asInt();
+				font.glyphPadding = (int)inst->fields["glyphPadding"].asInt();
+				font.texture = ValueToTexture(inst->fields["texture"], l, c);
+				font.recs = (Rectangle*)inst->fields["recs"].aspInt();
+				font.glyphs = (GlyphInfo*)inst->fields["glyphs"].aspInt();
+				return font;
+			};
+			auto SoundToValue = [&](Sound s) -> Value {
+            auto inst = std::make_shared<InstanceObject>(soundClass.get());
+            inst->fields["buffer"] = Value::Int((long long)(uintptr_t)s.stream.buffer);
+            inst->fields["processor"] = Value::Int((long long)(uintptr_t)s.stream.processor);
+            inst->fields["sampleRate"] = Value::Int(s.stream.sampleRate);
+            inst->fields["sampleSize"] = Value::Int(s.stream.sampleSize);
+            inst->fields["channels"] = Value::Int(s.stream.channels);
+            inst->fields["frameCount"] = Value::Int(s.frameCount);   
+            Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+            return v;
+         };
+         auto MusicToValue = [&](Music m) -> Value {
+            auto inst = std::make_shared<InstanceObject>(musicClass.get());
+            inst->fields["buffer"] = Value::Int((long long)(uintptr_t)m.stream.buffer);
+            inst->fields["processor"] = Value::Int((long long)(uintptr_t)m.stream.processor);
+            inst->fields["sampleRate"] = Value::Int(m.stream.sampleRate);
+            inst->fields["sampleSize"] = Value::Int(m.stream.sampleSize);
+            inst->fields["channels"] = Value::Int(m.stream.channels);
+            inst->fields["frameCount"] = Value::Int(m.frameCount);
+            inst->fields["looping"] = Value::Bool(m.looping);
+            inst->fields["ctxType"] = Value::Int(m.ctxType);
+            inst->fields["ctxData"] = Value::Int((long long)(uintptr_t)m.ctxData);   
+            Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+            return v;
+         };
+         auto ValueToSound = [&](Value v, int l, int c) -> Sound {
+            if (v.type != ValueType::INSTANCE) throw ArgumentError("Expected Sound object", l, c);
+            auto* inst = static_cast<InstanceObject*>(v.ref.get());
+            Sound s;
+            s.stream.buffer = (rAudioBuffer*)(uintptr_t)inst->fields["buffer"].asInt();
+            s.stream.processor = (rAudioProcessor*)(uintptr_t)inst->fields["processor"].asInt();
+            s.stream.sampleRate = (unsigned int)inst->fields["sampleRate"].asInt();
+            s.stream.sampleSize = (unsigned int)inst->fields["sampleSize"].asInt();
+            s.stream.channels = (unsigned int)inst->fields["channels"].asInt();
+            s.frameCount = (unsigned int)inst->fields["frameCount"].asInt();
+            return s;
+         };
+         auto ValueToMusic = [&](Value v, int l, int c) -> Music {
+            if (v.type != ValueType::INSTANCE) throw ArgumentError("Expected Music object", l, c);
+            auto* inst = static_cast<InstanceObject*>(v.ref.get());
+            Music m;
+            m.stream.buffer = (rAudioBuffer*)(uintptr_t)inst->fields["buffer"].asInt();
+            m.stream.processor = (rAudioProcessor*)(uintptr_t)inst->fields["processor"].asInt();
+            m.stream.sampleRate = (unsigned int)inst->fields["sampleRate"].asInt();
+            m.stream.sampleSize = (unsigned int)inst->fields["sampleSize"].asInt();
+            m.stream.channels = (unsigned int)inst->fields["channels"].asInt();
+            m.frameCount = (unsigned int)inst->fields["frameCount"].asInt();
+            m.looping = inst->fields["looping"].asBool();
+            m.ctxType = (int)inst->fields["ctxType"].asInt();
+            m.ctxData = (void*)(uintptr_t)inst->fields["ctxData"].asInt();
+            return m;
+         };
+			env->set("LIGHTGRAY", MakeColor(200, 200, 200, 255), true, true);
+			env->set("GRAY", MakeColor(130, 130, 130, 255), true, true);
+			env->set("DARKGRAY", MakeColor(80, 80, 80, 255), true, true);
+			env->set("YELLOW", MakeColor(253, 249, 0, 255), true, true);
+			env->set("GOLD", MakeColor(255, 203, 0, 255), true, true);
+			env->set("ORANGE", MakeColor(255, 161, 0, 255), true, true);
+			env->set("PINK", MakeColor(255, 109, 194, 255), true, true);
+			env->set("RED", MakeColor(230, 41, 55, 255), true, true);
+			env->set("MAROON", MakeColor(190, 33, 55, 255), true, true);
+			env->set("GREEN", MakeColor(0, 228, 48, 255), true, true);
+			env->set("LIME", MakeColor(0, 158, 47, 255), true, true);
+			env->set("DARKGREEN", MakeColor(0, 117, 44, 255), true, true);
+			env->set("SKYBLUE", MakeColor(102, 191, 255, 255), true, true);
+			env->set("BLUE", MakeColor(0, 121, 241, 255), true, true);
+			env->set("DARKBLUE", MakeColor(0, 82, 172, 255), true, true);
+			env->set("PURPLE", MakeColor(200, 122, 255, 255), true, true);
+			env->set("VIOLET", MakeColor(135, 60, 190, 255), true, true);
+			env->set("DARKPURPLE", MakeColor(112, 31, 126, 255), true, true);
+			env->set("BEIGE", MakeColor(211, 176, 131, 255), true, true);
+			env->set("BROWN", MakeColor(127, 106, 79, 255), true, true);
+			env->set("DARKBROWN", MakeColor(76, 63, 47, 255), true, true);
+			env->set("WHITE", MakeColor(255, 255, 255, 255), true, true);
+			env->set("BLACK", MakeColor(0, 0, 0, 255), true, true);
+			env->set("BLANK", MakeColor(0, 0, 0, 0), true, true);
+			env->set("MAGENTA", MakeColor(255, 0, 255, 255), true, true);
+			env->set("RAYWHITE", MakeColor(245, 245, 245, 255), true, true);
+			define("Color", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("Color(r, g, b, a)", l, c);
+				auto inst = std::make_shared<InstanceObject>(colorClass.get());
+				inst->fields["r"] = args[0];
+				inst->fields["g"] = args[1];
+				inst->fields["b"] = args[2];
+				inst->fields["a"] = args[3];
+				Value v;
+				v.type = ValueType::INSTANCE;
+				v.ref = inst;
+				return v;
+			});
+			define("Rectangle", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("Rectangle(x, y, w, h)", l, c);
+				static auto rectClass = std::make_shared<ClassObject>("Rectangle");
+				auto inst = std::make_shared<InstanceObject>(rectClass.get());
+				inst->fields["x"] = args[0];
+				inst->fields["y"] = args[1];
+				inst->fields["width"] = args[2];
+				inst->fields["height"] = args[3];
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			});
+			define("Font", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("Font(baseSize, glyphCount, glyphPadding, texture, recs_ptr, glyphs_ptr)", l, c);
+				auto inst = std::make_shared<InstanceObject>(fontClass.get());
+				inst->fields["baseSize"] = args[0];
+				inst->fields["glyphCount"] = args[1];
+				inst->fields["glyphPadding"] = args[2];
+				inst->fields["texture"] = args[3];
+				inst->fields["recs"] = args[4];
+				inst->fields["glyphs"] = args[5];
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			});
+			define("FadeColor", [=](const vector<Value>& args, int l, int c) {
+				if(args.size() != 2) throw ArgumentError("Fade() takes two arguments, (color, fadeAmount)", l, c);
+				Color newColor = Fade(ValueToColor(args[0], l, c), args[1].asFloat());
+				auto v = MakeColor(newColor.r, newColor.g, newColor.b, newColor.a);
+				v.isConst = false;
+				return v;
+			});
+			define("ColorToGrayFast", [=](const vector<Value>& args, int l, int c) {
+				if(args.size() != 1) throw ArgumentError("ColorToGrayFast() takes one argument, (color)", l, c);
+				Color newColor = ValueToColor(args[0], l, c);
+				uint8_t G = static_cast<uint8_t>(floorf((newColor.r + newColor.g + newColor.b)/3.0F));
+				auto v = MakeColor(G, G, G, newColor.a);
+				v.isConst = false;
+				return v;
+			});
+			define("ColorToGray", [=](const vector<Value>& args, int l, int c){
+				if(args.size() != 1) throw ArgumentError("ColorToGray() takes one argument, (color)", l, c);
+				Color newColor = ValueToColor(args[0], l, c);
+				float R_linear = powf(newColor.r/255.0F, 2.2F);
+				float G_linear = powf(newColor.g/255.0F, 2.2F);
+				float B_linear = powf(newColor.r/255.0F, 2.2F);
+				float GRAY_linear = (0.2126F * R_linear) + (0.7152F * G_linear) + (0.0722F * B_linear);
+				uint8_t G = static_cast<uint8_t>(floorf(255.0F * powf(GRAY_linear, 1.0F/2.2F)));
+				auto v = MakeColor(G, G, G, newColor.a);
+				v.isConst = false;
+				return v;
+			});
+			define("InitWindow", [=](const vector<Value>& args, int l, int c) {
+				if(args.size()!=3) throw ArgumentError("InitWindow() takes three arguments, (width, height, text)", l, c);
+				InitWindow((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str());
+				return Value::None();
+			});
+			define("ToggleFullscreen", [=](const vector<Value>& args, int l, int c) {
+				if(!args.empty()) throw ArgumentError("ToggleFullscreen() takes no arguments", l, c);
+				ToggleFullscreen();
+				return Value::None();
+			});
+			define("CloseWindow", [=](const vector<Value>& args, int l, int c) {
+				if(!args.empty()) throw ArgumentError("CloseWindow() takes no arguments", l, c);
+				CloseWindow();
+				return Value::None();
+			});
+			define("WindowShouldClose", [=](const vector<Value>& args, int l, int c) {
+				if (!args.empty()) throw ArgumentError("WindowShouldClose() takes no arguments", l, c);
+				return Value::Bool((bool)WindowShouldClose());
+			});
+			define("BeginDrawing", [=](const vector<Value>& args, int l, int c) {
+				BeginDrawing();
+				return Value::None();
+			});
+			define("BeginBlendMode", [=](const vector<Value>& args, int l, int c) {
+				if(args.size() != 1) throw ArgumentError("BeginBlendMode() takes only one argument (mode)", l, c);
+				BeginBlendMode(args[0].asInt());
+				return Value::None();
+			});
+			define("EndBlendMode", [=](const vector<Value>& args, int l, int c) {
+				EndBlendMode();
+				return Value::None();
+			});
+			define("EndDrawing", [=](const vector<Value>& args, int l, int c) {
+				EndDrawing();
+				return Value::None();
+			});
+			define("ClearBackground", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("ClearBackground(Color)", l, c);
+				ClearBackground(ValueToColor(args[0], l, c));
+				return Value::None();
+			});
+			define("GetFrameTime", [=](const vector<Value>& args, int l, int c) {
+				if (!args.empty()) throw ArgumentError("GetFrameTime()", l, c);
+				return Value::Float(GetFrameTime());
+			});
+			define("SetTargetFPS", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("SetTargetFPS(fps)", l, c);
+				SetTargetFPS((int)args[0].asInt());
+				return Value::None();
+			});
+			define("DrawFPS", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawFPS(x, y)", l, c);
+				DrawFPS((int)args[0].asInt(), (int)args[1].asInt());
+				return Value::None();
+			});
+			define("GetFontDefault", [=](const vector<Value>& args, int l, int c) {
+				if (!args.empty()) throw ArgumentError("GetFontDefault() takes no arguments", l, c);
+				return FontToValue(GetFontDefault());
+			});
+			define("LoadFont", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("LoadFont(fileName)", l, c);
+				Font font = LoadFont(args[0].asString().c_str());
+				return FontToValue(font);
+			});
+			define("LoadFontEx", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("LoadFontEx(fileName, fontSize, fontChars_ptr)", l, c);
+				// Usually pass Value::Omit() or Value::None() for the 3rd arg to load default ASCII
+				int* chars = args[2].type == ValueType::NONE ? nullptr : (int*)args[2].aspInt();
+				Font font = LoadFontEx(args[0].asString().c_str(), (int)args[1].asInt(), chars, 0);
+				return FontToValue(font);
+			});
+			define("UnloadFont", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("UnloadFont(font)", l, c);
+				UnloadFont(ValueToFont(args[0], l, c));
+				return Value::None();
+			});
+			define("DrawTextEx", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("DrawTextEx(font, text, positionVec, fontSize, spacing, tintColor)", l, c);
+				DrawTextEx(ValueToFont(args[0], l, c), args[1].asString().c_str(), ValueToVector2(args[2], l, c), (float)args[3].asFloat(), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
+			define("DrawTextPro", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 8) throw ArgumentError("DrawTextPro(font, text, posVec, originVec, rotation, fontSize, spacing, tintColor)", l, c);
+				DrawTextPro(ValueToFont(args[0], l, c), args[1].asString().c_str(), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat(), (float)args[5].asFloat(), (float)args[6].asFloat(), ValueToColor(args[7], l, c));
+				return Value::None();
+			});
+			define("MeasureTextEx", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("MeasureTextEx(font, text, fontSize, spacing)", l, c);
+				Vector2 size = MeasureTextEx(ValueToFont(args[0], l, c), args[1].asString().c_str(), (float)args[2].asFloat(), (float)args[3].asFloat());
+				return Vector2ToValue(size);
+			});
+			define("DrawText", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawText(str, x, y, size, color)", l, c);
+				DrawText(args[0].asString().c_str(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawPixel", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawPixel(x, y, color)", l, c);
+				DrawPixel((int)args[0].asInt(), (int)args[1].asInt(), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawPixelV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawPixelV(vec, color)", l, c);
+				DrawPixelV(ValueToVector2(args[0], l, c), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawLine", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawLine(x1, y1, x2, y2, color)", l, c);
+				DrawLine((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawLineV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawLineV(vec1, vec2, color)", l, c);
+				DrawLineV(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawLineEx", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawLineEx(vec1, vec2, thick, color)", l, c);
+				DrawLineEx(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawLineBezier", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawLineBezier(vec1, vec2, thick, color)", l, c);
+				DrawLineBezier(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawLineStrip", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawLineStrip(pointList, color)", l, c);
+				auto points = ValueToVectorList(args[0], l, c);
+				DrawLineStrip(points.data(), (int)points.size(), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawCircle", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawCircle(x, y, radius, color)", l, c);
+				DrawCircle((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawCircleV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawCircleV(centerVec, radius, color)", l, c);
+				DrawCircleV(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawCircleLines", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawCircleLines(x, y, radius, color)", l, c);
+				DrawCircleLines((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawCircleGradient", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawCircleGradient(x, y, radius, inner, outer)", l, c);
+				DrawCircleGradient((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawCircleSector", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("DrawCircleSector(center, radius, start, end, segs, color)", l, c);
+				DrawCircleSector(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (int)args[4].asInt(), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
+			define("DrawEllipse", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawEllipse(x, y, radH, radV, color)", l, c);
+				DrawEllipse((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawRing", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 7) throw ArgumentError("DrawRing(center, inner, outer, start, end, segs, color)", l, c);
+				DrawRing(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), (int)args[5].asInt(), ValueToColor(args[6], l, c));
+				return Value::None();
+			});
+			define("DrawRectangle", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawRectangle(x, y, w, h, color)", l, c);
+				DrawRectangle((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawRectangleV(posVec, sizeVec, color)", l, c);
+				DrawRectangleV(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleRec", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawRectangleRec(rect, color)", l, c);
+				DrawRectangleRec(ValueToRect(args[0], l, c), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawRectanglePro", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawRectanglePro(rect, originVec, rot, color)", l, c);
+				DrawRectanglePro(ValueToRect(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleGradientV", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("DrawRectangleGradientV(x, y, w, h, topCol, botCol)", l, c);
+				DrawRectangleGradientV((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
+			define("DrawRectangleRounded", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawRectangleRounded(rect, roundness, segs, color)", l, c);
+				DrawRectangleRounded(ValueToRect(args[0], l, c), (float)args[1].asFloat(), (int)args[2].asInt(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawTriangle", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawTriangle(v1, v2, v3, color)", l, c);
+				DrawTriangle(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawTriangleFan", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("DrawTriangleFan(pointList, color)", l, c);
+				auto points = ValueToVectorList(args[0], l, c);
+				DrawTriangleFan(points.data(), (int)points.size(), ValueToColor(args[1], l, c));
+				return Value::None();
+			});
+			define("DrawPoly", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawPoly(center, sides, radius, rot, color)", l, c);
+				DrawPoly(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawPolyLinesEx", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 6) throw ArgumentError("DrawPolyLinesEx(center, sides, radius, rot, thick, color)", l, c);
+				DrawPolyLinesEx(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
+				return Value::None();
+			});
+			define("IsKeyPressed", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyPressed(key)", l, c);
+				return Value::Bool(IsKeyPressed((int)args[0].asInt()));
+			});
+			define("IsKeyPressedRepeat", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyPressedRepeat(key)", l, c);
+				return Value::Bool(IsKeyPressedRepeat((int)args[0].asInt()));
+			});
+			define("IsKeyDown", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyDown(key)", l, c);
+				return Value::Bool(IsKeyDown((int)args[0].asInt()));
+			});
+			define("IsKeyReleased", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyReleased(key)", l, c);
+				return Value::Bool(IsKeyReleased((int)args[0].asInt()));
+			});
+			define("IsKeyUp", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsKeyUp(key)", l, c);
+				return Value::Bool(IsKeyUp((int)args[0].asInt()));
+			});
+			define("GetKeyPressed", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetKeyPressed());
+			});
+			define("GetCharPressed", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetCharPressed());
+			});
+			define("SetExitKey", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("SetExitKey(key)", l, c);
+				SetExitKey((int)args[0].asInt());
+				return Value::None();
+			});
+			define("IsMouseButtonPressed", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonPressed(button)", l, c);
+				return Value::Bool(IsMouseButtonPressed((int)args[0].asInt()));
+			});
+			define("IsMouseButtonDown", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonDown(button)", l, c);
+				return Value::Bool(IsMouseButtonDown((int)args[0].asInt()));
+			});
+			define("IsMouseButtonReleased", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonReleased(button)", l, c);
+				return Value::Bool(IsMouseButtonReleased((int)args[0].asInt()));
+			});
+			define("IsMouseButtonUp", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("IsMouseButtonUp(button)", l, c);
+				return Value::Bool(IsMouseButtonUp((int)args[0].asInt()));
+			});
+			define("GetMouseX", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetMouseX());
+			});
+			define("GetMouseY", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(GetMouseY());
+			});
+			define("GetMousePosition", [=](const vector<Value>& args, int l, int c) {
+				return Vector2ToValue(GetMousePosition());
+			});
+			define("GetMouseDelta", [=](const vector<Value>& args, int l, int c) {
+				return Vector2ToValue(GetMouseDelta());
+			});
+			define("SetMousePosition", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("SetMousePosition(x, y)", l, c);
+				SetMousePosition((int)args[0].asInt(), (int)args[1].asInt());
+				return Value::None();
+			});
+			define("SetMouseOffset", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("SetMouseOffset(x, y)", l, c);
+				SetMouseOffset((int)args[0].asInt(), (int)args[1].asInt());
+				return Value::None();
+			});
+			define("SetMouseScale", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("SetMouseScale(x, y)", l, c);
+				SetMouseScale((float)args[0].asFloat(), (float)args[1].asFloat());
+				return Value::None();
+			});
+			define("GetMouseWheelMove", [](const vector<Value>& args, int l, int c) {
+				return Value::Float(GetMouseWheelMove());
+			});
+			define("GetMouseWheelMoveV", [=](const vector<Value>& args, int l, int c) {
+				return Vector2ToValue(GetMouseWheelMoveV());
+			});
+			define("SetMouseCursor", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("SetMouseCursor(cursor)", l, c);
+				SetMouseCursor((int)args[0].asInt());
+				return Value::None();
+			});
+			define("Image", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("Image(data_ptr, width, height, mipmaps, format)", l, c);
+				auto inst = std::make_shared<InstanceObject>(imageClass.get());
+				inst->fields["data"] = args[0];
+				inst->fields["width"] = args[1];
+				inst->fields["height"] = args[2];
+				inst->fields["mipmaps"] = args[3];
+				inst->fields["format"] = args[4];
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			});
+			define("Texture2D", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("Texture2D(id, width, height, mipmaps, format)", l, c);
+				auto inst = std::make_shared<InstanceObject>(textureClass.get());
+				inst->fields["id"] = args[0];
+				inst->fields["width"] = args[1];
+				inst->fields["height"] = args[2];
+				inst->fields["mipmaps"] = args[3];
+				inst->fields["format"] = args[4];
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			});
+			define("LoadImage", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("LoadImage(fileName)", l, c);
+				Image img = LoadImage(args[0].asString().c_str());
+				return ImageToValue(img);
+			});
+			define("LoadImageColors", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("LoadImageColors(img)", l, c);
+				Image img = ValueToImage(args[0], l, c);
+				Color* pixels = LoadImageColors(img);
+				std::vector<Value> colorPix;
+				colorPix.reserve(img.width * img.height);
+				for(size_t i = 0; i < img.width * img.height; i++) colorPix.push_back(MakeColor(pixels[i].r,pixels[i].g,pixels[i].b,pixels[i].a));
+				return Value::List(colorPix);
+			});
+			define("UpdateImagePixels", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 2) throw ArgumentError("UpdateImagePixels(img, PixelList)", l, c);
+				Image img = ValueToImage(args[0], l, c);
+				auto* vec = static_cast<ListObject*>(args[1].ref.get());
+				Color* pixels = LoadImageColors(img);
+				size_t limit;
+				if (vec->elements.size() != img.width * img.height) throw Warning("list size does not match with the image's pixels. The result may not be correct, try resizing the image: ImageResizeNN(img, New_Width, New_Height)", l, c);
+				limit = std::min((size_t)img.width * (size_t)img.height, vec->elements.size());
+				for(size_t i = 0; i < limit; i++) pixels[i] = ValueToColor(vec->elements[i], l, c);
+				return Value::None();
+			});
+			define("LoadImageFromScreen", [=](const vector<Value>& args, int l, int c) {
+				if (!args.empty()) throw ArgumentError("LoadImageFromScreen()", l, c);
+				Image img = LoadImageFromScreen();
+				return ImageToValue(img);
+			});
+         define("ImageResizeNN", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 3) throw ArgumentError("ImageResizeNN(image, newWidth, newHeight)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            ImageResizeNN(&img, (int)args[1].asInt(), (int)args[2].asInt());
+            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
+            inst->fields["data"] = Value::pInt(img.data); 
+            inst->fields["width"] = Value::Int(img.width);
+            inst->fields["height"] = Value::Int(img.height);
+            return Value::None();
+         });
+         define("ImageColorTint", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("ImageColorTint(image, color)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            ImageColorTint(&img, ValueToColor(args[1], l, c));
+            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
+            inst->fields["data"] = Value::pInt(img.data);
+            return Value::None();
+         });
+			define("ImageDither", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 5) throw ArgumentError("ImageDither(image, rBpp, gBpp, bBpp, aBpp)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            ImageDither(&img, (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), (int)args[4].asInt());
+            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
+            inst->fields["data"] = Value::pInt(img.data);
+				inst->fields["format"] = Value::Int(img.format); 
+            inst->fields["width"] = Value::Int(img.width);
+            inst->fields["height"] = Value::Int(img.height);
+            return Value::None();
+         });
+			define("ImageApplyPalette", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("ImageApplyPalette(image, colorList)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            vector<Color> palette;
+            auto list = static_cast<ListObject*>(args[1].ref.get());
+            for (const auto& val : list->elements) palette.push_back(ValueToColor(val, l, c));
+            Color *pixels = LoadImageColors(img);
+            for (int i = 0; i < img.width * img.height; i++) {
+               Color current = pixels[i];
+               Color closest = palette[0];
+               int minDistance = INT_MAX;
+               for (Color p : palette) {
+                  int rDiff = current.r - p.r;
+                  int gDiff = current.g - p.g;
+                  int bDiff = current.b - p.b;
+                  double dist = (rDiff * rDiff * 0.30) + (gDiff * gDiff * 0.59) + (bDiff * bDiff * 0.11);
+                  if (dist < minDistance) {
+                     minDistance = dist;
+                     closest = p;
+                  }
+					}
+               pixels[i] = closest;
+            }
+            for (int y = 0; y < img.height; y++) for (int x = 0; x < img.width; x++) ImageDrawPixel(&img, x, y, pixels[y * img.width + x]);
+            UnloadImageColors(pixels);
+            return Value::None();
+         });
+			define("ImageColorGrayscale", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("ImageColorGrayscale(image)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            ImageColorGrayscale(&img);
+            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
+            inst->fields["data"] = Value::pInt(img.data);
+				inst->fields["format"] = Value::Int(img.format); 
+            inst->fields["width"] = Value::Int(img.width);
+            inst->fields["height"] = Value::Int(img.height);
+            return Value::None();
+         });
+			define("ImageColorInvert", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("ImageColorInvert(image)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            ImageColorInvert(&img);
+            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
+            inst->fields["data"] = Value::pInt(img.data);
+            return Value::None();
+         });
+         define("ImageColorContrast", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("ImageColorContrast(image, contrastFloat)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            ImageColorContrast(&img, (float)args[1].asFloat());
+            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
+            inst->fields["data"] = Value::pInt(img.data);
+            return Value::None();
+         });
+         define("ImageColorBrightness", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("ImageColorBrightness(image, brightnessInt)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            ImageColorBrightness(&img, (int)args[1].asInt());
+            auto inst = static_cast<InstanceObject*>(args[0].ref.get());
+            inst->fields["data"] = Value::pInt(img.data);
+            return Value::None();
+         });
+         define("ExportImage", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("ExportImage(image, fileName)", l, c);
+            Image img = ValueToImage(args[0], l, c);
+            bool success = ExportImage(img, args[1].asString().c_str());
+            return Value::Bool(success);
+         });
+			define("UnloadImage", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("UnloadImage(image)", l, c);
+				UnloadImage(ValueToImage(args[0], l, c));
+				return Value::None();
+			});
+			define("LoadTexture", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("LoadTexture(fileName)", l, c);
+				Texture2D tex = LoadTexture(args[0].asString().c_str());
+				return TextureToValue(tex);
+			});
+			define("LoadTextureFromImage", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("LoadTextureFromImage(image)", l, c);
+				Texture2D tex = LoadTextureFromImage(ValueToImage(args[0], l, c));
+				return TextureToValue(tex);
+			});
+			define("UnloadTexture", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("UnloadTexture(texture)", l, c);
+				UnloadTexture(ValueToTexture(args[0], l, c));
+				return Value::None();
+			});
+			define("DrawTexture", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawTexture(texture, posX, posY, tintColor)", l, c);
+				DrawTexture(ValueToTexture(args[0], l, c), (int)args[1].asInt(), (int)args[2].asInt(), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+			define("DrawTextureV", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("DrawTextureV(texture, positionVec, tintColor)", l, c);
+				DrawTextureV(ValueToTexture(args[0], l, c), ValueToVector2(args[1], l, c), ValueToColor(args[2], l, c));
+				return Value::None();
+			});
+			define("DrawTextureEx", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 5) throw ArgumentError("DrawTextureEx(texture, positionVec, rotation, scale, tintColor)", l, c);
+				DrawTextureEx(ValueToTexture(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+				return Value::None();
+			});
+			define("DrawTextureRec", [=](const vector<Value>& args, int l, int c) {
+				if (args.size() != 4) throw ArgumentError("DrawTextureRec(texture, sourceRec, positionVec, tintColor)", l, c);
+				DrawTextureRec(ValueToTexture(args[0], l, c), ValueToRect(args[1], l, c), ValueToVector2(args[2], l, c), ValueToColor(args[3], l, c));
+				return Value::None();
+			});
+         define("InitAudioDevice", [=](const vector<Value>& args, int l, int c) {
+            InitAudioDevice();
+            return Value::None();
+         });
+         define("CloseAudioDevice", [=](const vector<Value>& args, int l, int c) {
+            CloseAudioDevice();
+            return Value::None();
+         });
+         define("LoadSound", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("LoadSound(fileName)", l, c);
+            Sound s = LoadSound(args[0].asString().c_str());
+            return SoundToValue(s);
+         });
+         define("UnloadSound", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("UnloadSound(sound)", l, c);
+            UnloadSound(ValueToSound(args[0], l, c));
+            return Value::None();
+         });
+         define("LoadMusicStream", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("LoadMusicStream(fileName)", l, c);
+            Music m = LoadMusicStream(args[0].asString().c_str());
+            return MusicToValue(m);
+         });
+         define("UnloadMusicStream", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("UnloadMusicStream(music)", l, c);
+            UnloadMusicStream(ValueToMusic(args[0], l, c));
+            return Value::None();
+         });
+         define("SetMasterVolume", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("SetMasterVolume(float)", l, c);
+            SetMasterVolume((float)args[0].asFloat());
+            return Value::None();
+         });
+         define("PlaySound", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("PlaySound(sound)", l, c);
+            PlaySound(ValueToSound(args[0], l, c));
+            return Value::None();
+         });
+         define("StopSound", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("StopSound(sound)", l, c);
+            StopSound(ValueToSound(args[0], l, c));
+            return Value::None();
+         });
+         define("SetSoundPitch", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("SetSoundPitch(sound, pitchFloat)", l, c);
+            // 1.0 is normal, 0.5 is slow/deep, 2.0 is fast/high
+            SetSoundPitch(ValueToSound(args[0], l, c), (float)args[1].asFloat());
+            return Value::None();
+         });
+         define("SetSoundVolume", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("SetSoundVolume(sound, volumeFloat)", l, c);
+            SetSoundVolume(ValueToSound(args[0], l, c), (float)args[1].asFloat());
+            return Value::None();
+         });
+         define("SetSoundPan", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("SetSoundPan(sound, panFloat)", l, c);
+            // 0.0 is left speaker, 0.5 is middle, 1.0 is right speaker
+            SetSoundPan(ValueToSound(args[0], l, c), (float)args[1].asFloat());
+            return Value::None();
+         });
+         define("PlayMusicStream", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("PlayMusicStream(music)", l, c);
+            PlayMusicStream(ValueToMusic(args[0], l, c));
+            return Value::None();
+         });
+         define("UpdateMusicStream", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("UpdateMusicStream(music)", l, c);
+            UpdateMusicStream(ValueToMusic(args[0], l, c));
+            return Value::None();
+         });
+         define("SetMusicPitch", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("SetMusicPitch(music, pitchFloat)", l, c);
+            SetMusicPitch(ValueToMusic(args[0], l, c), (float)args[1].asFloat());
+            return Value::None();
+         });
+         define("SetMusicVolume", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("SetMusicVolume(music, volumeFloat)", l, c);
+            SetMusicVolume(ValueToMusic(args[0], l, c), (float)args[1].asFloat());
+            return Value::None();
+         });
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Raylib", modVal, false, false);
+		};
+		modules["Ncurses"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Ncurses");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			env->set("COLOR_BLACK", Value::Int(COLOR_BLACK), true, true);
+			env->set("COLOR_RED", Value::Int(COLOR_RED), true, true);
+			env->set("COLOR_GREEN", Value::Int(COLOR_GREEN), true, true);
+			env->set("COLOR_YELLOW", Value::Int(COLOR_YELLOW), true, true);
+			env->set("COLOR_BLUE", Value::Int(COLOR_BLUE), true, true);
+			env->set("COLOR_MAGENTA", Value::Int(COLOR_MAGENTA), true, true);
+			env->set("COLOR_CYAN", Value::Int(COLOR_CYAN), true, true);
+			env->set("COLOR_WHITE", Value::Int(COLOR_WHITE), true, true);
+			env->set("A_NORMAL", Value::Int(A_NORMAL), true, true);
+			env->set("A_BOLD", Value::Int(A_BOLD), true, true);
+			env->set("A_UNDERLINE", Value::Int(A_UNDERLINE), true, true);
+			env->set("A_REVERSE", Value::Int(A_REVERSE), true, true);
+			env->set("A_BLINK", Value::Int(A_BLINK), true, true);
+			define("InitScr", [](const vector<Value>& args, int l, int c) {
+				setlocale(LC_ALL, "");
+				initscr();
+				cbreak();
+				noecho();
+				keypad(stdscr, true);
+				return Value::None();
+			});
+			define("EndWin", [](const vector<Value>& args, int l, int c) {
+				endwin();
+				return Value::None();
+			});
+			define("Print", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 1) throw ArgumentError("Print(string)", l, c);
+				printw("%s", args[0].asString().c_str());
+				return Value::None();
+			});
+			define("MovePrint", [](const vector<Value>& args, int l, int c) {
+				if (args.size() != 3) throw ArgumentError("MovePrint(x, y, string)", l, c);
+				mvprintw((int)args[1].asInt(), (int)args[0].asInt(), "%s", args[2].asString().c_str());
+				return Value::None();
+			});
+			define("Refresh", [](const vector<Value>& args, int l, int c) {
+				refresh();
+				return Value::None();
+			});
+			define("Clear", [](const vector<Value>& args, int l, int c) {
+				clear();
+				return Value::None();
+			});
+			define("GetCh", [](const vector<Value>& args, int l, int c) {
+				return Value::Int(getch());
+			});
+         define("GetMaxX", [](const vector<Value>& args, int l, int c) {
+            return Value::Int(getmaxx(stdscr));
+         });
+         define("GetMaxY", [](const vector<Value>& args, int l, int c) {
+            return Value::Int(getmaxy(stdscr));
+         });
+         define("CursSet", [](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("CursSet(visibility: 0=invisible, 1=normal, 2=bright)", l, c);
+            curs_set((int)args[0].asInt());
+            return Value::None();
+         });
+         define("NoDelay", [](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("NoDelay(bool)", l, c);
+            nodelay(stdscr, args[0].asBool());
+            return Value::None();
+         });
+         define("StartColor", [](const vector<Value>& args, int l, int c) {
+            start_color();
+            return Value::None();
+         });
+         define("InitPair", [](const vector<Value>& args, int l, int c) {
+            if (args.size() != 3) throw ArgumentError("InitPair(pair_id, fg_color, bg_color)", l, c);
+            init_pair((short)args[0].asInt(), (short)args[1].asInt(), (short)args[2].asInt());
+            return Value::None();
+         });
+         define("ColorPair", [](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("ColorPair(pair_id)", l, c);
+            return Value::Int(COLOR_PAIR((int)args[0].asInt()));
+         });
+         define("AttrOn", [](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("AttrOn(attribute_or_color)", l, c);
+            attron((int)args[0].asInt());
+            return Value::None();
+         });
+         define("AttrOff", [](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("AttrOff(attribute_or_color)", l, c);
+            attroff((int)args[0].asInt());
+            return Value::None();
+         });
+         define("DrawBox", [](const vector<Value>& args, int l, int c) {
+            box(stdscr, 0, 0);
+            return Value::None();
+         });
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Ncurses", modVal, false, false);
+		};
+		modules["Json"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Json");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+         static std::function<json(Value, int, int, std::vector<void*>&)> ValueToJson;
+         static std::function<Value(json, int, int)> JsonToValue;
+         static auto jsonClass = std::make_shared<ClassObject>("JsonObject");
+         ValueToJson = [&](Value v, int l, int c, std::vector<void*>& visited) -> json {
+            if (v.type == ValueType::NONE) return nullptr;
+            if (v.type == ValueType::BOOL) return v.asBool();
+            if (v.type == ValueType::INT) return v.asInt();
+            if (v.type == ValueType::FLOAT) return v.asFloat();
+            if (v.type == ValueType::STRING) return v.asString();
+            if (v.type == ValueType::LIST || v.type == ValueType::INSTANCE) {
+               if (!v.ref) return nullptr; 
+               void* ptr = v.ref.get();
+               for (void* p : visited) if (p == ptr) return "[Cyclic Reference]"; 
+               visited.push_back(ptr);
+               if (v.type == ValueType::LIST) {
+                  json j = json::array();
+                  auto list = static_cast<ListObject*>(ptr);
+                  for (auto& item : list->elements) j.push_back(ValueToJson(item, l, c, visited));
+                  visited.pop_back();
+                  return j;
+               }
+               if (v.type == ValueType::INSTANCE) {
+                  json j = json::object();
+                  auto inst = static_cast<InstanceObject*>(ptr);
+                  for (auto& pair : inst->fields) {
+                     if (pair.second.type != ValueType::INT &&
+                        pair.second.type != ValueType::FLOAT &&
+                        pair.second.type != ValueType::STRING &&
+                        pair.second.type != ValueType::BOOL &&
+                        pair.second.type != ValueType::LIST &&
+                        pair.second.type != ValueType::INSTANCE &&
+                        pair.second.type != ValueType::NONE) {
+                        continue; 
+                     }
+                     j[pair.first] = ValueToJson(pair.second, l, c, visited);
+                  }
+                  visited.pop_back();
+                  return j;
+               }
+            }
+            return nullptr; 
+         };
+			JsonToValue = [&](json j, int l, int c) -> Value {
+            if (j.is_null()) return Value::None();
+            if (j.is_boolean()) return Value::Bool(j.get<bool>());
+            if (j.is_number_integer()) return Value::Int(j.get<long long>()); 
+            if (j.is_number_float()) return Value::Float(j.get<double>());
+            if (j.is_string()) return Value::String(j.get<std::string>());
+            if (j.is_array()) {
+               auto list = std::make_shared<ListObject>();
+               for (auto& item : j) {
+                  list->elements.push_back(JsonToValue(item, l, c));
+               }
+               Value v; v.type = ValueType::LIST; v.ref = list; 
+               return v;
+            }
+            if (j.is_object()) {
+               auto inst = std::make_shared<InstanceObject>(jsonClass.get());
+               for (auto& [key, value] : j.items()) {
+                  inst->fields[key] = JsonToValue(value, l, c);
+               }
+               Value v; v.type = ValueType::INSTANCE; v.ref = inst; 
+               return v;
+            }
+            return Value::None();
+         };
+         define("ParseJson", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("Json.Parse(string)", l, c);
+            try {
+               json j = json::parse(args[0].asString());
+               return JsonToValue(j, l, c);
+            } 
+				catch (json::parse_error& e) {
+               throw ParseError("Invalid JSON string at byte " + std::to_string(e.byte), l, c);
+            }
+         });
+			define("StringifyJson", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1 && args.size() != 2) throw ArgumentError("Json.stringify(object, indent = -1)", l, c);
+            std::vector<void*> visited;
+				json j = ValueToJson(args[0], l, c, visited);
+            return Value::String(j.dump(args.size() == 2? args[1].asInt() : -1));
+         });
+			define("IsValidJson", [](const vector<Value>& args, int l, int c) {
+            if (args.size() != 1) throw ArgumentError("Json.isValid(string)", l, c);
+            bool isValid = json::accept(args[0].asString());
+            return Value::Bool(isValid);
+         });
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Json", modVal, false, false);
+		};
+		modules["QRgen"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("QRgen");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+			auto define = [&](string name, NativeFunc f) {
+				moduleNamespace->staticFields[name] = Value::Native(f);
+				for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+			};
+			static auto QrClass = std::make_shared<ClassObject>("QRcode");
+			auto QrToValue = [=](QrCode qr, int l, int c) -> Value {
+				auto inst = std::make_shared<InstanceObject>(QrClass.get());
+				inst->fields["Version"] = Value::Int(qr.getVersion());
+				inst->fields["Size"] = Value::Int(qr.getSize());
+				std::vector<Value> arr;
+				arr.reserve(qr.getSize());
+				for(int x = 0; x < qr.getSize(); x++){
+					std::vector<Value> temp;
+					temp.reserve(qr.getSize());
+					for(int y = 0; y < qr.getSize(); y++){
+						temp.push_back(Value::Bool(qr.getModule(x, y)));
+					}
+					arr.push_back(Value::Tuple(temp));
+				}
+				inst->fields["BoolArray"] = Value::Tuple(arr);
+				inst->fields["CorrectionLevel"] = Value::Int(static_cast<long long>(qr.getErrorCorrectionLevel()));
+				Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+				return v;
+			};
+			env->set("ECC_LEVEL_LOW", Value::Int(static_cast<long long>(QrCode::Ecc::LOW)), true, true);
+			env->set("ECC_LEVEL_MEDIUM", Value::Int(static_cast<long long>(QrCode::Ecc::MEDIUM)), true, true);
+			env->set("ECC_LEVEL_QUARTILE", Value::Int(static_cast<long long>(QrCode::Ecc::QUARTILE)), true, true);
+			env->set("ECC_LEVEL_HIGH", Value::Int(static_cast<long long>(QrCode::Ecc::HIGH)), true, true);
+			define("GenerateQRcode", [=](const vector<Value>& args, int l, int c){
+				if(args.size() != 2) throw ArgumentError("EncodeText(text, encodeLevel)", l, c);
+				QrCode QR = QrCode::encodeText(args[0].asString().c_str(), static_cast<QrCode::Ecc>(args[1].asInt()));
+				return QrToValue(QR, l, c);
+			});
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Math", modVal, false, false);
+		};
+		modules["Http"] = [this](std::shared_ptr<Env> env, const vector<string>& symbols) {
+			auto moduleNamespace = std::make_shared<ClassObject>("Http");
+         moduleNamespace->mro.push_back(moduleNamespace.get());
+         auto define = [&](string name, NativeFunc f) {
+            moduleNamespace->staticFields[name] = Value::Native(f);
+            for (const auto& s : symbols) if (s == name) { env->set(name, Value::Native(f), true); break; }
+         };
+         static auto responseClass = std::make_shared<ClassObject>("HttpResponse");
+         auto ResultToValue = [=](const httplib::Result& res) -> Value {
+            if (!res) return Value::None();
+            auto inst = std::make_shared<InstanceObject>(responseClass.get());
+            inst->fields["status"] = Value::Int(res->status);
+            inst->fields["body"] = Value::String(res->body);
+            Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+            return v;
+         };
+         define("Get", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("Http.Get(host, path)", l, c);
+            httplib::Client cli(args[0].asString());
+            return ResultToValue(cli.Get(args[1].asString()));
+         });
+         define("Post", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 4) throw ArgumentError("Http.Post(host, path, body, contentType)", l, c);
+            httplib::Client cli(args[0].asString());
+            return ResultToValue(cli.Post(args[1].asString(), args[2].asString(), args[3].asString()));
+         });
+         define("Put", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 4) throw ArgumentError("Http.Put(host, path, body, contentType)", l, c);
+            httplib::Client cli(args[0].asString());
+            return ResultToValue(cli.Put(args[1].asString(), args[2].asString(), args[3].asString()));
+         });
+         define("Delete", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("Http.Delete(host, path)", l, c);
+            httplib::Client cli(args[0].asString());
+            return ResultToValue(cli.Delete(args[1].asString()));
+         });
+         static httplib::Server svr;
+         auto bindRoute = [this, env](const string& method, const string& path, Value lambda, int l, int c) {
+            auto handler = [=](const httplib::Request& req, httplib::Response& res) {
+               Chunk tempChunk;
+               int lambdaIdx = tempChunk.addConstant(lambda);
+               int bodyIdx = tempChunk.addConstant(Value::String(req.body));
+               tempChunk.write(OpCode::OP_CONSTANT, l, c);
+               tempChunk.write((uint8_t)bodyIdx, l, c);
+               tempChunk.write(OpCode::OP_CONSTANT, l, c);
+               tempChunk.write((uint8_t)lambdaIdx, l, c);
+               tempChunk.write(OpCode::OP_CALL, l, c);
+               tempChunk.write((uint8_t)1, l, c);
+               tempChunk.write(OpCode::OP_RETURN, l, c);
+               VM tempVM;
+               tempVM.globals = env;
+               tempVM.methodResolver = [&](MethodCallExpr* m) {
+						return this->Resolve_methods(m);
+					};   
+					try {
+                  tempVM.run(tempChunk);
+                  Value ret = tempVM.stack.empty() ? Value::None() : tempVM.stack.back();
+                  if (ret.type == ValueType::STRING) {
+                     res.set_content(ret.asString(), "application/json");
+                  } 
+					   else {
+                  	res.set_content("Success", "text/plain");
+                  }
+               } 
+					catch (...) {
+						res.status = 500;
+						res.set_content("Internal Server Error in y_lang VM", "text/plain");
+               }
+            };
+            if (method == "GET") svr.Get(path, handler);
+            else if (method == "POST") svr.Post(path, handler);
+         };
+         define("ServerGet", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2 || args[1].type != ValueType::FUNCTION) throw ArgumentError("Http.ServerGet(path, lambda)", l, c);
+            bindRoute("GET", args[0].asString(), args[1], l, c);
+            return Value::None();
+         });
+         define("ServerPost", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2 || args[1].type != ValueType::FUNCTION) throw ArgumentError("Http.ServerPost(path, lambda)", l, c);
+            bindRoute("POST", args[0].asString(), args[1], l, c);
+            return Value::None();
+         });
+         define("Listen", [=](const vector<Value>& args, int l, int c) {
+            if (args.size() != 2) throw ArgumentError("Http.Listen(host, port)", l, c);
+            string host = args[0].asString();
+            int port = (int)args[1].asInt();
+            std::cout << "[ymm Server] Listening on " << host << ":" << port << "...\n";
+            svr.listen(host.c_str(), port);
+            return Value::None();
+         });
+			Value modVal; 
+         modVal.type = ValueType::CLASS;
+         modVal.ref = moduleNamespace;
+         env->set("Http", modVal, false, false);
+      };
+		// ========= CASTING ==========
+		env->set("int", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.empty()) return Value::Int(0);
+			Value v = args[0];
+			if (v.type == ValueType::INT) return v;
+			if (v.type == ValueType::BIGINT) return v;
+			if (v.type == ValueType::BOOL) return Value::Int(v.asBool() ? 1 : 0);
+			if (v.type == ValueType::FLOAT) {
+				double d = v.asFloat();
+				if (d >= (double)LLONG_MIN && d <= (double)LLONG_MAX) return Value::Int((long long)d);
+				std::ostringstream ss;
+				ss << std::fixed << std::setprecision(0) << std::abs(d);
+				std::string s = ss.str();
+				BigIntObject res(0);
+				BigIntObject ten(10);
+				for (char ch : s) if (ch >= '0' && ch <= '9') res = (res * ten) + BigIntObject(ch - '0');
+				res.isNegative = (d < 0);
+				return Value::BigInt(std::make_shared<BigIntObject>(res));
+			}
+			if (v.type == ValueType::STRING) {
+				string s = v.asString();
+				try {return Value::Int(std::stoll(s));}
+				catch (...) {
+					bool neg = false;
+					if (!s.empty() && s[0] == '-') {neg = true; s = s.substr(1);}
+					BigIntObject res(0);
+					BigIntObject ten(10);
+					for (char ch : s) {
+						if (ch >= '0' && ch <= '9') res = (res * ten) + BigIntObject(ch - '0');
+						else throw ValueError("Invalid literal for int(): " + v.asString(), l, c);
+					}
+					res.isNegative = neg;
+					return Value::BigInt(std::make_shared<BigIntObject>(res));
+				}
+			}
+			throw TypeError("Cannot cast '" + valueToString(v) + "' to int", l, c);
+		}), false);
+		env->set("float", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.empty()) return Value::Float(0.0, false);
+			Value v = args[0];
+			if (v.type == ValueType::FLOAT) return Value::Float(v.asFloat());
+			if (v.type == ValueType::INT) return Value::Float(v.asInt());
+			if (v.type == ValueType::BOOL) return Value::Float(v.asBool() ? 1.0 : 0.0);
+			if (v.type == ValueType::STRING && isdecimal_str(v.asString())) {
+				try {
+					return Value::Int(std::stof(v.asString()));
+				}
+				catch (...) {
+					throw ValueError("ValueError: String too large for float", l, c);
+				}
+			}
+			throw TypeError("Cannot cast '" + valueToString(v) + "' to float", l, c);
+			}), false);
+		env->set("bool", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.empty()) return Value::Bool(false);
+			return Value::Bool(args[0].isTruthy());
+		}), false);
+		env->set("string", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.empty()) return Value::String("");
+			Value v = args[0];
+			switch (v.type) {
+			case ValueType::INT: return Value::String(v.adress ? ptr_to_string(v.adress) : std::to_string(v.asInt()));
+			case ValueType::FLOAT: return Value::String(std::to_string(v.asFloat()));
+			case ValueType::BOOL: return Value::String(v.asBool() ? "true" : "false");
+			case ValueType::STRING: return Value::String(v.asString());
+			case ValueType::NONE: return Value::String("None", true);
+			case ValueType::RANGE: return Value::String(valueToString(v));
+			case ValueType::SET: return Value::String(valueToString(v));
+			case ValueType::TUPLE: return Value::String(valueToString(v));
+			case ValueType::LIST: return Value::String(valueToString(v));
+			case ValueType::BIGINT: return Value::String(valueToString(v));
+			default: return Value::String("");
+			}
+		}), false);
+		// ======== CONSTRUCTOR ========
+		env->set("range", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.empty()) return Value::Range(0, 0, 1, false, false, false);
+			if (args.size() == 1 && args[0].type == ValueType::RANGE) return args[0];
+			double start = 0, end = 0, step = 1;
+			bool isFloat = false;
+			auto checkFloat = [&](const Value& v) { if (v.type == ValueType::FLOAT) isFloat = true; };
+			if (args.size() == 1) {
+				checkFloat(args[0]);
+				end = args[0].asFloat();
+			}
+			else if (args.size() >= 2) {
+				checkFloat(args[0]);
+				checkFloat(args[1]);
+				start = args[0].asFloat();
+				end = args[1].asFloat();
+			}
+			if (args.size() == 3) {
+				checkFloat(args[2]);
+				step = args[2].asFloat();
+			}
+			return Value::Range(start, end, step, true, false, isFloat);
+		}), false);
+		env->set("list", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (!args.empty() && args[0].type == ValueType::RANGE) {
+				auto* r = static_cast<RangeObject*>(args[0].ref.get());
+				vector<Value> elems;
+				double current = r->start;
+				if (!r->startInclusive) current += r->step;
+				if ((r->step > 0 && r->start > r->end) || (r->step < 0 && r->start < r->end) || r->step == 0) return Value::List({});
+				double diff = std::abs(r->end - r->start);
+				double steps = diff / std::abs(r->step);
+				if (steps > 1000000) throw MemoryError("MemoryError: Range too large to convert to list", l, c);
+				while (true) {
+					bool cond;
+					if (r->step > 0) cond = r->endInclusive ? (current <= r->end) : (current < r->end);
+					else cond = r->endInclusive ? (current >= r->end) : (current > r->end);
+					if (!cond) break;
+					if (r->isFloat) elems.push_back(Value::Float(current));
+					else elems.push_back(Value::Int((long long)current));
+					current += r->step;
+				}
+				return Value::List(elems);
+			}
+			if (!args.empty() && args[0].type == ValueType::SET) {
+				auto* s = static_cast<SetObject*>(args[0].ref.get());
+				return Value::List(s->elements);
+			}
+			if (!args.empty() && args[0].type == ValueType::TUPLE) {
+				auto* t = static_cast<TupleObject*>(args[0].ref.get());
+				return Value::List(t->elements);
+			}
+			if (!args.empty() && args[0].type == ValueType::VECTOR) {
+				auto* v = static_cast<VectorObject*>(args[0].ref.get());
+				vector<Value> elems;
+				for (auto d : v->elements) elems.push_back(d);
+				return Value::List(elems);
+			}
+			vector<Value> vals;
+			for (auto& v : args) vals.push_back(v);
+			return Value::List(vals);
+		}), false);
+		env->set("set", Value::Native([this](const vector<Value>& args, int l, int c) {
+			vector<Value> elems;
+			if (args.size() > 1) {
+				for (auto& arg : args) setAdd(elems, arg);
+				return Value::Set(elems);
+			}
+			if (args.empty()) return Value::Set({});
+			Value src = args[0];
+			if (src.type == ValueType::LIST) {
+				auto* l = static_cast<ListObject*>(src.ref.get());
+				for (auto& e : l->elements) setAdd(elems, e);
+			}
+			else if (src.type == ValueType::RANGE) {
+				auto* r = static_cast<RangeObject*>(src.ref.get());
+				double current = r->start;
+				if (!r->startInclusive) current += r->step;
+				while (true) {
+					bool cond;
+					if (r->step > 0) cond = r->endInclusive ? (current <= r->end) : (current < r->end);
+					else cond = r->endInclusive ? (current >= r->end) : (current > r->end);
+					if (!cond) break;
+					Value v = r->isFloat ? Value::Float(current) : Value::Int((long long)current);
+					setAdd(elems, v);
+					current += r->step;
+				}
+			}
+			else if (src.type == ValueType::VECTOR) {
+				auto* v = static_cast<VectorObject*>(src.ref.get());
+				for (auto d : v->elements) setAdd(elems, d);
+			}
+			else if (src.type == ValueType::STRING) {
+				for (char c : src.asString()) setAdd(elems, Value::String(string(1, c)));
+			}
+			else if (src.type == ValueType::SET) {
+				auto* s = static_cast<SetObject*>(src.ref.get());
+				for (auto& e : s->elements) setAdd(elems, e);
+			}
+			else if (src.type == ValueType::TUPLE) {
+				auto* t = static_cast<TupleObject*>(src.ref.get());
+				for (auto& e : t->elements) setAdd(elems, e);
+			}
+			else {
+				setAdd(elems, src);
+			}
+			return Value::Set(elems);
+		}), false);
+		env->set("tuple", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.empty()) return Value::Tuple({});
+			if (args.size() == 1) {
+				Value src = args[0];
+				if (src.type == ValueType::LIST) return Value::Tuple(static_cast<ListObject*>(src.ref.get())->elements);
+				if (src.type == ValueType::SET) return Value::Tuple(static_cast<SetObject*>(src.ref.get())->elements);
+				if (src.type == ValueType::RANGE) {
+					auto* r = static_cast<RangeObject*>(src.ref.get());
+					vector<Value> elems;
+					double current = r->start;
+					if (!r->startInclusive) current += r->step;
+					while (true) {
+						bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end)
+							: (r->endInclusive ? current >= r->end : current > r->end);
+						if (!cond) break;
+						elems.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
+						current += r->step;
+					}
+					return Value::Tuple(elems);
+				}
+				if (src.type == ValueType::TUPLE) return src;
+				if (src.type == ValueType::VECTOR) {
+					auto* v = static_cast<VectorObject*>(src.ref.get());
+					vector<Value> elems;
+					for (auto d : v->elements) elems.push_back(d);
+					return Value::Tuple(elems);
+				}
+			}
+			vector<Value> elems;
+			for (auto& arg : args) elems.push_back(arg);
+			return Value::Tuple(elems);
+		}), false);
+		env->set("dict", Value::Native([this](const vector<Value>& args, int l, int c) {
+			std::unordered_map<Value, Value, ValueHash, ValueEqual> map;
+			for (const auto& arg : args) {
+				Value v = arg;
+				if (v.type != ValueType::PAIRED) {
+					throw TypeError("dict() requires 'key : value' arguments or 'pair()' objects", l, c);
+				}
+				auto* pObj = static_cast<PairedObject*>(v.ref.get());
+				for (const auto& pair : pObj->pairs) {
+					Value key = pair.first;
+					Value val = pair.second;
+					if (key.type == ValueType::LIST || key.type == ValueType::SET || key.type == ValueType::DICT) {
+						if (key.type == ValueType::DICT) throw TypeError("Dictionary cannot be used as a key (unhashable)", l, c);
+						key = deepCopy(key);
+						key.isConst = true;
+					}
+					map[key] = val;
+				}
+			}
+			return Value::Dict(map);
+		}), false);
+		// ======= INTROSPECTION =======
+		env->set("typeof", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("typeof() takes exactly one argument", l, c);
+			switch (args[0].type) {
+			case ValueType::INT: return Value::String("integer");
+			case ValueType::FLOAT: return Value::String("float");
+			case ValueType::BOOL: return Value::String("boolean");
+			case ValueType::STRING: return Value::String("string");
+			case ValueType::LIST: return Value::String("list");
+			case ValueType::RANGE: return Value::String("range");
+			case ValueType::SET: return Value::String("set");
+			case ValueType::TUPLE: return Value::String("tuple");
+			case ValueType::DICT: return Value::String("dictionary");
+			case ValueType::FUNCTION: return Value::String("function");
+			case ValueType::VECTOR: return Value::String("vector");
+			case ValueType::NATIVE_FUNCTION: return Value::String("native function");
+			case ValueType::FILE: return Value::String("file");
+			case ValueType::PAIRED: return Value::String("pair");
+			case ValueType::BIGINT: return Value::String("integer");
+			case ValueType::CLASS: return Value::String("class");
+			case ValueType::INSTANCE: return Value::String("instance");
+			case ValueType::SUPER: return Value::String("function");
+			case ValueType::ERROR: return Value::String("error");
+			case ValueType::NONE: return Value::String("None");
+			default: return Value::String("NoType");
+			}
+		}), false);
+		env->set("isLocked", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("isLocked() takes exactly one argument", l, c);
+			return Value::Bool(args[0].isLocked);
+		}), false);
+		env->set("isConst", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("isConst() takes exactly one argument", l, c);
+			return Value::Bool(args[0].isConst);
+		}), false);
+		env->set("length", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.empty()) return Value::Int(0);
+			if (args.size() > 1) throw ArgumentError("length() takes exactly one argument", l, c);
+			Value v = args[0];
+			if (v.type == ValueType::LIST) {
+				auto* list = static_cast<ListObject*>(v.ref.get());
+				return Value::Int(list->elements.size());
+			}
+			else if (v.type == ValueType::STRING) return Value::Int(v.asString().size());
+			else if (v.type == ValueType::SET) {
+				auto* s = static_cast<SetObject*>(v.ref.get());
+				return Value::Int(s->elements.size());
+			}
+			else if (v.type == ValueType::TUPLE) {
+				auto* t = static_cast<TupleObject*>(v.ref.get());
+				return Value::Int(t->elements.size());
+			}
+			else if (v.type == ValueType::RANGE) {
+				auto* r = static_cast<RangeObject*>(v.ref.get());
+				if (r->step == 0) return Value::Int(0);
+				double s = r->start;
+				if (!r->startInclusive) s += r->step;
+				double e = r->end;
+				if (r->endInclusive) e += (r->step > 0 ? 1 : -1) * (r->step * 0.000000001);
+				long long count = 0;
+				if (r->step > 0 && r->end > s) {
+					if (r->endInclusive) count = (long long)floor((r->end - s) / r->step) + 1;
+					else count = (long long)ceil((r->end - s) / r->step);
+				}
+				else if (r->step < 0 && r->end < s) {
+					if (r->endInclusive) count = (long long)floor((s - r->end) / -r->step) + 1;
+					else count = (long long)ceil((s - r->end) / -r->step);
+				}
+				return Value::Int(count < 0 ? 0 : count);
+			}
+			else {
+				throw TypeError("Object of type " + valueToString(v) + " has no length", l, c);
+			}
+		}), false);
+		env->set("sum", Value::Native([this](const vector<Value>& args, int l, int c) {
+			long double total = 0;
+			bool isFloat = false;
+			vector<Value> worklist;
+			worklist.reserve(args.size() * 2);
+			for (const auto& arg : args) worklist.push_back(arg);
+			while (!worklist.empty()) {
+				Value v = worklist.back();
+				worklist.pop_back();
+				switch (v.type) {
+				case ValueType::INT:
+					total += v.asInt();
+					break;
+				case ValueType::FLOAT:
+					total += v.asFloat();
+					isFloat = true;
+					break;
+				case ValueType::LIST: {
+					auto* list = static_cast<ListObject*>(v.ref.get());
+					worklist.insert(worklist.end(), list->elements.begin(), list->elements.end());
+					break;
+				}
+				case ValueType::TUPLE: {
+					auto* t = static_cast<TupleObject*>(v.ref.get());
+					worklist.insert(worklist.end(), t->elements.begin(), t->elements.end());
+					break;
+				}
+				case ValueType::SET: {
+					auto* s = static_cast<SetObject*>(v.ref.get());
+					worklist.insert(worklist.end(), s->elements.begin(), s->elements.end());
+					break;
+				}
+				case ValueType::RANGE: {
+					auto* r = static_cast<RangeObject*>(v.ref.get());
+					if (r->isFloat) isFloat = true;
+					double current = r->start;
+					if (!r->startInclusive) current += r->step;
+					while (true) {
+						bool cond = (r->step > 0) ?
+							(r->endInclusive ? current <= r->end : current < r->end) :
+							(r->endInclusive ? current >= r->end : current > r->end);
+						if (!cond) break;
+						total += current;
+						current += r->step;
+					}
+					break;
+				}
+				case ValueType::BOOL:
+					total += v.asBool() ? 1 : 0;
+					break;
+				default:
+					throw TypeError("sum() encountered non-numeric type: " + valueToString(v), l, c);
+				}
+			}
+			return isFloat ? Value::Float(total) : Value::Int((long long)total);
+		}), false);
+		env->set("pair", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("pair() takes exactly two arguments (keys, values)", l, c);
+			auto extract = [&](Value v) -> vector<Value> {
+				if (v.type == ValueType::LIST) return static_cast<ListObject*>(v.ref.get())->elements;
+				if (v.type == ValueType::SET) return static_cast<SetObject*>(v.ref.get())->elements;
+				if (v.type == ValueType::TUPLE) return static_cast<TupleObject*>(v.ref.get())->elements;
+				if (v.type == ValueType::RANGE) {
+					auto* r = static_cast<RangeObject*>(v.ref.get());
+					vector<Value> rvals;
+					double current = r->start;
+					if (!r->startInclusive) current += r->step;
+					while (true) {
+						bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end)
+							: (r->endInclusive ? current >= r->end : current > r->end);
+						if (!cond) break;
+						rvals.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
+						current += r->step;
+					}
+					return rvals;
+				}
+				throw TypeError("pair() arguments must be containers (list, set, tuple, range)", l, c);
+				return {};
+			};
+			vector<Value> rawKeys = extract(args[0]);
+			vector<Value> vals = extract(args[1]);
+			vector<Value> uniqueKeys;
+			for (const auto& k : rawKeys) {
+				bool seen = false;
+				for (const auto& u : uniqueKeys) if (k.strictEquals(u)) { seen = true; break; }
+				if (!seen) uniqueKeys.push_back(k);
+			}
+			size_t count = std::min(uniqueKeys.size(), vals.size());
+			std::vector<std::pair<Value, Value>> finalPairs;
+			for (size_t i = 0; i < count; i++) {
+				finalPairs.push_back({ uniqueKeys[i], vals[i] });
+			}
+			return Value::Paired(finalPairs);
+		}), false);
+		env->set("swap", Value::Native([this](const vector<Value>& args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("swap() takes exactly two arguments", l, c);
+			if (args[0].type != ValueType::REFERENCE || args[1].type != ValueType::REFERENCE){
+				throw TypeError("swap requires refrences. use swap(@a, @b)", l, c);
+			}
+			auto* val1 = args[0].ptr;
+			auto* val2 = args[1].ptr;
+			if (!val1 || !val2) throw RuntimeError("cannot swap null refrences", l, c);
+			if (val1->isConst || val2->isConst) throw ConstError("cannot swap constants", l, c);
+			if ((val1->isLocked || val2 ->isLocked) && !val1->sameType(*val2)) throw ConstError("cannot change the type of the locked variables", l, c);
+			std::swap(*val1, *val2);
+			return Value::None();
+		}), false);
+		// ============ I/O ============
+		env->set("print", Value::Native([this](const vector<Value>& args, int l, int c) {
+			return this->nativePrint(args, l, c);
+		}), false);
+		env->set("input", Value::Native([this](const vector<Value>& args, int l, int c) {
+			string prompt = "";
+			if (!args.empty()) prompt = valueToString(args[0]);
+			std::cout << prompt;
+			if (std::cin.fail()) std::cin.clear();
+			if (std::cin.peek() == '\n') std::cin.ignore();
+			string line;
+			if (!std::getline(std::cin, line)) return Value::None();
+			if (args.size() > 1) {
+				ValueType targetType = args[1].type;
+				try {
+					if (targetType == ValueType::INT) return Value::Int(std::stoll(line));
+					else if (targetType == ValueType::FLOAT) return Value::Float(std::stod(line));
+					else if (targetType == ValueType::BOOL) return Value::Bool(line == "true");
+					else if (targetType == ValueType::LIST || targetType == ValueType::SET || targetType == ValueType::RANGE) {
+						throw TypeError("Complex type input not fully supported yet", l, c);
+					}
+				}
+				catch (const LangError&) { throw; }
+				catch (...) {
+					throw ValueError("ValueError: Could not convert input '" + line + "' to target type", l, c);
+				}
+			}
+			return Value::String(line);
+		}), false);
+	}
