@@ -336,6 +336,20 @@ inline string replace(const string& s, const string& target, const string& repla
 }
 
 /**
+ * Right-justifies string.
+ * Optimization: Uses reserve and append logic.
+ */
+inline std::string rjust(const std::string& s, int num, char fillchar = ' ') {
+   int s_size = static_cast<int>(s.size());
+   if (s_size >= num) return s;
+
+   std::string res(num, fillchar);
+   // Copy the original string into the end of the newly padded string
+   res.replace(num - s_size, s_size, s);
+   return res;
+}
+
+/**
  * Checks if string starts with prefix.
  */
 inline bool startswith(const string& s, const string& value) {
