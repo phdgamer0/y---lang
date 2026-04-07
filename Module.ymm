@@ -675,3 +675,967 @@ define function main():{
 }
 
 ```
+```~ libs
+import * from Raylib
+import * from Math
+import Time
+import Vector
+
+~ constants
+let const W = 1000
+let const H = 600
+let const FPS = 60
+let const SEGMENT_TRI_LEN = 20
+let const SEGMENT_REC_LEN = 60
+let const SEGMENT_CIRCLE_RADIUS = 15
+let const SIN60 = Sin(PI/3.0)
+let const COS60 = Cos(PI/3.0)
+
+~ classes
+define class Segment: {
+   #public:
+      let const obj.VERT = 0
+      let const obj.HOR = 1
+      let const obj.DDOT = 2
+      define function __construct__(pos:vector(), mode:int(), OffColor:object(GRAY), LitColor:object(RED)):{
+         if mode is not in [obj.VERT, obj.HOR, obj.DDOT]: throw ValueError, "mode should be either Segement.VERT, Segment.HOR or Segement.DDOT"
+         self.mode = mode
+         self.pos = pos
+         let self.OffColor = OffColor
+         let self.LitColor = LitColor
+         return self
+      }
+      define function lit():{
+         self.isLit = self.mode !== obj.DDOT
+      }
+      define function unlit():{
+         self.isLit = false
+      }
+      define function display():{
+         let color = self.LitColor if self.isLit else self.OffColor
+         switch (self.mode): {
+            case 0 then do: {
+               ~ top triangle
+               let top, left, right = self.pos, (self.pos + <-COS60, SIN60> * SEGMENT_TRI_LEN), (self.pos + <COS60, SIN60> * SEGMENT_TRI_LEN)
+               DrawTriangle(top, left, right, color)
+               ~ middle rectangle
+               DrawRectangleV(left, <SEGMENT_TRI_LEN, SEGMENT_REC_LEN>, color)
+               ~ bottom triangle
+               let top_left, top_right, bottom =  (left + <0, SEGMENT_REC_LEN>), (right + <0, SEGMENT_REC_LEN>), (top + <0, (SEGMENT_REC_LEN + 2 * SEGMENT_TRI_LEN * SIN60)>)
+               ~ print(top_left, top_right, bottom)
+               DrawTriangle(top_left, bottom, top_right, color)
+               break
+            }
+            case 1 then do:{
+               ~ left triangle
+               let left, top, bottom = self.pos, (self.pos +  <SIN60, -COS60> * SEGMENT_TRI_LEN), (self.pos + <SIN60, COS60> * SEGMENT_TRI_LEN)
+               DrawTriangle(top, left, bottom, color)
+               ~ middle rectangle
+               DrawRectangleV(top, <SEGMENT_REC_LEN, SEGMENT_TRI_LEN>, color)
+               ~ right triangle
+               DrawTriangle(top + <SEGMENT_REC_LEN, 0>, bottom + <SEGMENT_REC_LEN, 0>, left + <SEGMENT_REC_LEN + 2 * SEGMENT_TRI_LEN * SIN60, 0>, color)
+               break
+            }
+            case 2 do:{
+               ~ upper circle
+               DrawCircleV(self.pos + <25 , 50 + SEGMENT_CIRCLE_RADIUS>, SEGMENT_CIRCLE_RADIUS, color)
+               ~ lower circle
+               DrawCircleV(self.pos + <25 , 75 + 4 * SEGMENT_CIRCLE_RADIUS>, SEGMENT_CIRCLE_RADIUS, color)
+               break
+            }
+            default do: {
+               break
+            }
+         }
+      }
+   #private:
+      let self.mode
+      #protected:
+      let self.isLit := bool()
+      let self.pos := vector()
+}
+define class Multiplexer: {
+   #public:
+      define function __construct__(pos:vector(), seperation:int(25), OffColor:object(GRAY), LitColor:object(RED)):{
+         ```
+         ~     E
+         ~    ___
+         ~ A |   | B 
+         ~   |___|
+         ~ C | F | D
+         ~   |___|
+         ~     G
+         ```
+         let self.segments1 = {
+            "A": Segment(pos, Segment.VERT, OffColor, LitColor),
+            "B": Segment(pos + <obj.LEN, 0>, Segment.VERT, OffColor, LitColor),
+            "C": Segment(pos + <0, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "D": Segment(pos + <obj.LEN, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "E": Segment(pos + <2, -2>, Segment.HOR, OffColor, LitColor),
+            "F": Segment(pos + <2, obj.LEN - 2>, Segment.HOR, OffColor, LitColor),
+            "G": Segment(pos + <1, obj.LEN - 1> * 2, Segment.HOR, OffColor, LitColor)
+         }
+         let self.segments2 = {
+            "A": Segment(pos + <obj.PAD + obj.LEN , 0>, Segment.VERT, OffColor, LitColor),
+            "B": Segment(pos + <obj.PAD + obj.LEN , 0> + <obj.LEN, 0>, Segment.VERT, OffColor, LitColor),
+            "C": Segment(pos + <obj.PAD + obj.LEN , 0> + <0, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "D": Segment(pos + <obj.PAD + obj.LEN , 0> + <obj.LEN, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "E": Segment(pos + <obj.PAD + obj.LEN , 0> + <2, -2>, Segment.HOR, OffColor, LitColor),
+            "F": Segment(pos + <obj.PAD + obj.LEN , 0> + <2, obj.LEN - 2>, Segment.HOR, OffColor, LitColor),
+            "G": Segment(pos + <obj.PAD + obj.LEN , 0> + <1, obj.LEN - 1> * 2, Segment.HOR, OffColor, LitColor)
+         }
+      }
+      define function display(number):{
+         if number > 99 or number < 0: throw ValueError, "cannot display negative or 2+ digit numbers"
+         let msb, lsb = number // 10, number % 10
+         self.__litter__(self.segments1, msb)
+         self.__litter__(self.segments2, lsb)
+         for k,v in self.segments1 do:{
+            v.display()
+         }
+         for k,v in self.segments2 do:{
+            v.display()
+         }
+      }
+   #private:
+      let obj.LEN = 100
+      let obj.PAD = 50
+   #protected:
+      define function __litter__(@seg:dict(), num:int()):{
+         switch (num): {
+            case 0 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].lit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].unlit()
+               seg["G"].lit()
+               break
+            }
+            case 1 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].unlit()
+               seg["F"].unlit()
+               seg["G"].unlit()
+               break
+            }
+            case 2 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].lit()
+               seg["D"].unlit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 3 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 4 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].unlit()
+               seg["F"].lit()
+               seg["G"].unlit()
+               break
+            }
+            case 5 then do: {
+               seg["A"].lit()
+               seg["B"].unlit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 6 then do: {
+               seg["A"].lit()
+               seg["B"].unlit()
+               seg["C"].lit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 7 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].unlit()
+               seg["G"].unlit()
+               break
+            }
+            case 8 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].lit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 9 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            default do: {
+               break
+            }
+         }
+      }
+}
+
+~ main loop
+define function main():{
+   let C = Color(40,40,40,100)
+   let hourM = Multiplexer(<20,200>, omit, C)
+   let minuteM = Multiplexer(<375,200>, omit, C)
+   let secM = Multiplexer(<730,200>, omit, C)
+   let sep1 = Segment(<300, 200>, Segment.DDOT, C)
+   let sep2 = Segment(<655, 200>, Segment.DDOT, C)
+   InitWindow(W, H, "Digital Clock")
+   SetTargetFPS(FPS)
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      let time = Time.Local(Time.Now())
+      ClearBackground(BLACK)
+      DrawFPS(10, 10)
+      hourM.display(time["hour"])
+      minuteM.display(time["min"])
+      secM.display(time["sec"])
+      sep1.display()
+      sep2.display()
+      EndDrawing()
+   }
+   CloseWindow()
+}```
+```
+import * from Raylib
+import * from Math
+import RandChoice from Random
+import Vector
+
+let const W = 800
+let const H = 800
+let const FPS = 144
+let const GRID_NUM = 8
+let const GRID_LEN = 60
+let const BLOCK_LEN = 40
+let const BLOCK_LEN_PICKED = GRID_LEN
+let const DEFAULT_POS = <W // 2, H * 0.75>
+
+define function __model__helper__(iterable) -> list():{
+   let block_grid = [[]] * 5
+   let i = 0
+   for i if i < length(iterable) then i++ do:{
+      block_grid[i // 5].append(bool(iterable[i]) if i < 23 else int(iterable[i]))
+   }
+   if length(iterable) < 25:{
+      for i if i < 25 then i++ do:{
+         block_grid[i // 5].append(false)
+      }
+   }
+   return block_grid
+}
+define class Block: {
+   #public:
+      define function __construct__(pos:vector(DEFAULT_POS)):{
+         let self.color = RandChoice(obj.colors)
+         let self.pos = pos
+         let self.model = RandChoice(obj.models)
+         let self.is_dragging = false
+         self.drag_offset = <0, 0>
+      }
+      define function check_for_drag():{
+         let x, y = GetMouseX(), GetMouseY()
+         let mouse_pos = <x, y>
+         if IsMouseButtonPressed(0): {
+            let is_inside_x = x >= self.pos[0] and x <= self.pos[0] + (BLOCK_LEN * 5)
+            let is_inside_y = y >= self.pos[1] and y <= self.pos[1] + (BLOCK_LEN * 5)
+            if is_inside_x and is_inside_y: {
+               self.is_dragging = true
+               self.drag_offset = mouse_pos - self.pos 
+            }
+         }
+         if self.is_dragging and IsMouseButtonDown(0): {
+            self.pos = mouse_pos - self.drag_offset
+         }
+         if IsMouseButtonReleased(0): {
+            self.is_dragging = false
+         }
+      }
+      define function display():{
+         let len = BLOCK_LEN_PICKED if self.is_dragging else BLOCK_LEN
+         for let i = 0 if i < self.model[-1][-1] then i++ do:{
+            for let j = 0 if j < self.model[-1][-2] then j++ do:{
+               if self.model[i][j]:{
+                  DrawRectangleV(self.pos + <i * len, j * len>, <len, len>, WHITE)
+                  DrawRectangleV(self.pos + <1, 1> + <i * len, j * len>, <len, len> - <2 ,2>, self.color)
+               }
+            }
+         }
+      }
+      define function reset():{
+         self.pos = DEFAULT_POS
+         self.model = RandChoice(obj.models)
+         self.color = RandChoice(obj.colors)
+      }
+   #private:
+   
+   let self.drag_offset := vector()
+   #protected:
+      
+      
+      let const obj.models = (
+         __model__helper__([
+            1,0,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,1,2
+         ]),
+         __model__helper__([
+            1,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,1
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,1,3
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,1
+         ]),
+         __model__helper__([
+            1,1,0,0,0,
+            1,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,2
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,0,0,0,0,
+            0,0,0,1,4
+         ]),
+         __model__helper__([
+            1,1,1,1,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,4,1
+         ]),
+         __model__helper__([
+            0,1,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,2
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            0,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,2
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            0,1,0,0,0,
+            0,1,0,0,0,
+            1,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            1,1,0,0,0,
+            1,0,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            1,1,0,0,0,
+            0,1,0,0,0,
+            0,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            0,0,1,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            0,0,1,0,0,
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            1,1,0,0,0,
+            0,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            0,1,1,0,0,
+            1,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,1,0,0,0,
+            0,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            0,1,0,0,0,
+            1,1,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,2
+         ]),
+         __model__helper__([
+            0,1,0,0,0,
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            0,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,1,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            0,1,0,0,0,
+            1,1,0,0,0,
+            0,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            1,0,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,3
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            0,0,1,0,0,
+            0,0,1,0,0,
+            0,0,0,0,0,
+            0,0,0,3,3
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,3,3
+         ]),
+         __model__helper__([
+            0,0,1,0,0,
+            0,0,1,0,0,
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,3,3
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,0,0,0,0,
+            1,0,0,1,5
+         ]),
+         __model__helper__([
+            1,1,1,1,1,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,5,1
+         ]),
+         __model__helper__([
+            1,1,0,0,0,
+            1,1,0,0,0,
+            1,1,0,0,0,
+            0,0,0,0,0,
+            0,0,0,2,3
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,2
+         ]),
+         __model__helper__([
+            1,1,1,0,0,
+            1,1,1,0,0,
+            1,1,1,0,0,
+            0,0,0,0,0,
+            0,0,0,3,3
+         ]),
+         __model__helper__([
+            0,0,1,0,0,
+            0,1,0,0,0,
+            1,0,0,0,0,
+            0,0,0,0,0,
+            0,0,0,3,3
+         ]),
+         __model__helper__([
+            1,0,0,0,0,
+            0,1,0,0,0,
+            0,0,1,0,0,
+            0,0,0,0,0,
+            0,0,0,3,3
+         ])
+      )
+      let const obj.colors = (
+         RED, BLUE, GREEN, ORANGE, PURPLE, PINK, SKYBLUE, BROWN, MAGENTA, VIOLET, BEIGE
+      )
+}
+define class Grid: {
+   #public:
+      define function __construct__(pos:vector(), offColor:object(BLACK)):{
+         let self.MainGrid := [[[false, offColor]] * GRID_NUM for i in range(GRID_NUM)]
+         let self.pos = pos
+         let self.offColor = offColor
+      }
+      define function display(block:object()):{
+         self.check_for_drop(block)
+         for let i = 0 if i < GRID_NUM then i++ do:{
+            for let j = 0 if j < GRID_NUM then j++ do:{
+               DrawRectangleV(self.pos + GRID_LEN * <i, j>, <GRID_LEN, GRID_LEN>, WHITE)
+               DrawRectangleV(self.pos + <1, 1> + GRID_LEN * <i, j>, <GRID_LEN - 2, GRID_LEN - 2>, self.MainGrid[i][j][1])
+            }
+         }
+      }
+      define function check_for_drop(block:object()):{
+         if block.pos[0] >= self.pos[0] and block.pos[0] <= self.pos[0] + GRID_LEN * GRID_NUM and block.pos[1] >= self.pos[1] and block.pos[1] <= self.pos[1] + GRID_LEN * GRID_NUM and not block.is_dragging:{
+            let relative_dist = block.pos - self.pos
+            let bestX = (relative_dist[0] + GRID_LEN // 2) // GRID_LEN 
+            let bestY = (relative_dist[1] + GRID_LEN // 2) // GRID_LEN
+            if bestX + block.model[-1][-1] > GRID_NUM or bestY + block.model[-1][-2] > GRID_NUM:{
+               block.pos = DEFAULT_POS
+               return
+            }
+            for let i = 0 if i < block.model[-1][-1] then i++ do:{
+               for let j = 0 if j < block.model[-1][-2] then j++ do:{
+                  if self.MainGrid[i + bestX][j+ bestY][0] and block.model[i][j]:{
+                     block.pos = DEFAULT_POS
+                     return
+                  }
+               }
+            }
+            for let i = 0 if i < block.model[-1][-1] then i++ do:{
+               for let j = 0 if j < block.model[-1][-2] then j++ do:{
+                  if block.model[i][j]:{
+                     self.MainGrid[i + bestX][j+ bestY] = [true, block.color]
+                  }
+               }
+            }
+            self.grid_check()
+            self.cleaner()
+            block.reset()
+         }
+      }
+   #private:
+      define function grid_check():{
+         for let i = 0 if i < GRID_NUM then i++ do:{
+            let flag = true
+            for let j = 0 if j < GRID_NUM then j++ do:{
+               if not self.MainGrid[i][j][0]: {
+                  flag = false
+                  break
+               }
+            }
+            if flag: self.cleanable_rows.append(i)
+         }
+         for let j = 0 if j < GRID_NUM then j++ do:{
+            let flag = true
+            for let i = 0 if i < GRID_NUM then i++ do:{
+               if not self.MainGrid[i][j][0]: {
+                  flag = false
+                  break
+               }
+            }
+            if flag: self.cleanable_cols.append(j)
+         }
+      }
+      define function cleaner():{
+         for i in self.cleanable_rows do:{
+            self.MainGrid[i] = [[false, self.offColor]] * GRID_NUM
+         }
+         for j in self.cleanable_cols do:{
+            for let i = 0 if i < GRID_NUM then i++ do:{
+               self.MainGrid[i][j] = [false, self.offColor]
+            }
+         }
+         self.cleanable_rows.clear()
+         self.cleanable_cols.clear()
+      }
+   #protected:
+      let self.cleanable_rows = []
+      let self.cleanable_cols = []
+}
+define function main():{
+   let block = Block(<(W - BLOCK_LEN * 5) // 2, 3 * H // 4 - 2 * BLOCK_LEN>)
+   let grid = Grid(<(W - GRID_LEN * GRID_NUM) // 2, 20>)
+   InitWindow(W, H, "Block Blast")
+   SetTargetFPS(FPS)
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      ClearBackground(BLACK)
+      DrawFPS(10, 10)
+      grid.display(block)
+      block.display()
+      block.check_for_drag()
+      EndDrawing()
+   }
+   CloseWindow()
+}
+```
+```
+import * from Raylib
+import * from Math
+import Vector
+
+let const W = 800
+let const H = 600
+let const FPS = 60
+let const NAME = "Julian Set"
+let const MAX_ITERATION = 300
+let const C_REAL = -0.8F
+let const C_IMAGINARY = 0.156F
+let const K = 100 // 6
+let const COLOR_MAP = (
+   Color(0XFF, 0XD5, 0X4F, 0XFF),
+   Color(0XFF, 0X8C, 0X00, 0XFF),
+   Color(0XE6, 0X3E, 0X00, 0XFF),
+   Color(0X93, 0X00, 0X77, 0XFF),
+   Color(0X3A, 0X00, 0X88, 0XFF),
+   Color(0X0A, 0X00, 0X1A, 0XFF)
+)
+let zoom = 2.0F
+let offset_x = 0.0F
+let offset_y = 0.0F
+let view_width = 4.0 / zoom
+let view_height = 3.0 / zoom
+let min_x = offset_x - (view_width / 2.0)
+let max_x = offset_x + (view_width / 2.0)
+let min_y = offset_y - (view_height / 2.0)
+let max_y = offset_y + (view_height / 2.0)
+
+define function map_range(current_num:float(), current_range_start:float(), current_range_end:float(), goal_range_start:float(), goal_range_end:float()) -> float():{
+   return (current_num - current_range_start) * (goal_range_end - goal_range_start) / (current_range_end - current_range_start) + goal_range_start
+}
+define function choose_the_best_color(num:int()):{
+   if num // K >=  5: return COLOR_MAP[-1]
+   let lcolor = COLOR_MAP[num // K]
+   let rcolor = COLOR_MAP[num // K + 1]
+   let t = (num % K) / K
+   let new_r = int(lcolor.r * (1 - t) + rcolor.r * t)
+   let new_g = int(lcolor.g * (1 - t) + rcolor.g * t)
+   let new_b = int(lcolor.b * (1 - t) + rcolor.b * t)
+   return Color(new_r, new_g, new_b, 255)
+}
+define function main():{
+   InitWindow(W, H, NAME)
+   SetTargetFPS(FPS)
+   BeginDrawing()
+   ClearBackground(BLACK)
+   for let pixel_x = 0 if pixel_x < W then pixel_x++ do:{
+      for let pixel_y = 0 if pixel_y < H then pixel_y++ do:{
+         
+         let z_real = map_range(pixel_x, 0, W, min_x, max_x)
+         let z_imag = map_range(pixel_y, 0, H, min_y, max_y)
+         let iteration = 0
+         ~ z = z ** 2 + c
+         while iteration < MAX_ITERATION and (z_real * z_real + z_imag * z_imag <= 4.0) do:{
+            let temp_real = (z_real * z_real) - (z_imag * z_imag) + C_REAL
+            let temp_imag = (2.0 * z_real * z_imag) + C_IMAGINARY
+            z_imag = temp_imag
+            z_real = temp_real
+            iteration++
+         }
+         DrawPixel(pixel_x, pixel_y, choose_the_best_color(iteration))
+      }
+   }
+   let img = LoadImageFromScreen()
+   let txt = LoadTextureFromImage(img)
+   EndDrawing()
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      ClearBackground(COLOR_MAP[0])
+      DrawTextureV(txt, <0,0>, WHITE)     
+      EndDrawing()
+   }
+   UnloadImage(img)
+   UnloadTexture(txt)
+   CloseWindow()
+
+}
+```
+```
+import * from Raylib
+import * from Math
+import * from Random
+import Vector
+
+let const W = 800
+let const H = 800
+let const FPS = 60
+let const NAME = "Maze Gen"
+let const MIDDLE = <W // 2, H // 2>
+let const DEFAULT_GRIDBOX_LENGTH = 30
+let const W_GRID = 25
+let const H_GRID = 25
+
+define class GridBox: {
+   #public:
+      let const obj.walls = tuple("left right up down".split(" "))
+      let const obj.len = <DEFAULT_GRIDBOX_LENGTH, DEFAULT_GRIDBOX_LENGTH>
+      define function __construct__(pos:vector(), lnib, rnib, unib, dnib):{
+         let const self.pos = pos
+         let self.nibs := dict(pair(obj.walls, [lnib, rnib, unib, dnib]))
+         let self.brokenWalls := dict(pair(obj.walls, [false] * 4))
+         let self.is_visited := false
+      }
+      define function __display__():{
+         return f"pos: {self.pos}\nnibs: {self.nibs}\nbroken walls: {self.brokenWalls}"
+      }
+      define function set_as_visited():{
+         self.is_visited = true
+      }
+      define function is_path():{
+         return true is in self.brokenWalls.values()
+      }
+   #private:
+      
+   #protected:
+      
+   }
+   define function Generate_Grid(width:int(), height:int()) -> list():{
+   let result_list = [[]] * width
+   let start_pos = <(W - DEFAULT_GRIDBOX_LENGTH * width) // 2, (H - DEFAULT_GRIDBOX_LENGTH * height) // 2>
+   ~ fill and set pos
+   for let i = 0 if i < width then i++ do:{
+      for let j = 0 if j < height then j++ do:{
+         result_list[i].append(GridBox(start_pos + <j, i> * DEFAULT_GRIDBOX_LENGTH, None, None, None, None))
+      }
+   }
+   ~ set nibs
+   let l, r, u, d = None, None, None, None
+   for let i = 0 if i < width then i++ do:{
+      for let j = 0 if j < height then j++ do:{
+         if i is 0:{
+            u = None
+            d = result_list[i + 1][j]
+            if j is 0:{
+               l = None
+               r = result_list[i][j + 1]
+            }
+            elif j is height - 1:{
+               l = result_list[i][j - 1]
+               r = None
+            }
+            else:{
+               l = result_list[i][j - 1]
+               r = result_list[i][j + 1]
+            }
+            
+         }
+         elif i is width - 1:{
+            u = result_list[i - 1][j]
+            d = None
+            if j is 0:{
+               l = None
+               r = result_list[i][j + 1]
+            }
+            elif j is height - 1:{
+               l = result_list[i][j - 1]
+               r = None
+            }
+            else:{
+               l = result_list[i][j - 1]
+               r = result_list[i][j + 1]
+            }
+         }
+         else:{
+            u = result_list[i - 1][j]
+            d = result_list[i + 1][j]
+            if j is 0:{
+               l = None
+               r = result_list[i][j + 1]
+            }
+            elif j is height - 1:{
+               l = result_list[i][j - 1]
+               r = None
+            }
+            else:{
+               l = result_list[i][j - 1]
+               r = result_list[i][j + 1]
+            }
+         }
+         result_list[i][j].nibs["left"] = l
+         result_list[i][j].nibs["right"] = r
+         result_list[i][j].nibs["up"] = u
+         result_list[i][j].nibs["down"] = d
+      }
+   }
+   return result_list    
+}
+let res_list = Generate_Grid(W_GRID, H_GRID)
+define function display_grid(lis:list(), path_color:object(BLACK), wall_color:object(WHITE)):{
+   ~ draw the ouline of the maze
+   for i in lis do:{
+      for j in i do:{
+         for k,v in j.brokenWalls do:{
+            if not v:{
+               switch (k): {
+                  case "up" then do: {
+                     DrawLineV(j.pos, j.pos + <DEFAULT_GRIDBOX_LENGTH, 0>, wall_color)
+                     break
+                  }
+                  case "down" then do:{
+                     DrawLineV(j.pos + <0, DEFAULT_GRIDBOX_LENGTH>, j.pos + <DEFAULT_GRIDBOX_LENGTH, DEFAULT_GRIDBOX_LENGTH>, wall_color)
+                     break
+                  }
+                  case "left" then do:{
+                     DrawLineV(j.pos, j.pos + <0, DEFAULT_GRIDBOX_LENGTH>, wall_color)
+                     break
+                  }
+                  case "right" do:{
+                     DrawLineV(j.pos + <DEFAULT_GRIDBOX_LENGTH, 0>, j.pos + <DEFAULT_GRIDBOX_LENGTH, DEFAULT_GRIDBOX_LENGTH>, wall_color)
+                     break
+                  }
+                  default do: {
+                     
+                     break
+                  }
+               }
+            }
+         }
+      }
+   }
+}
+define function Randomized_DFS(@lis:list()):{
+   let opposites = {"left" : "right", "up" : "down", "right" : "left", "down" : "up"}
+   let visited := set()
+   let start = lis[-1][0]
+   visited.add(start)
+   start.set_as_visited()
+   let stack = [start]
+   let directions = GridBox.walls
+   while stack do:{
+      let curr_cell = stack.pop()
+      if curr_cell is not in visited:{
+         visited.add(curr_cell)
+         curr_cell.set_as_visited()
+      }
+      let valid = {}
+      for k, v in curr_cell.nibs do:{
+         if v is not None and not v.is_visited:{
+            valid[k] = v
+         }
+      }
+      if valid:{
+         stack.append(curr_cell)
+         let choice = RandChoice(valid.keys())
+         curr_cell.brokenWalls[choice] = true
+         curr_cell.nibs[choice].brokenWalls[opposites[choice]] = true
+         curr_cell.nibs[choice].set_as_visited()
+         visited.add(curr_cell.nibs[choice])
+         stack.append(curr_cell.nibs[choice])
+      }
+   }
+}
+define function main():{
+   Randomized_DFS(res_list)
+   InitWindow(W, H, NAME)
+   SetTargetFPS(FPS)
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      ClearBackground(BLACK)
+      DrawFPS(10, 10)
+      display_grid(res_list)
+      EndDrawing()
+   }
+   CloseWindow()
+}
+```
