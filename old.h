@@ -2883,11 +2883,9 @@ struct Value {
 	static Value Range(double s, double e, double st, bool si, bool ei, bool f,
 		bool locked = false, bool isConst = false);
 	static Value Set();
-	static Value Set(const std::vector<Value> &elems, bool locked = false);
+	static Value Set(const std::unordered_set<Value, ValueHash, ValueEqual> &elems, bool locked = false);
 	static Value Tuple(const std::vector<Value> &elems, bool locked = false);
-	static Value Dict(
-		const std::unordered_map<Value, Value, ValueHash, ValueEqual> &m,
-		bool locked = false);
+	static Value Dict(const std::unordered_map<Value, Value, ValueHash, ValueEqual> &m, bool locked = false);
 	static Value Paired(const std::vector<std::pair<Value, Value>> &p);
 	static Value Native(NativeFunc f);
 	static Value Overload(const Value &first);
@@ -2943,9 +2941,9 @@ struct RangeObject : HeapObject {
 			isValid(valid) {}
 };
 struct SetObject : HeapObject {
-	std::vector<Value> elements;
+	std::unordered_set<Value, ValueHash, ValueEqual> elements;
 	SetObject() : HeapObject(ValueType::SET) {}
-	SetObject(const std::vector<Value> &e, bool locked = false)
+	SetObject(const std::unordered_set<Value, ValueHash, ValueEqual> &e, bool locked = false)
 		 : HeapObject(ValueType::SET, locked), elements(e) {}
 };
 struct TupleObject : HeapObject {
@@ -3138,8 +3136,7 @@ struct BigIntObject : HeapObject {
 		}
 		return BigIntObject(res, isNegative != other.isNegative);
 	}
-	std::pair<BigIntObject, BigIntObject> divMod(
-		const BigIntObject &other) const {
+	std::pair<BigIntObject, BigIntObject> divMod(const BigIntObject &other) const {
 		if (other.chunks.size() == 1 && other.chunks[0] == 0)
 			throw std::runtime_error("Divide by zero");
 		BigIntObject dividend = *this;
@@ -3458,7 +3455,7 @@ inline Value Value::Set() {
 	x.ref = std::make_shared<SetObject>();
 	return x;
 }
-inline Value Value::Set(const std::vector<Value> &elems, bool locked) {
+inline Value Value::Set(const std::unordered_set<Value, ValueHash, ValueEqual> &elems, bool locked) {
 	Value x;
 	x.type = ValueType::SET;
 	x.ref = std::make_shared<SetObject>(elems, locked);
@@ -3892,9 +3889,9 @@ Value deepCopy(const Value &v) {
 	}
 	case ValueType::SET: {
 		auto *oldSet = static_cast<SetObject *>(v.ref.get());
-		std::vector<Value> copied;
+		std::unordered_set<Value, ValueHash, ValueEqual> copied;
 		for (const auto &el : oldSet->elements)
-			copied.push_back(deepCopy(el));
+			copied.insert(deepCopy(el));
 		out = Value::Set(copied);
 		break;
 	}
@@ -4118,10 +4115,12 @@ static inline std::string valueToString(const Value &v, int line = 0, int col = 
 	case ValueType::SET: {
 		auto *s = static_cast<SetObject *>(v.ref.get());
 		string str = "{";
-		for (size_t i = 0; i < s->elements.size(); i++) {
-			str += valueToString(s->elements[i], line, col);
+		size_t i = 0;
+		for (const auto &key : s->elements) {
+			str += valueToString(key, line, col);
 			if (i + 1 < s->elements.size())
 				str += ", ";
+			i++;
 		}
 		str += "}";
 		return str;
@@ -4332,8 +4331,29 @@ static inline std::string PrintStackForDebug(const std::vector<Value> &stack) {
 	return result + "] <- end";
 }
 static inline bool lessValue(const Value &a, const Value &b) {
-	if (a.type != b.type)
+	if (a.type != b.type) {
+		bool aIsNum = (a.type == ValueType::INT || a.type == ValueType::FLOAT || a.type == ValueType::BIGINT);
+		bool bIsNum = (b.type == ValueType::INT || b.type == ValueType::FLOAT || b.type == ValueType::BIGINT);
+		if (aIsNum && bIsNum) {
+			if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
+				return a.asFloat() < b.asFloat();
+			}
+			BigIntObject tempA(0), tempB(0);
+			BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
+			BigIntObject *bb = (b.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(b.ref.get()) : &(tempB = BigIntObject(b.asInt()));
+			return *ba < *bb;
+		}
 		return a.type < b.type;
+	}
+	if (a.type == ValueType::REFERENCE) {
+		if (b.type == ValueType::REFERENCE) {
+			return lessValue(*a.ptr, *b.ptr);
+		} else {
+			return lessValue(*a.ptr, b);
+		}
+	} else if (b.type == ValueType::REFERENCE) {
+		return lessValue(a, *b.ptr);
+	}
 	switch (a.type) {
 	case ValueType::INT:
 		return a.asInt() < b.asInt();
@@ -4343,6 +4363,57 @@ static inline bool lessValue(const Value &a, const Value &b) {
 		return a.asString() < b.asString();
 	case ValueType::BOOL:
 		return a.asBool() < b.asBool();
+	case ValueType::BIGINT: {
+		auto *b1 = static_cast<BigIntObject *>(a.ref.get());
+		auto *b2 = static_cast<BigIntObject *>(b.ref.get());
+		return *b1 < *b2;
+	}
+	case ValueType::TUPLE: {
+		auto *t1 = static_cast<TupleObject *>(a.ref.get());
+		auto *t2 = static_cast<TupleObject *>(b.ref.get());
+		if (t1->elements.empty() && t2->elements.empty())
+			return false;
+		if (t1->elements.empty())
+			return true;
+		if (t2->elements.empty())
+			return false;
+		return lessValue(t1->elements[0], t2->elements[0]);
+	}
+	case ValueType::VECTOR: {
+		auto *v1 = static_cast<VectorObject *>(a.ref.get());
+		auto *v2 = static_cast<VectorObject *>(b.ref.get());
+		bool hasFloat = false;
+		for (const auto &val : v1->elements)
+			if (val.type == ValueType::FLOAT)
+				hasFloat = true;
+		for (const auto &val : v2->elements)
+			if (val.type == ValueType::FLOAT)
+				hasFloat = true;
+		if (hasFloat) {
+			double mag1 = 0.0, mag2 = 0.0;
+			for (const auto &val : v1->elements) {
+				double v = val.asFloat();
+				mag1 += (v * v);
+			}
+			for (const auto &val : v2->elements) {
+				double v = val.asFloat();
+				mag2 += (v * v);
+			}
+			return mag1 < mag2;
+		} else {
+			Value mag1 = Value::Int(0);
+			for (const auto &val : v1->elements) {
+				Value sq = BigIntObject::mul(val, val);
+				mag1 = BigIntObject::add(mag1, sq);
+			}
+			Value mag2 = Value::Int(0);
+			for (const auto &val : v2->elements) {
+				Value sq = BigIntObject::mul(val, val);
+				mag2 = BigIntObject::add(mag2, sq);
+			}
+			return lessValue(mag1, mag2);
+		}
+	}
 	case ValueType::LIST: {
 		auto *l1 = static_cast<ListObject *>(a.ref.get());
 		auto *l2 = static_cast<ListObject *>(b.ref.get());
@@ -4400,13 +4471,10 @@ struct FunctionObject : HeapObject {
 			delete chunk;
 	}
 };
-void setAdd(std::vector<Value> &elems, const Value &v) {
+void setAdd(std::unordered_set<Value, ValueHash, ValueEqual> &elems, const Value &v) {
 	Value finalVal = deepCopy(v);
 	finalVal.isConst = true;
-	for (const auto &existing : elems)
-		if (existing.strictEquals(finalVal))
-			return;
-	elems.push_back(finalVal);
+	elems.insert(finalVal);
 }
 void enableColors() {
 #ifdef _WIN32
@@ -4494,16 +4562,18 @@ void printValue(const Value &v, std::unordered_set<const HeapObject *> &seen, bo
 		break;
 	}
 	case ValueType::SET: {
-		auto *list = static_cast<SetObject *>(v.ref.get());
-		if (list->elements.empty()) {
+		auto *s = static_cast<SetObject *>(v.ref.get());
+		if (s->elements.empty()) {
 			std::cout << "{,}";
 			break;
 		}
 		std::cout << "{";
-		for (size_t i = 0; i < list->elements.size(); i++) {
-			printValue(list->elements[i], seen, true, inspect);
-			if (i + 1 < list->elements.size())
+		size_t i = 0;
+		for (const auto &key : s->elements) {
+			printValue(key, seen, true, inspect);
+			if (i + 1 < s->elements.size())
 				std::cout << ", ";
+			i++;
 		}
 		std::cout << "}";
 		break;
@@ -6062,7 +6132,7 @@ struct Interpreter {
 			if (l.type == ValueType::SET && r.type == ValueType::SET) {
 				auto *s1 = static_cast<SetObject *>(l.ref.get());
 				auto *s2 = static_cast<SetObject *>(r.ref.get());
-				vector<Value> result;
+				std::unordered_set<Value, ValueHash, ValueEqual> result;
 				if (b->op == TokenType::OR) {
 					result = s1->elements;
 					for (auto &v : s2->elements)
@@ -6070,48 +6140,30 @@ struct Interpreter {
 					return Value::Set(result);
 				}
 				if (b->op == TokenType::AND) {
-					for (auto &v1 : s1->elements) {
-						for (auto &v2 : s2->elements)
-							if (v1.strictEquals(v2)) {
-								result.push_back(v1);
-								break;
-							}
+					for (auto &v2 : s2->elements) {
+						if (s1->elements.count(v2))
+							setAdd(result, v2);
 					}
 					return Value::Set(result);
 				}
 				if (b->op == TokenType::MINUS || b->op == TokenType::SLASH) {
 					for (auto &v1 : s1->elements) {
-						bool found = false;
-						for (auto &v2 : s2->elements)
-							if (v1.strictEquals(v2)) {
-								found = true;
-								break;
-							}
-						if (!found)
-							result.push_back(v1);
+						if (s2->elements.count(v1))
+							continue;
+						setAdd(result, v1);
 					}
 					return Value::Set(result);
 				}
 				if (b->op == TokenType::XOR) {
 					for (auto &v1 : s1->elements) {
-						bool found = false;
-						for (auto &v2 : s2->elements)
-							if (v1.strictEquals(v2)) {
-								found = true;
-								break;
-							}
-						if (!found)
-							result.push_back(v1);
+						if (s2->elements.count(v1))
+							continue;
+						setAdd(result, v1);
 					}
 					for (auto &v2 : s2->elements) {
-						bool found = false;
-						for (auto &v1 : s1->elements)
-							if (v2.strictEquals(v1)) {
-								found = true;
-								break;
-							}
-						if (!found)
-							result.push_back(v2);
+						if (s1->elements.count(v2))
+							continue;
+						setAdd(result, v2);
 					}
 					return Value::Set(result);
 				}
@@ -6333,15 +6385,19 @@ struct Interpreter {
 				size_t len = setObj->elements.size();
 				if (index.type == ValueType::INT) {
 					long long i = normalize(index.asInt(), len);
-					Value val = setObj->elements[i];
+					auto it = setObj->elements.begin();
+					std::advance(it, i);
+					Value val = *it;
 					if (base.isConst)
 						val.isConst = true;
 					return val;
 				} else if (index.type == ValueType::SLICE) {
 					auto indices = getSliceIndices(len);
 					auto *newSet = new SetObject();
-					for (long long i : indices) {
-						newSet->elements.push_back(setObj->elements[i]);
+					for (long long idx_val : indices) {
+						auto it = setObj->elements.begin();
+						std::advance(it, idx_val);
+						setAdd(newSet->elements, *it);
 					}
 					Value ret;
 					ret.type = ValueType::SET;
@@ -6417,7 +6473,7 @@ struct Interpreter {
 		}
 		case ExprType::SET: {
 			auto s = static_cast<SetExpr *>(e);
-			vector<Value> vals;
+			std::unordered_set<Value, ValueHash, ValueEqual> vals;
 			for (auto el : s->elements)
 				setAdd(vals, eval(el));
 			return Value::Set(vals);
@@ -6458,11 +6514,13 @@ struct Interpreter {
 			auto comp = static_cast<CompExpr *>(e);
 			Value collection = eval(comp->iterable);
 			vector<Value> items;
+			bool isSet = false;
 			if (collection.type == ValueType::LIST)
 				items = static_cast<ListObject *>(collection.ref.get())->elements;
-			else if (collection.type == ValueType::SET)
-				items = static_cast<SetObject *>(collection.ref.get())->elements;
-			else if (collection.type == ValueType::TUPLE)
+			else if (collection.type == ValueType::SET) {
+				auto *s = static_cast<SetObject *>(collection.ref.get());
+				items.assign(s->elements.begin(), s->elements.end());
+			} else if (collection.type == ValueType::TUPLE)
 				items =
 					static_cast<TupleObject *>(collection.ref.get())->elements;
 			else if (collection.type == ValueType::STRING) {
@@ -6493,12 +6551,12 @@ struct Interpreter {
 				for (auto d : v->elements)
 					items.push_back(d);
 			} else
-				throw TypeError("Comprehension 'in' target must be iterable",
-					comp->line, comp->col);
-			vector<Value> results;
+				throw TypeError("Comprehension 'in' target must be iterable", comp->line, comp->col);
+			vector<Value> listResults;
+			std::unordered_set<Value, ValueHash, ValueEqual> setResults;
 			std::unordered_map<Value, Value, ValueHash, ValueEqual> dictResults;
-			bool isDict = (comp->typeToken == TokenType::LBRACE &&
-								comp->valueExpr != nullptr);
+			bool isDict = (comp->typeToken == TokenType::LBRACE && comp->valueExpr != nullptr);
+			bool isSetComp = (comp->typeToken == TokenType::LBRACE && comp->valueExpr == nullptr);
 			std::shared_ptr<Env> prevEnv = env;
 			for (const auto &item : items) {
 				env = std::make_shared<Env>();
@@ -6512,8 +6570,7 @@ struct Interpreter {
 				}
 				if (isDict) {
 					Value k = eval(comp->expression);
-					if (k.type == ValueType::LIST || k.type == ValueType::SET ||
-						 k.type == ValueType::DICT) {
+					if (k.type == ValueType::LIST || k.type == ValueType::SET || k.type == ValueType::DICT) {
 						k = deepCopy(k);
 						k.isConst = true;
 					}
@@ -6521,22 +6578,27 @@ struct Interpreter {
 					dictResults[k] = v;
 				} else {
 					Value v = eval(comp->expression);
-					if (comp->typeToken == TokenType::LBRACE)
-						setAdd(results, v);
-					else
-						results.push_back(v);
+					if (isSetComp) {
+						if (v.type == ValueType::LIST || v.type == ValueType::SET || v.type == ValueType::DICT) {
+							v = deepCopy(v);
+							v.isConst = true;
+						}
+						setResults.insert(v);
+					} else {
+						listResults.push_back(v);
+					}
 				}
 			}
 			env = prevEnv;
 			if (comp->typeToken == TokenType::LBRACKET)
-				return Value::List(results);
+				return Value::List(listResults);
 			if (comp->typeToken == TokenType::LPAREN)
-				return Value::Tuple(results);
+				return Value::Tuple(listResults);
 			if (comp->typeToken == TokenType::LBRACE) {
 				if (isDict)
 					return Value::Dict(dictResults);
 				else
-					return Value::Set(results);
+					return Value::Set(setResults);
 			}
 			return Value::None();
 		}
@@ -6852,62 +6914,33 @@ struct Interpreter {
 				auto *s1 = static_cast<SetObject *>(cur.ref.get());
 				auto *s2 = static_cast<SetObject *>(rhs.ref.get());
 				if (as->op == TokenType::OR_EQ) {
-					for (auto &v : s2->elements)
-						setAdd(s1->elements, v);
+					s1->elements.insert(s2->elements.begin(), s2->elements.end());
 					return Value::None();
 				}
 				if (as->op == TokenType::AND_EQ) {
-					vector<Value> keep;
-					for (auto &v1 : s1->elements) {
-						for (auto &v2 : s2->elements) {
-							if (v1.strictEquals(v2)) {
-								keep.push_back(v1);
-								break;
-							}
+					std::unordered_set<Value, ValueHash, ValueEqual> keep;
+					for (const auto &v1 : s1->elements) {
+						if (s2->elements.count(v1) > 0) {
+							keep.insert(v1);
 						}
 					}
-					s1->elements = keep;
+					s1->elements = std::move(keep);
 					return Value::None();
 				}
-				if (as->op == TokenType::MINUS_EQ ||
-					 as->op == TokenType::DIV_EQ) {
-					vector<Value> keep;
-					for (auto &v1 : s1->elements) {
-						bool found = false;
-						for (auto &v2 : s2->elements)
-							if (v1.strictEquals(v2)) {
-								found = true;
-								break;
-							}
-						if (!found)
-							keep.push_back(v1);
+				if (as->op == TokenType::MINUS_EQ || as->op == TokenType::DIV_EQ) {
+					for (const auto &v2 : s2->elements) {
+						s1->elements.erase(v2);
 					}
-					s1->elements = keep;
 					return Value::None();
 				}
 				if (as->op == TokenType::XOR_EQ) {
-					vector<Value> res;
-					for (auto &v1 : s1->elements) {
-						bool found = false;
-						for (auto &v2 : s2->elements)
-							if (v1.strictEquals(v2)) {
-								found = true;
-								break;
-							}
-						if (!found)
-							res.push_back(v1);
+					for (const auto &v2 : s2->elements) {
+						if (s1->elements.count(v2) > 0) {
+							s1->elements.erase(v2);
+						} else {
+							s1->elements.insert(v2);
+						}
 					}
-					for (auto &v2 : s2->elements) {
-						bool found = false;
-						for (auto &v1 : s1->elements)
-							if (v2.strictEquals(v1)) {
-								found = true;
-								break;
-							}
-						if (!found)
-							res.push_back(v2);
-					}
-					s1->elements = res;
 					return Value::None();
 				}
 			}
@@ -11304,12 +11337,7 @@ struct VM {
 								found = d->items.count(lhs) > 0;
 							} else if (rhs.type == ValueType::SET) {
 								auto *s = static_cast<SetObject *>(rhs.ref.get());
-								for (const auto &item : s->elements) {
-									if (item.strictEquals(lhs)) {
-										found = true;
-										break;
-									}
-								}
+								found = s->elements.count(lhs) > 0;
 							} else if (rhs.type == ValueType::RANGE) {
 								auto *rng = static_cast<RangeObject *>(rhs.ref.get());
 								if (lhs.isNumber()) {
@@ -11554,11 +11582,14 @@ struct VM {
 									nextValues.push_back(tuple->elements[stepCount]);
 								} else if (stream.type == ValueType::SET) {
 									auto *s = static_cast<SetObject *>(stream.ref.get());
-									if (stepCount >= (long long)s->elements.size()) {
+									auto listSnapshot = std::make_shared<ListObject>();
+									listSnapshot->elements.assign(s->elements.begin(), s->elements.end());
+									stream = Value::List(listSnapshot->elements);
+									if (stepCount >= (long long)listSnapshot->elements.size()) {
 										valid = false;
 										break;
 									}
-									nextValues.push_back(s->elements[stepCount]);
+									nextValues.push_back(Value::Reference(&listSnapshot->elements[stepCount]));
 								} else if (stream.type == ValueType::STRING) {
 									string s = stream.asString();
 									if (stepCount >= (long long)s.length()) {
@@ -11834,26 +11865,7 @@ struct VM {
 								break;
 							}
 							case ValueType::SET: {
-								auto *s = static_cast<SetObject *>(base.ref.get());
-								if (index.type == ValueType::SLICE) {
-									auto indices = getSliceIndices(s->elements.size());
-									auto newSet = std::make_shared<SetObject>();
-									for (long long i : indices)
-										newSet->elements.push_back(s->elements[i]);
-									stack.push_back(Value::Set(newSet->elements));
-								} else {
-									if (!index.isNumber())
-										throw TypeError("Set index must be int or slice",
-											line, col);
-									long long idx = index.asInt();
-									if (idx < 0)
-										idx += s->elements.size();
-									if (idx < 0 || idx >= (long long)s->elements.size())
-										throw IndexError("Set index out of range", line,
-											col);
-									stack.push_back(s->elements[idx]);
-								}
-								break;
+								throw TypeError("Sets are unordered collections and do not support indexing or slicing.", line, col);
 							}
 							case ValueType::VECTOR: {
 								auto *vec = static_cast<VectorObject *>(base.ref.get());
@@ -12027,14 +12039,7 @@ struct VM {
 										line, col);
 								vec->elements[idx] = val;
 							} else if (base.type == ValueType::SET) {
-								auto *st = static_cast<SetObject *>(base.ref.get());
-								long long idx = index.asInt();
-								if (idx < 0)
-									idx += st->elements.size();
-								if (idx < 0 || idx >= (long long)st->elements.size())
-									throw IndexError("Set assignment index out of range",
-										line, col);
-								st->elements[idx] = val;
+								throw TypeError("Sets are unordered collections and do not support indexing or slicing.", line, col);
 							} else if (base.type == ValueType::TUPLE)
 								throw MutationError(
 									"Tuple object does not support item assignment", line,
@@ -13567,13 +13572,6 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			rang->step = -rang->step;
 			return target;
 		}
-		if (target.type == ValueType::SET) {
-			auto *set = static_cast<SetObject *>(target.ref.get());
-			if (set->elements.size() < 2)
-				return target;
-			reverse(set->elements.begin(), set->elements.end());
-			return target;
-		}
 		error("reverse() not supported on this type", "TypeError");
 	}
 	//----------------- RESERVE ---------------
@@ -13592,8 +13590,8 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 		}
 		case ValueType::SET: {
 			auto *val = static_cast<SetObject *>(target.ref.get());
-			if (v.asInt() <= val->elements.capacity())
-				throw RuntimeWarning("Redundant reserve() call: the requested capacity is already allocated.", m->line, m->col);
+			if (v.asInt() <= static_cast<long>(val->elements.bucket_count() * val->elements.max_load_factor()))
+				throw RuntimeWarning("calling reserve() on a map that already has sufficient bucket capacity is redundant", m->line, m->col);
 			val->elements.reserve(v.asInt());
 			break;
 		}
@@ -13631,13 +13629,6 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			val->elements.resize(v.asInt());
 			break;
 		}
-		case ValueType::SET: {
-			auto *val = static_cast<SetObject *>(target.ref.get());
-			if (v.asInt() < val->elements.size())
-				throw DeprecationWarning("Using a value smaller than the length of the conainer might cause loss of data...", m->line, m->col);
-			val->elements.resize(v.asInt());
-			break;
-		}
 		case ValueType::STRING: {
 			auto *val = static_cast<StringObject *>(target.ref.get());
 			if (v.asInt() < val->value.size())
@@ -13646,7 +13637,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			break;
 		}
 		default: {
-			error("resize() can only bee used on Lists, Sets and Strings", "TypeError");
+			error("resize() can only bee used on Lists and Strings", "TypeError");
 			break;
 		}
 		}
@@ -13727,9 +13718,10 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 		vector<Value> elements;
 		if (target.type == ValueType::LIST)
 			elements = static_cast<ListObject *>(target.ref.get())->elements;
-		else if (target.type == ValueType::SET)
-			elements = static_cast<SetObject *>(target.ref.get())->elements;
-		else if (target.type == ValueType::TUPLE)
+		else if (target.type == ValueType::SET) {
+			auto *s = static_cast<SetObject *>(target.ref.get());
+			elements.assign(s->elements.begin(), s->elements.end());
+		} else if (target.type == ValueType::TUPLE)
 			elements = static_cast<TupleObject *>(target.ref.get())->elements;
 		else if (target.type == ValueType::VECTOR) {
 			for (auto d : static_cast<VectorObject *>(target.ref.get())->elements)
@@ -13816,7 +13808,12 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			if (target.type == ValueType::TUPLE)
 				return Value::Tuple(src);
 			if (target.type == ValueType::SET)
-				return Value::Set(src);
+				return Value::Set([&src]() -> std::unordered_set<Value, ValueHash, ValueEqual> {
+					std::unordered_set<Value, ValueHash, ValueEqual> s;
+					for (auto &v : src)
+						s.insert(v);
+					return s;
+				}());
 			if (target.type == ValueType::VECTOR) {
 				vector<Value> nums;
 				bool allNums = true;
@@ -14214,19 +14211,14 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 				if (!r->startInclusive)
 					current += r->step;
 				while (true) {
-					bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end
-																				: current < r->end)
-													  : (r->endInclusive ? current >= r->end
-																				: current > r->end);
+					bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end) : (r->endInclusive ? current >= r->end : current > r->end);
 					if (!cond)
 						break;
-					elems.push_back(r->isFloat ? Value::Float(current)
-														: Value::Int((long long)current));
+					elems.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
 					current += r->step;
 				}
 			} else
-				error("extend() requires an iterable (list, set, or range)",
-					"TypeError");
+				error("extend() requires an iterable (list, set, or range)", "TypeError");
 			return target;
 		}
 		if (m->method == "sum") {
@@ -14408,8 +14400,65 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 					el = deepCopy(val);
 			return target;
 		}
-		error("Object '" + m->method + "' is not a list method",
-			"AttributeError");
+		if (m->method == "MaxHeapify") {
+			checkConst();
+			if (!m->args.empty())
+				error("MaxHeapify() takes no arguments", "ArgumentError");
+			std::make_heap(elems.begin(), elems.end(),
+				[](const Value &a, const Value &b) { return lessValue(a, b); });
+			return target;
+		}
+		if (m->method == "MinHeapify") {
+			checkConst();
+			if (!m->args.empty())
+				error("MinHeapify() takes no arguments", "ArgumentError");
+			std::make_heap(elems.begin(), elems.end(),
+				[](const Value &a, const Value &b) { return lessValue(b, a); });
+			return target;
+		}
+		if (m->method == "MaxHeapPop") {
+			checkConst();
+			if (!m->args.empty())
+				throw ArgumentError("MaxHeapPop() takes no arguments", m->line, m->col);
+			if (elems.empty())
+				throw EmptyContainerError("pop from empty heap", m->line, m->col);
+			std::pop_heap(elems.begin(), elems.end(),
+				[](const Value &a, const Value &b) { return lessValue(a, b); });
+			auto result = elems.back();
+			elems.pop_back();
+			return result;
+		}
+		if (m->method == "MinHeapPop") {
+			checkConst();
+			if (!m->args.empty())
+				throw ArgumentError("MinHeapPop() takes no arguments", m->line, m->col);
+			if (elems.empty())
+				throw EmptyContainerError("pop from empty heap", m->line, m->col);
+			std::pop_heap(elems.begin(), elems.end(),
+				[](const Value &a, const Value &b) { return lessValue(b, a); });
+			auto result = elems.back();
+			elems.pop_back();
+			return result;
+		}
+		if (m->method == "MaxHeapPush") {
+			checkConst();
+			if (m->args.size() != 1)
+				throw ArgumentError("MaxHeapPush() takes one argument", m->line, m->col);
+			elems.push_back(eval(m->args[0]));
+			std::push_heap(elems.begin(), elems.end(),
+				[](const Value &a, const Value &b) { return lessValue(a, b); });
+			return target;
+		}
+		if (m->method == "MinHeapPush") {
+			checkConst();
+			if (m->args.size() != 1)
+				throw ArgumentError("MinHeapPush() takes one argument", m->line, m->col);
+			elems.push_back(eval(m->args[0]));
+			std::push_heap(elems.begin(), elems.end(),
+				[](const Value &a, const Value &b) { return lessValue(b, a); });
+			return target;
+		}
+		error("Object '" + m->method + "' is not a list method", "AttributeError");
 	}
 	//--------- SET METHODS ----------
 	if (target.type == ValueType::SET) {
@@ -14456,8 +14505,9 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 				error("pop() takes no arguments", "ArgumentError");
 			if (setObj->elements.empty())
 				error("pop from empty set", "EmptyContainerError");
-			Value val = setObj->elements.back();
-			setObj->elements.pop_back();
+			auto it = setObj->elements.begin();
+			Value val = *it;
+			setObj->elements.erase(it);
 			return val;
 		}
 		if (m->method == "clear") {
@@ -14474,10 +14524,9 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			Value other = eval(m->args[0]);
 			if (other.type != ValueType::SET)
 				error("union() requires a set", "TypeError");
-			vector<Value> result = setObj->elements;
+			std::unordered_set<Value, ValueHash, ValueEqual> result = setObj->elements;
 			auto *otherSet = static_cast<SetObject *>(other.ref.get());
-			for (const auto &v : otherSet->elements)
-				setAdd(result, v);
+			result.insert(otherSet->elements.begin(), otherSet->elements.end());
 			return Value::Set(result);
 		}
 		if (m->method == "intersection") {
@@ -14486,14 +14535,12 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			Value other = eval(m->args[0]);
 			if (other.type != ValueType::SET)
 				error("intersection() requires a set", "TypeError");
-			vector<Value> result;
+			std::unordered_set<Value, ValueHash, ValueEqual> result;
 			auto *otherSet = static_cast<SetObject *>(other.ref.get());
-			for (const auto &v1 : setObj->elements) {
-				for (const auto &v2 : otherSet->elements)
-					if (v1.strictEquals(v2)) {
-						result.push_back(v1);
-						break;
-					}
+			for (const auto &v : setObj->elements) {
+				if (otherSet->elements.count(v) > 0) {
+					result.insert(v);
+				}
 			}
 			return Value::Set(result);
 		}
@@ -14503,17 +14550,12 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			Value other = eval(m->args[0]);
 			if (other.type != ValueType::SET)
 				error("difference() requires a set", "TypeError");
-			vector<Value> result;
+			std::unordered_set<Value, ValueHash, ValueEqual> result;
 			auto *otherSet = static_cast<SetObject *>(other.ref.get());
-			for (const auto &v1 : setObj->elements) {
-				bool found = false;
-				for (const auto &v2 : otherSet->elements)
-					if (v1.strictEquals(v2)) {
-						found = true;
-						break;
-					}
-				if (!found)
-					result.push_back(v1);
+			for (const auto &v : setObj->elements) {
+				if (otherSet->elements.count(v) == 0) {
+					result.insert(v);
+				}
 			}
 			return Value::Set(result);
 		}
@@ -14523,27 +14565,15 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			Value other = eval(m->args[0]);
 			if (other.type != ValueType::SET)
 				error("symmetric_difference() requires a set", "TypeError");
-			vector<Value> result;
+			std::unordered_set<Value, ValueHash, ValueEqual> result;
 			auto *s2 = static_cast<SetObject *>(other.ref.get());
 			for (const auto &v1 : setObj->elements) {
-				bool found = false;
-				for (const auto &v2 : s2->elements)
-					if (v1.strictEquals(v2)) {
-						found = true;
-						break;
-					}
-				if (!found)
-					result.push_back(v1);
+				if (s2->elements.count(v1) == 0)
+					result.insert(v1);
 			}
 			for (const auto &v2 : s2->elements) {
-				bool found = false;
-				for (const auto &v1 : setObj->elements)
-					if (v2.strictEquals(v1)) {
-						found = true;
-						break;
-					}
-				if (!found)
-					result.push_back(v2);
+				if (setObj->elements.count(v2) == 0)
+					result.insert(v2);
 			}
 			return Value::Set(result);
 		}
@@ -14555,14 +14585,9 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 				error("issubset() requires a set", "TypeError");
 			auto *parent = static_cast<SetObject *>(other.ref.get());
 			for (const auto &childElem : setObj->elements) {
-				bool found = false;
-				for (const auto &pElem : parent->elements)
-					if (childElem.strictEquals(pElem)) {
-						found = true;
-						break;
-					}
-				if (!found)
+				if (parent->elements.count(childElem) == 0) {
 					return Value::Bool(false);
+				}
 			}
 			return Value::Bool(true);
 		}
@@ -14574,14 +14599,9 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 				error("issuperset() requires a set", "TypeError");
 			auto *child = static_cast<SetObject *>(other.ref.get());
 			for (const auto &cElem : child->elements) {
-				bool found = false;
-				for (const auto &pElem : setObj->elements)
-					if (cElem.strictEquals(pElem)) {
-						found = true;
-						break;
-					}
-				if (!found)
+				if (setObj->elements.count(cElem) == 0) {
 					return Value::Bool(false);
+				}
 			}
 			return Value::Bool(true);
 		}
@@ -14592,10 +14612,10 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			if (other.type != ValueType::SET)
 				error("isdisjoint() requires a set", "TypeError");
 			auto *otherSet = static_cast<SetObject *>(other.ref.get());
-			for (const auto &v1 : setObj->elements) {
-				for (const auto &v2 : otherSet->elements)
-					if (v1.strictEquals(v2))
-						return Value::Bool(false);
+			for (const auto &v : setObj->elements) {
+				if (otherSet->elements.count(v) > 0) {
+					return Value::Bool(false);
+				}
 			}
 			return Value::Bool(true);
 		}
@@ -14604,30 +14624,16 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			if (!m->args.empty())
 				sep = eval(m->args[0]).asString();
 			string res = "";
-			auto &elems = setObj->elements; // Access set elements
-			for (size_t i = 0; i < elems.size(); i++) {
-				if (elems[i].type == ValueType::STRING)
-					res += elems[i].asString();
+			size_t i = 0;
+			size_t total = setObj->elements.size();
+			for (const auto &elem : setObj->elements) {
+				if (elem.type == ValueType::STRING)
+					res += elem.asString();
 				else
-					res += valueToString(elems[i]);
-				if (i + 1 < elems.size())
+					res += valueToString(elem);
+				if (i + 1 < total)
 					res += sep;
-			}
-			return Value::String(res);
-		}
-		if (m->method == "join") {
-			string sep = "";
-			if (!m->args.empty())
-				sep = eval(m->args[0]).asString();
-			string res = "";
-			auto &elems = setObj->elements;
-			for (size_t i = 0; i < elems.size(); i++) {
-				if (elems[i].type == ValueType::STRING)
-					res += elems[i].asString();
-				else
-					res += valueToString(elems[i]);
-				if (i + 1 < elems.size())
-					res += sep;
+				i++;
 			}
 			return Value::String(res);
 		}
@@ -15808,7 +15814,9 @@ void Interpreter::registerStdLib() {
 			if (v.type == ValueType::SET) {
 				auto *set = static_cast<SetObject *>(v.ref.get());
 				size_t idx = pickIndex(set->elements.size());
-				return set->elements[idx];
+				auto it = set->elements.begin();
+				std::advance(it, idx);
+				return *it;
 			}
 			if (v.type == ValueType::RANGE) {
 				auto *r = static_cast<RangeObject *>(v.ref.get());
@@ -15860,10 +15868,7 @@ void Interpreter::registerStdLib() {
 				return Value::String(s);
 			}
 			if (v.type == ValueType::SET) {
-				Value newVal = deepCopy(v);
-				auto *s = static_cast<SetObject *>(newVal.ref.get());
-				std::shuffle(s->elements.begin(), s->elements.end(), getGen());
-				return newVal;
+				throw TypeError("Sets are unordered collections and cannot be shuffled. Cast to a list first using list(my_set).", l, c);
 			}
 			if (v.type == ValueType::RANGE) {
 				Value listVer = Value::List({});
@@ -15888,24 +15893,34 @@ void Interpreter::registerStdLib() {
 				pool = static_cast<ListObject *>(v.ref.get())->elements;
 			else if (v.type == ValueType::TUPLE)
 				pool = static_cast<TupleObject *>(v.ref.get())->elements;
-			else if (v.type == ValueType::SET)
-				pool = static_cast<SetObject *>(v.ref.get())->elements;
-			else if (v.type == ValueType::RANGE) {
+			else if (v.type == ValueType::SET) {
+				auto s = static_cast<SetObject *>(v.ref.get())->elements;
+				pool.assign(s.begin(), s.end());
+			} else if (v.type == ValueType::RANGE) {
 				auto *r = static_cast<RangeObject *>(v.ref.get());
-				double cur = r->start;
-				if (!r->startInclusive)
-					cur += r->step;
-				while (true) {
-					bool cond =
-						(r->step > 0)
-							? (r->endInclusive ? cur <= r->end : cur < r->end)
-							: (r->endInclusive ? cur >= r->end : cur > r->end);
-					if (!cond)
-						break;
-					pool.push_back(r->isFloat ? Value::Float(cur)
-													  : Value::Int((long long)cur));
-					cur += r->step;
+				long long rangeSize = 0;
+				if (r->step > 0) {
+					rangeSize = std::ceil((r->end - r->start) / r->step);
+					if (r->endInclusive && r->start + rangeSize * r->step == r->end)
+						rangeSize++;
+				} else if (r->step < 0) {
+					rangeSize = std::ceil((r->start - r->end) / -r->step);
+					if (r->endInclusive && r->start + rangeSize * r->step == r->end)
+						rangeSize++;
 				}
+				if (k > rangeSize)
+					throw ValueError("Sample larger than population", l, c);
+				std::unordered_set<long long> chosenIndices;
+				while (chosenIndices.size() < k) {
+					long long randIdx = std::uniform_int_distribution<long long>(0, rangeSize - 1)(getGen());
+					chosenIndices.insert(randIdx);
+				}
+				vector<Value> deepResult;
+				for (long long idx : chosenIndices) {
+					double val = r->start + (idx * r->step);
+					deepResult.push_back(r->isFloat ? Value::Float(val) : Value::Int((long long)val));
+				}
+				return Value::List(deepResult);
 			} else if (isString) {
 				string s = v.asString();
 				for (char ch : s)
@@ -15922,13 +15937,14 @@ void Interpreter::registerStdLib() {
 			vector<Value> deepResult;
 			for (auto &val : result)
 				deepResult.push_back(deepCopy(val));
-
 			if (v.type == ValueType::LIST || v.type == ValueType::RANGE)
 				return Value::List(deepResult);
 			if (v.type == ValueType::TUPLE)
 				return Value::Tuple(deepResult);
-			if (v.type == ValueType::SET)
-				return Value::Set(deepResult);
+			if (v.type == ValueType::SET) {
+				std::unordered_set<Value, ValueHash, ValueEqual> res(deepResult.begin(), deepResult.end());
+				return Value::Set(res);
+			}
 			if (isString) {
 				string s = "";
 				for (const auto &val : deepResult)
@@ -17567,6 +17583,9 @@ void Interpreter::registerStdLib() {
 		}
 		if (v.type == ValueType::STRING) {
 			string s = v.asString();
+			if (s == "inf") {
+				return Value::Float(std::numeric_limits<double>::infinity());
+			}
 			try {
 				return Value::Int(std::stoll(s));
 			} catch (...) {
@@ -17717,7 +17736,10 @@ void Interpreter::registerStdLib() {
 		}
 		if (!args.empty() && args[0].type == ValueType::SET) {
 			auto *s = static_cast<SetObject *>(args[0].ref.get());
-			return Value::List(s->elements);
+			std::vector<Value> res;
+			res.reserve(s->elements.size());
+			res.assign(s->elements.begin(), s->elements.end());
+			return Value::List(res);
 		}
 		if (!args.empty() && args[0].type == ValueType::TUPLE) {
 			auto *t = static_cast<TupleObject *>(args[0].ref.get());
@@ -17733,7 +17755,7 @@ void Interpreter::registerStdLib() {
 	}),
 		false);
 	env->set("set", Value::Native([this](const vector<Value> &args, int l, int c) {
-		vector<Value> elems;
+		std::unordered_set<Value, ValueHash, ValueEqual> elems;
 		if (args.size() > 1) {
 			for (auto &arg : args)
 				setAdd(elems, arg);
@@ -17795,9 +17817,13 @@ void Interpreter::registerStdLib() {
 			if (src.type == ValueType::LIST)
 				return Value::Tuple(
 					static_cast<ListObject *>(src.ref.get())->elements);
-			if (src.type == ValueType::SET)
-				return Value::Tuple(
-					static_cast<SetObject *>(src.ref.get())->elements);
+			if (src.type == ValueType::SET) {
+				auto s = static_cast<SetObject *>(src.ref.get())->elements;
+				std::vector<Value> v;
+				v.reserve(s.size());
+				v.assign(s.begin(), s.end());
+				return Value::Tuple(v);
+			}
 			if (src.type == ValueType::RANGE) {
 				auto *r = static_cast<RangeObject *>(src.ref.get());
 				vector<Value> elems;
@@ -18043,8 +18069,13 @@ void Interpreter::registerStdLib() {
 		auto extract = [&](Value v) -> vector<Value> {
 			if (v.type == ValueType::LIST)
 				return static_cast<ListObject *>(v.ref.get())->elements;
-			if (v.type == ValueType::SET)
-				return static_cast<SetObject *>(v.ref.get())->elements;
+			if (v.type == ValueType::SET) {
+				auto st = static_cast<SetObject *>(v.ref.get())->elements;
+				std::vector<Value> s;
+				s.reserve(st.size());
+				s.assign(st.begin(), st.end());
+				return s;
+			}
 			if (v.type == ValueType::TUPLE)
 				return static_cast<TupleObject *>(v.ref.get())->elements;
 			if (v.type == ValueType::RANGE) {
@@ -18111,6 +18142,26 @@ void Interpreter::registerStdLib() {
 			throw ConstError("cannot change the type of the locked variables", l, c);
 		std::swap(*val1, *val2);
 		return Value::None();
+	}),
+		false);
+	env->set("max", Value::Native([this](const vector<Value> &args, int l, int c) {
+		if (args.size() < 2)
+			throw ArgumentError("max(), takes at least 2 arguments", l, c);
+		auto maxVal = Value::NoType();
+		for (int i = 1; i < args.size(); i++) {
+			maxVal = lessValue(args[i - 1], args[i]) ? args[i] : args[i - 1];
+		}
+		return maxVal;
+	}),
+		false);
+	env->set("min", Value::Native([this](const vector<Value> &args, int l, int c) {
+		if (args.size() < 2)
+			throw ArgumentError("min(), takes at least 2 arguments", l, c);
+		auto minVal = Value::NoType();
+		for (int i = 1; i < args.size(); i++) {
+			minVal = lessValue(args[i - 1], args[i]) ? args[i - 1] : args[i];
+		}
+		return minVal;
 	}),
 		false);
 	// ============ I/O ============
