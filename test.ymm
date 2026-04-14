@@ -1,4 +1,4 @@
-`import * from Raylib
+import * from Raylib
 import * from Math
 import RandChoice from Random
 import Vector
@@ -38,11 +38,13 @@ let const RAD = PI / 180F
 let const K = 60
 let const X = PI / 200F
 let SWITCH_TO_RAY_CAST = false
+let RELEASE_THE_ENEMY = false
+let GAME_OVER = false
 
 define class Player:{
    #public:
       define function __construct__(pos:vector(), fov:float(), render_distance:int(), len:int(15)):{
-         if MAP[(pos[0] - MAP_START[0]) // MAP_BLOCK_LENGTH][(pos[1] - MAP_START[1]) // MAP_BLOCK_LENGTH]:{
+         if MAP[(pos[1] - MAP_START[1]) // MAP_BLOCK_LENGTH][(pos[0] - MAP_START[0]) // MAP_BLOCK_LENGTH]:{
             throw ValueError, "player position cannont be inside a wall"
          }
          let self.direction = <1.0, -1.0>
@@ -173,7 +175,7 @@ define class Player:{
                if strip_index >= 0 and strip_index < length(z_buffer):{
                   if dist < z_buffer[strip_index]:{
                      let dest_rec = Rectangle(draw_x, draw_y, sprite_size, sprite_size)
-                     let src_rec = Rectangle(0, 0, 640, 640)
+                     let src_rec = Rectangle(0, 0, 640 // 3, 640 // 3)
                      DrawTexturePro(enemy.texture, src_rec, dest_rec, <0, 0>, 0.0F, WHITE)
                   }
                }
@@ -189,11 +191,11 @@ define class Player:{
 define class Enemy:{
    #public:
       define function __construct__(pos:vector(), speed:int(), texture:object(), map:tuple(), len:int(15)):{
-         if MAP[(pos[0] - MAP_START[0]) // MAP_BLOCK_LENGTH][(pos[1] - MAP_START[1]) // MAP_BLOCK_LENGTH]:{
+         if MAP[(pos[1] - MAP_START[1]) // MAP_BLOCK_LENGTH][(pos[0] - MAP_START[0]) // MAP_BLOCK_LENGTH]:{
             throw ValueError, "enemy position cannont be inside a wall"
          }
          let self.len = len
-         let self.pos = pos
+         let self.pos = pos + <1, 1> * (MAP_BLOCK_LENGTH - self.len) // 2
          let self.speed = speed
          let self.texture = texture
          let obj.PATH_TABLE = obj.__generate_path_table__(obj.TupleToGraph(map))
@@ -202,12 +204,35 @@ define class Enemy:{
          DrawRectangleV(self.pos, <self.len, self.len>, color)
       }
       define function MoveToPlayer(playerPos:vector()):{
+         if not RELEASE_THE_ENEMY: return None
          let player_block_pos = obj.pos_calculator(playerPos)
          let enemy_block_pos = obj.pos_calculator(self.pos)
-         if player_block_pos === enemy_block_pos: return None
-         let dt = GetFrameTime()
-
-
+         if player_block_pos === enemy_block_pos: {
+            GAME_OVER = true
+            return
+         }
+         let center_position_x = MAP_START[0] + enemy_block_pos[0] * MAP_BLOCK_LENGTH + (MAP_BLOCK_LENGTH - self.len) // 2
+         let center_position_y = MAP_START[1] + enemy_block_pos[1] * MAP_BLOCK_LENGTH + (MAP_BLOCK_LENGTH - self.len) // 2
+         let dt = GetFrameTime() 
+         let next_block = obj.PATH_TABLE[tuple(enemy_block_pos, player_block_pos)]
+         if next_block[0] !== enemy_block_pos[0]:{
+            self.pos[0] += Sgn(next_block[0] - enemy_block_pos[0]) * self.speed * dt
+            if self.pos[1] !== center_position_y:{
+               if Abs(self.pos[1] - center_position_y) < self.speed * dt: ~ cant step in so we yank it
+                  self.pos[1] = center_position_y
+               else:
+                  self.pos[1] += Sgn(center_position_y - self.pos[1]) * self.speed * dt
+            }
+         }
+         elif next_block[1] !== enemy_block_pos[1]:{
+            self.pos[1] += Sgn(next_block[1] - enemy_block_pos[1]) * self.speed * dt
+            if self.pos[0] !== center_position_x:{
+               if Abs(self.pos[0] - center_position_x) < self.speed * dt: ~ cant step in so we yank it
+                  self.pos[0] = center_position_x
+               else:
+                  self.pos[0] += Sgn(center_position_x - self.pos[0]) * self.speed * dt
+            }
+         }
       }
    #private:
       define function TupleToGraph(map:tuple()) -> dict():{
@@ -232,27 +257,32 @@ define class Enemy:{
       }
       define function __generate_path_table__(graph:dict()) -> dict():{
          let result = {}
-         for let start_y = 1 if start_y < MAP_H - 1 then start_y++ do:{
-            for let start_x = 1 if start_x < MAP_W - 1 then start_x++ do:{
-               let start_node = (start_x, start_y)
-               if start_node is in graph.keys():{
-                  for let end_y = 1 if end_y < MAP_H - 1 then end_y++ do:{
-                     for let end_x = 1 if end_x < MAP_W - 1 then end_x++ do:{
-                        let end_node = (end_x, end_y)
-                        if end_node is in graph.keys():{
-                           let path = BFS(graph, start_node, end_node)
-                           if path and path is not [start_node]:{
-                              result[(start_node, end_node)] = path
-                           }
-                           else:{
-                              result[(start_node, end_node)] = start_node
-                           }
-                        }
-                     }
+         for start_node in graph.keys() do:{
+            let visited = {start_node}
+            let parent = {start_node: None}
+            let queue = [start_node]
+            while queue do:{
+               let node = queue.pop(0)
+               for nibs in graph[node] do:{
+                  if nibs is not in visited:{
+                     visited.add(nibs)
+                     parent[nibs] = node
+                     queue.append(nibs)
                   }
                }
             }
-         }
+            for end_node in graph.keys() do:{
+               if end_node is not in parent.keys() or end_node === start_node:{
+                  result[tuple(start_node, end_node)] = start_node
+                  continue
+               }
+               let step = end_node
+               while parent[step] is not None and parent[step] !== start_node do:{
+                  step = parent[step]
+               }
+               result[tuple(start_node, end_node)] = step
+            }
+         } 
          return result
       }
    #protected:
@@ -351,52 +381,38 @@ define function render_ground_sky() -> list():{
 define function map_range(current_num:float(), current_range_start:float(), current_range_end:float(), goal_range_start:float(), goal_range_end:float()) -> float():{
    return (current_num - current_range_start) * (goal_range_end - goal_range_start) / (current_range_end - current_range_start) + goal_range_start
 }
-define function BFS(graph:dict(), start:tuple(), end:tuple()) -> list():{
-   if start === end return [start]
-   let visited = {start}
-   let parent = {start : None}
-   let queue = [start]
-   while queue do:{
-      let node = queue.pop(0)
-      if node === end: break
-      for nibs in graph[node] do:{
-         if nibs is not in visited:{
-            visited.add(nibs)
-            parent[nibs] = node
-            queue.append(nibs)
-         }
-      }
-   }
-   if end is not in parent.keys() return []
-   let ord = []
-   let step = end
-   while step is not None do:{
-      ord.append(step)
-      step = parent[step]
-   }
-   return ord.reverse()
+define function TransitionToDeathScreen(death_screen:object(), font:object(), text_len:vector(), frame:int(0)):{
+   let alpha = map_range(frame, 0, 3 * FPS, 0, 255)
+   let src = Rectangle(0, 0, 1920, 1080)
+   let dest = Rectangle(0, 0, W, H)
+   DrawTexturePro(death_screen, src, dest, <0, 0>, 0.0F, Color(255, 255, 255, alpha))
+   DrawTextEx(font, "Press ENTER to restart...",  <W // 2, H // 2> - text_len // 2 + <0, 60>, 20, 1, Color(255, 255, 255, alpha))
 }
 define function main():{
    InitWindow(W, H, NAME)
-   ~SetTargetFPS(FPS)
+   SetTargetFPS(FPS)
    BeginDrawing()
    ClearBackground(BLACK)
    let txture = render_map()
    let sky_ground_texture_array = render_ground_sky()
    let sky = @sky_ground_texture_array[0]
    let ground = @sky_ground_texture_array[1]
-   let wall_texture = LoadTexture('pixwall.png')
-   let enemy_txture = LoadTexture("floor.png")
-   DrawText("LOADING...", W // 2 - 10 * 5, H // 2 - 20, 20, WHITE)
+   let wall_texture = LoadTexture('src/pixwall.png')
+   let enemy_txture = LoadTexture("src/images.png")
+   let death_screen_texture = LoadTexture('src/death_screen.png')
+   let arial_font = LoadFont('src/ARIAL.TTF')
+   let Loading_length = MeasureTextEx(arial_font, "LOADING...", 20, 1)
+   let game_over_length = MeasureTextEx(arial_font, "Press ENTER to restart...", 20, 1)
+   DrawTextEx(arial_font, "LOADING...", <W // 2, H // 2> - Loading_length // 2, 20, 1, WHITE)
    EndDrawing()
-   ~<6, 11> will be the default spawn for the enemy but i set it to <1, 1> - same as the player to test printing it faster
-   let enemy = Enemy(MAP_START + <1, 1> * MAP_BLOCK_LENGTH + <10, 10>, K * 5 // 6, enemy_txture, MAP)
+   ~<11, 6> will be the default spawn for the enemy but i set it to <1, 1> - same as the player to test printing it faster
+   let enemy = Enemy(MAP_START + <11, 6> * MAP_BLOCK_LENGTH, K * 5 // 6, enemy_txture, MAP)
    let player = Player(MAP_START + <1, 1> * MAP_BLOCK_LENGTH, DEFAULT_PLAYER_FOV, 150)
    SetMousePosition(0, H // 2)
+   let death_frame_count = 0
    while not WindowShouldClose() do:{
       BeginDrawing()
       ClearBackground(BLACK)
-      if IsKeyPressed("M".ascii()): SWITCH_TO_RAY_CAST = not SWITCH_TO_RAY_CAST
       if SWITCH_TO_RAY_CAST:{
          player.display_ray_cast(wall_texture, sky, ground, enemy)
       }
@@ -405,43 +421,43 @@ define function main():{
          player.display_2D()
          enemy.display_2D()
       }
-      player.update_pos_2D()
-      player.update_cam_2D()
+      if RELEASE_THE_ENEMY:
+         enemy.MoveToPlayer(player.pos)
+      if not GAME_OVER:{
+         if IsKeyPressed("M".ascii()): SWITCH_TO_RAY_CAST = not SWITCH_TO_RAY_CAST
+         if IsKeyPressed("R".ascii()): RELEASE_THE_ENEMY = not RELEASE_THE_ENEMY
+         player.update_pos_2D()
+         player.update_cam_2D()
+      }
+      else:{
+         SWITCH_TO_RAY_CAST = true
+         if death_frame_count < 3 * FPS: {
+            TransitionToDeathScreen(death_screen_texture, arial_font, game_over_length, death_frame_count)
+            death_frame_count++
+         }
+         else:{
+            death_frame_count = 3 * FPS
+            TransitionToDeathScreen(death_screen_texture, arial_font, game_over_length, death_frame_count)
+         }
+         if IsKeyPressed(257):{
+            player.pos = MAP_START + <1, 1> * MAP_BLOCK_LENGTH
+            enemy.pos = MAP_START + <11, 6> * MAP_BLOCK_LENGTH
+            GAME_OVER = false
+            SWITCH_TO_RAY_CAST = false
+            RELEASE_THE_ENEMY = false
+            player.direction = <1.0, -1.0>
+            player.start_ang = 90.0F
+         }
+      }
       DrawFPS(10, 10)
       EndDrawing()
    }
+   UnloadFont(arial_font)
+   UnloadTexture(death_screen_texture)
    UnloadTexture(wall_texture)
    UnloadTexture(sky)
    UnloadTexture(ground)
    UnloadTexture(txture)
    UnloadTexture(enemy_txture)
    CloseWindow()
-}`
-define function main():{
-   define function str_to_lis(x) -> list():{
-      if typeof(x) === typeof(""):{
-         let res = []
-         let raw = x.split(", ")
-         for element in raw do:{
-            print(element, raw)
-            if element.isdecimal():{
-               if '.' is in element:{
-                  res.append(float(element))
-               }
-               else:{
-                  res.append(int(element))
-               }
-            }
-            elif element.isalnum():{
-               res.append(element)
-            }
-            else:{
-               res.append(str_to_lis(element))
-            }
-         }
-         return res
-      }
-      return []
-   }
-   print(str_to_lis("[1, [2, 9], 3]"))
 }
