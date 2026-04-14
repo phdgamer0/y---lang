@@ -1,3 +1,4 @@
+```
 import Raylib
 import Time
 import Vector
@@ -112,14 +113,14 @@ define function hash($arg)-> int():{
 		i++
 	}
 	return int(Abs(H) * (10**18))
-}
-``` CLOCK SIM: ```
+}```
+``` CLOCK SIM:
 define function draw_clock_body(center, clc_clor, dot_color): {
 	~DrawRectangle(WIN_WIDTH/2-200,WIN_HEIGHT/2 - 200, 400, 400, Color(255, 150, 170, 255) )
 	DrawCircleV(center, 202, dot_color)
 	DrawCircleV(center, 200, clc_clor)
-	`v_begin = <400 + 160 * cosx, 300 + 160 * sinx>`
-	`v_end = <400 + 195 * cosx, 300 + 195 * sinx>`
+	``v_begin = <400 + 160 * cosx, 300 + 160 * sinx>`
+	`v_end = <400 + 195 * cosx, 300 + 195 * sinx>``
 	let angle = float()
 	for i in 0...12...1 do: {
 		angle = float(i * PI / 6)
@@ -177,8 +178,8 @@ define function foo(): {
 		EndDrawing()
 	}
 	CloseWindow()
-}
-``` FUNCTION SIM: ```
+}```
+``` FUNCTION SIM:
 define function steup_axis(T, C): {
 	DrawLineEx(<0, WIN_HEIGHT/2>,<WIN_WIDTH,WIN_HEIGHT/2 >, T, C)
 	DrawLineEx(<WIN_WIDTH/2, 0>,<WIN_WIDTH/2, WIN_HEIGHT >, T, C)
@@ -202,14 +203,14 @@ let mouse_x, mouse_y
 let toggled_zoom = true
 SetTargetFPS(60)
 while (not bool(WindowShouldClose())) do: {
-	BeginDrawing()
+	BeginDrawing() 
 	ClearBackground(BLACK)
 	DrawFPS(10, 10)
 	DrawText(f'{string(zoom).strip("0").center(10," ")}\n{string(stre).strip("0").center(10," ")}', WIN_WIDTH - offsetx, 10, 20, WHITE)
 	DrawRectangleV(<WIN_WIDTH - offsetx - 1, offsety - 1 >, <32 , 32 >, WHITE)
 	DrawRectangleV(<WIN_WIDTH - offsetx, offsety >, <30, 30 >, BLACK)
 	DrawText(f'-', WIN_WIDTH - offsetx + 11, offsety + 6, 20, WHITE)
-		`----------------------------------------------------------------`
+		``----------------------------------------------------------------``
 	DrawRectangleV(<WIN_WIDTH - offsetx + 41, offsety - 1 >, <32 , 32 >, WHITE)
 	DrawRectangleV(<WIN_WIDTH - offsetx + 42, offsety >, <30, 30 >, BLACK)
 	DrawText(f'+', WIN_WIDTH - offsetx + 52, offsety + 6, 20, WHITE)
@@ -228,7 +229,8 @@ while (not bool(WindowShouldClose())) do: {
 	EndDrawing()
 }
 	CloseWindow()
-}
+} ```
+``` SPEEDOMETER:
 let const CIRCLE_RADIUS = 300
 let car_speed = 0
 let our_speed = 0
@@ -240,11 +242,15 @@ define function Draw_Speed_Meter(outer_color, inside_color, line_colors, number_
 	Draw_Speed_Lines(line_colors)
 }
 ``` 
+
+```
 x = WIN_WIDTH / 2 + R * Cos(a)
 y = WIN_WIDTH / 2 - R * Sin(a)
 slice = 24
 small = 20
 big = 30
+
+```
 ```
 define function Draw_Speed_Lines(line_colors): {
 	for let i, j = 7 * PI / 6,0 if i >= -PI / 6 then i -= PI / 18, j++ do: {
@@ -374,6 +380,9 @@ CloseWindow()
 ~ 		EndDrawing()
 ~ 	}
 ~ }
+```
+
+``` MATRIX:
 define function matmar():{
 	define class Matrix: {
 			#public:
@@ -603,6 +612,7 @@ define function matmar():{
 		}
 }
 ```
+```
 wordle game
 =============
 import FileStream
@@ -651,7 +661,7 @@ define function main():{
       inp = input(f"chances: {chances}\nenter the 5 letter word to play or q to exit: ", string()).lower()
 		while inp !== "q" and (length(inp) !== 5 or not inp.isalpha() or inp is not in words) do:{
          Console("clear")
-      	Draw_chances(6, word)
+         Draw_chances(6, word)
 			print(f"unused letters: {all_words.difference(set($all_guesses))}")
 			print("Wrong input try again")
 			inp = input(f"chances: {chances}\nenter the 5 letter word to play or q to exit: ", string()).lower()
@@ -942,12 +952,14 @@ import Vector
 
 let const W = 800
 let const H = 800
-let const FPS = 144
+let const FPS = 60
 let const GRID_NUM = 8
 let const GRID_LEN = 60
 let const BLOCK_LEN = 40
 let const BLOCK_LEN_PICKED = GRID_LEN
 let const DEFAULT_POS = <W // 2, H * 0.75>
+let GAME_OVER = false
+let score = 0
 
 define function __model__helper__(iterable) -> list():{
    let block_grid = [[]] * 5
@@ -1312,7 +1324,27 @@ define class Grid: {
             self.grid_check()
             self.cleaner()
             block.reset()
+            self.CheckGameOver(block)
          }
+      }
+      define function CheckGameOver(block:object()):{
+         for let i = 0 if i <= GRID_NUM - block.model[-1][-1] then i++ do:{
+            for let j = 0 if j <= GRID_NUM - block.model[-1][-2] then j++ do:{
+               let fits = true
+               for let k = 0 if k < block.model[-1][-1] then k++ do:{
+                  for let l = 0 if l < block.model[-1][-2] then l++ do:{
+                     if block.model[k][l] and self.MainGrid[i + k][j + l][0]:{
+                        fits = false
+                     }
+                  }
+               }
+               if fits: return None
+            }
+         }
+         GAME_OVER = true
+      }
+      define function reset():{
+         self.MainGrid = [[[false, self.offColor]] * GRID_NUM for i in range(GRID_NUM)]
       }
    #private:
       define function grid_check():{
@@ -1346,6 +1378,7 @@ define class Grid: {
                self.MainGrid[i][j] = [false, self.offColor]
             }
          }
+         score += (length(self.cleanable_rows) + length(self.cleanable_cols)) * 10
          self.cleanable_rows.clear()
          self.cleanable_cols.clear()
       }
@@ -1363,8 +1396,15 @@ define function main():{
       ClearBackground(BLACK)
       DrawFPS(10, 10)
       grid.display(block)
+      if GAME_OVER:{
+         grid.reset()
+         score = 0
+         GAME_OVER = false
+      }
       block.display()
       block.check_for_drag()
+      DrawText(f'SCORE: {score}', W - 10 * 12, 20, 20, WHITE)
+      
       EndDrawing()
    }
    CloseWindow()
