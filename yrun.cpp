@@ -4,17 +4,23 @@
 #include <iostream>
 #include <sstream>
 void printErrorContext(const std::string &, int, int);
-int main() {
+int main(int argc, char *argv[]) {
 	/*
-	========================================================================================
-	|	Change the path to point to your target .ymm file.                                  |
-	|	Compile & Link: Compile yrun.cpp ensuring Raylib is linked.                         |
-	|	g++ -o3 yrun.cpp -o y_lang -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 && ./y_lang  |
-	|	if you see this: "Choose Compiler: AST:0 VM:1 DEBUG_VM:2 :" ALWAYS CHOOSE 1         |
-	========================================================================================
+	=====================================================================================================================================
+	|	Change the path to point to your target .ymm file.                                  															|
+	|	Compile & Link: Compile yrun.cpp ensuring Raylib is linked.                    															      |
+	|	g++ -w -O3 -flto yrun.cpp qrcodegen.cpp -o y_lang -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 -lncurses -lssl -lcrypto -lasmjit  |
+	|	if you see this: "Choose Compiler: AST:0 VM:1 DEBUG_VM:2 :" ALWAYS CHOOSE 1         															|
+	=====================================================================================================================================
 	*/
 	// -------------------------------------------------------------------------------
-	string path = "/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/test.ymm"; // <-- CHANGE THIS TO YOUR PATH!
+	if (argc < 2) {
+		std::cerr << "FATAL ERROR: No input file provided.\n";
+		std::cerr << "Usage: " << argv[0] << " <file.ymm>\n";
+		return 1;
+	}
+	// Read the path from the first command-line argument
+	string path = argv[1];
 	// -------------------------------------------------------------------------------
 	// string path = "/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/test.ymm";
 	std::ifstream file(path);
@@ -35,11 +41,12 @@ int main() {
 		while (!parser.isAtEnd())
 			program.push_back(parser.parseStmt());
 		int useVM;
-		cout << "Choose Compiler: AST:0 VM:1 ";
 #ifdef VM_DEBUG_MODE
+		cout << "Choose Compiler: AST:0 VM:1 ";
 		std::cout << "DEBUG_VM:2 ";
-#endif
 		cin >> useVM;
+#endif
+		useVM = 1;
 		Interpreter interp;
 		start = std::chrono::high_resolution_clock::now();
 		if (!useVM) {
