@@ -31,7 +31,10 @@
 #undef min
 #undef max
 #undef LoadImage
-#endif // Who decided that?
+#else // Who decided that?
+#include <termios.h>
+#include <unistd.h>
+#endif
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif // !ENABLE_VIRTUAL_TERMINAL_PROCESSING
@@ -9765,9 +9768,9 @@ struct VM {
 		frames.push_back(mainFrame);
 		frame = &frames.back();
 		ip = frame->ip;
-		Value pendingReturn = Value::None();
+		Value pendingReturn = Value::NoType();
 		bool isReturning = false;
-		Value pendingError = Value::None();
+		Value pendingError = Value::NoType();
 		bool isHandlingError = false;
 		int line = 0;
 		int col = 0;
@@ -11582,14 +11585,14 @@ struct VM {
 									nextValues.push_back(tuple->elements[stepCount]);
 								} else if (stream.type == ValueType::SET) {
 									auto *s = static_cast<SetObject *>(stream.ref.get());
-									auto listSnapshot = std::make_shared<ListObject>();
-									listSnapshot->elements.assign(s->elements.begin(), s->elements.end());
-									stream = Value::List(listSnapshot->elements);
-									if (stepCount >= (long long)listSnapshot->elements.size()) {
+									std::vector<Value> snapshot(s->elements.begin(), s->elements.end());
+									stream = Value::List(snapshot);
+									auto *list = static_cast<ListObject *>(stream.ref.get());
+									if (stepCount >= (long long)list->elements.size()) {
 										valid = false;
 										break;
 									}
-									nextValues.push_back(Value::Reference(&listSnapshot->elements[stepCount]));
+									nextValues.push_back(Value::Reference(&list->elements[stepCount]));
 								} else if (stream.type == ValueType::STRING) {
 									string s = stream.asString();
 									if (stepCount >= (long long)s.length()) {
@@ -11746,9 +11749,7 @@ struct VM {
 							Value step = pop();
 							Value end = pop();
 							Value start = pop();
-							bool isFloat = (start.type == ValueType::FLOAT ||
-												 end.type == ValueType::FLOAT ||
-												 step.type == ValueType::FLOAT);
+							bool isFloat = (start.type == ValueType::FLOAT || end.type == ValueType::FLOAT || step.type == ValueType::FLOAT);
 							stack.push_back(Value::Range(start.asFloat(), end.asFloat(),
 								step.asFloat(), true, false,
 								isFloat));
@@ -11779,8 +11780,7 @@ struct VM {
 						{
 							Value index = pop();
 							Value base = pop();
-							auto getSliceIndices =
-								[&](size_t rawLen) -> std::vector<long long> {
+							auto getSliceIndices = [&](size_t rawLen) -> std::vector<long long> {
 								auto *s = static_cast<SliceObject *>(index.ref.get());
 								long long len = (long long)rawLen;
 								long long step = 1;
@@ -11838,6 +11838,11 @@ struct VM {
 								}
 								return result;
 							};
+							while (base.type == ValueType::REFERENCE) {
+								if (!base.ptr)
+									throw RuntimeError("Dead-end reference", line, col);
+								base = *base.ptr;
+							}
 							switch (base.type) {
 							case ValueType::LIST: {
 								auto *list = static_cast<ListObject *>(base.ref.get());
@@ -11982,8 +11987,7 @@ struct VM {
 								break;
 							}
 							default:
-								throw TypeError("Object is not subscriptable", line,
-									col);
+								throw TypeError("Object is not subscriptable", line, col);
 								break;
 							}
 						}
@@ -13474,6 +13478,11 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 		isConstView = tempVal.isConst;
 	}
 	Value &target = *targetPtr;
+	while (target.type == ValueType::REFERENCE) {
+		if (!target.ptr)
+			throw RuntimeError("Dead-end reference", m->line, m->col);
+		target = *target.ptr;
+	}
 	auto checkConst = [&]() {
 		if (target.isConst || isConstView) {
 			error(
@@ -13548,29 +13557,104 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 	}
 	// ---------------- REVERSE ---------------
 	if (m->method == "reverse") {
-		checkConst();
-		if (!m->args.empty())
-			error("reverse() does not accept arguments", "ArgumentError");
+		if (m->args.size() > 2)
+			error("reverse() accepts 2 optional arguments (modify_original:bool(true), custom_lambda = None)", "ArgumentError");
+		bool modifyOriginal = true;
+		if (m->args.size() >= 1) {
+			modifyOriginal = eval(m->args[0]).asBool();
+		}
+		Value customLambda = Value::None();
+		if (m->args.size() == 2) {
+			customLambda = eval(m->args[1]);
+			if (customLambda.type != ValueType::FUNCTION && customLambda.type != ValueType::NONE) {
+				error("reverse() second argument must be a function/lambda or None", "TypeError");
+			}
+		}
+		if (modifyOriginal) {
+			checkConst();
+		}
+		VM tempVM;
+		if (customLambda.type == ValueType::FUNCTION) {
+			tempVM.globals = this->env;
+			tempVM.methodResolver = [&](MethodCallExpr *expr) {
+				return this->Resolve_methods(expr);
+			};
+		}
+		auto applyLambda = [&](Value &elem) {
+			Chunk tempChunk;
+			int lambdaIdx = tempChunk.addConstant(customLambda);
+			int argIdx = tempChunk.addConstant(elem);
+			tempChunk.write(OpCode::OP_CONSTANT, m->line, m->col);
+			tempChunk.write((uint8_t)argIdx, m->line, m->col);
+			tempChunk.write(OpCode::OP_CONSTANT, m->line, m->col);
+			tempChunk.write((uint8_t)lambdaIdx, m->line, m->col);
+			tempChunk.write(OpCode::OP_CALL, m->line, m->col);
+			tempChunk.write((uint8_t)1, m->line, m->col);
+			tempChunk.write(OpCode::OP_RETURN, m->line, m->col);
+			tempVM.stack.clear();
+			tempVM.run(tempChunk);
+			elem = tempVM.stack.empty() ? Value::None() : tempVM.stack.back();
+		};
 		if (target.type == ValueType::STRING) {
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			if (str->value.size() < 2)
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string s = strObj->value;
+			std::reverse(s.begin(), s.end());
+			if (customLambda.type == ValueType::FUNCTION) {
+				string mappedStr = "";
+				for (char c : s) {
+					Value charVal = Value::String(string(1, c));
+					applyLambda(charVal);
+					mappedStr += charVal.asString();
+				}
+				s = mappedStr;
+			}
+			if (modifyOriginal) {
+				strObj->value = s;
 				return target;
-			std::reverse(str->value.begin(), str->value.end());
-			return target;
+			}
+			return Value::String(s);
 		}
 		if (target.type == ValueType::LIST) {
-			auto *list = static_cast<ListObject *>(target.ref.get());
-			if (list->elements.size() < 2)
+			auto *listObj = static_cast<ListObject *>(target.ref.get());
+			vector<Value> elems = listObj->elements;
+			std::reverse(elems.begin(), elems.end());
+			if (customLambda.type == ValueType::FUNCTION) {
+				for (auto &elem : elems) {
+					applyLambda(elem);
+				}
+			}
+			if (modifyOriginal) {
+				listObj->elements = std::move(elems);
 				return target;
-			std::reverse(list->elements.begin(), list->elements.end());
-			return target;
+			}
+			return Value::List(elems);
 		}
 		if (target.type == ValueType::RANGE) {
+			if (customLambda.type == ValueType::FUNCTION) {
+				error("Cannot apply a lambda to a reversed Range directly. Cast to a list first.", "TypeError");
+			}
 			auto *rang = static_cast<RangeObject *>(target.ref.get());
-			std::swap(rang->start, rang->end);
-			std::swap(rang->startInclusive, rang->endInclusive);
-			rang->step = -rang->step;
-			return target;
+			double newStart = rang->end;
+			double newEnd = rang->start;
+			bool newStartInc = rang->endInclusive;
+			bool newEndInc = rang->startInclusive;
+			double newStep = -rang->step;
+			if (modifyOriginal) {
+				rang->start = newStart;
+				rang->end = newEnd;
+				rang->startInclusive = newStartInc;
+				rang->endInclusive = newEndInc;
+				rang->step = newStep;
+				return target;
+			} else {
+				auto newRange = std::make_shared<RangeObject>(*rang);
+				newRange->start = newStart;
+				newRange->end = newEnd;
+				newRange->step = newStep;
+				newRange->startInclusive = newStartInc;
+				newRange->endInclusive = newEndInc;
+				return Value::Range(newRange->start, newRange->end, newRange->step, newRange->startInclusive, newRange->endInclusive, newRange->isFloat);
+			}
 		}
 		error("reverse() not supported on this type", "TypeError");
 	}
@@ -13663,45 +13747,74 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 	}
 	// ---------------- SORT ----------------
 	if (m->method == "sort") {
-		checkConst();
-		if (m->args.size() > 1)
-			error("sort() takes zero or one argument", "ArgumentError");
-
+		if (m->args.size() > 3)
+			error("sort() accepts up to 3 arguments (reverse_sort:bool(false), modify_original:bool(true), custom_lambda = None)", "ArgumentError");
 		bool reverseSort = false;
-		if (!m->args.empty())
+		if (m->args.size() >= 1)
 			reverseSort = eval(m->args[0]).asBool();
-
+		bool modifyOriginal = true;
+		if (m->args.size() >= 2)
+			modifyOriginal = eval(m->args[1]).asBool();
+		Value customLambda = Value::None();
+		if (m->args.size() == 3) {
+			customLambda = eval(m->args[2]);
+			if (customLambda.type != ValueType::FUNCTION && customLambda.type != ValueType::NONE)
+				error("sort() third argument must be a function/lambda or None", "TypeError");
+		}
+		if (modifyOriginal) {
+			checkConst();
+		}
 		if (target.type == ValueType::STRING) {
 			auto *str = static_cast<StringObject *>(target.ref.get());
-			if (str->value.size() <= 1)
-				return Value::String(str->value);
-			std::sort(str->value.begin(), str->value.end());
-			if (reverseSort)
-				std::reverse(str->value.begin(), str->value.end());
-			return target;
+			string s = str->value;
+			if (s.size() > 1) {
+				std::sort(s.begin(), s.end());
+				if (reverseSort)
+					std::reverse(s.begin(), s.end());
+			}
+			if (modifyOriginal) {
+				str->value = s;
+				return target;
+			}
+			return Value::String(s);
 		}
 		if (target.type == ValueType::LIST) {
-			auto *list = static_cast<ListObject *>(target.ref.get());
-			auto &elems = list->elements;
-			if (elems.size() <= 1)
-				return Value::List(list->elements);
-
-			ValueType t = elems[0].type;
-			for (size_t i = 1; i < elems.size(); ++i) {
-				if (elems[i].type != t)
-					error("cannot sort list with mixed types", "TypeError");
+			auto *listObj = static_cast<ListObject *>(target.ref.get());
+			vector<Value> elems = listObj->elements;
+			if (elems.size() > 1) {
+				VM tempVM;
+				Chunk callChunk;
+				if (customLambda.type == ValueType::FUNCTION) {
+					tempVM.globals = this->env;
+					tempVM.methodResolver = [&](MethodCallExpr *expr) {
+						return this->Resolve_methods(expr);
+					};
+					callChunk.write(OpCode::OP_CALL, m->line, m->col);
+					callChunk.write((uint8_t)2, m->line, m->col);
+					callChunk.write(OpCode::OP_RETURN, m->line, m->col);
+				}
+				auto cmp = [&](const Value &a, const Value &b) {
+					if (customLambda.type == ValueType::FUNCTION) {
+						tempVM.stack.clear();
+						tempVM.stack.push_back(a);
+						tempVM.stack.push_back(b);
+						tempVM.stack.push_back(customLambda);
+						tempVM.run(callChunk);
+						Value ret = tempVM.stack.empty() ? Value::None() : tempVM.stack.back();
+						return ret.isTruthy();
+					} else {
+						return lessValue(a, b);
+					}
+				};
+				std::sort(elems.begin(), elems.end(), cmp);
+				if (reverseSort)
+					std::reverse(elems.begin(), elems.end());
 			}
-			if (t != ValueType::INT && t != ValueType::FLOAT &&
-				 t != ValueType::STRING && t != ValueType::BOOL &&
-				 t != ValueType::LIST) {
-				error("unsupported type in sort()", "TypeError");
+			if (modifyOriginal) {
+				listObj->elements = std::move(elems);
+				return target;
 			}
-			std::sort(
-				elems.begin(), elems.end(),
-				[](const Value &a, const Value &b) { return lessValue(a, b); });
-			if (reverseSort)
-				std::reverse(elems.begin(), elems.end());
-			return target;
+			return Value::List(elems);
 		}
 		error("sort() only works on mutable types", "TypeError");
 	}
@@ -13868,12 +13981,22 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			return Value::Int(static_cast<int>(str->value[0]));
 		}
 		if (m->method == "capitalize") {
-			checkConst();
-			if (!m->args.empty())
-				error("capitalize() does not accept arguments", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value = capitalize(str->value);
-			return target;
+			if (m->args.size() > 1)
+				error("capitalize() accepts at most 1 argument (modify_original:bool(true))", "ArgumentError");
+			bool modifyOriginal = true;
+			if (m->args.size() == 1) {
+				modifyOriginal = eval(m->args[0]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result = capitalize(strObj->value);
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "chars") {
 			auto *str = static_cast<StringObject *>(target.ref.get());
@@ -13891,29 +14014,60 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			return Value::List(valList);
 		}
 		if (m->method == "casefold") {
-			checkConst();
-			if (!m->args.empty())
-				error("casefold() does not accept arguments", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value = casefold(str->value);
-			return target;
+			if (m->args.size() > 1)
+				error("casefold() accepts at most 1 argument (modify_original:bool(true))", "ArgumentError");
+			bool modifyOriginal = true;
+			if (m->args.size() == 1) {
+				modifyOriginal = eval(m->args[0]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result = casefold(strObj->value);
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "center") {
-			checkConst();
-			if (m->args.empty() || m->args.size() > 2)
-				error("center() needs 1 or 2 arguments", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			if (m->args.size() == 1) {
-				str->value = center(str->value, eval(m->args[0]).asInt());
+			if (m->args.empty() || m->args.size() > 3)
+				error("center() needs 1 to 3 arguments (width, fillchar:string(' '), modify_original:bool(true))", "ArgumentError");
+			int width = eval(m->args[0]).asInt();
+			bool useFillChar = false;
+			char fillChar = ' ';
+			bool modifyOriginal = true;
+			if (m->args.size() >= 2) {
+				Value arg1 = eval(m->args[1]);
+				if (arg1.type == ValueType::BOOL) {
+					modifyOriginal = arg1.asBool();
+				} else {
+					string a = arg1.asString();
+					if (a.empty() || a.size() > 1)
+						error("padding can only be one character", "ValueError");
+					fillChar = a[0];
+					useFillChar = true;
+				}
+			}
+			if (m->args.size() == 3) {
+				modifyOriginal = eval(m->args[2]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result;
+			if (useFillChar) {
+				result = center(strObj->value, width, fillChar);
+			} else {
+				result = center(strObj->value, width);
+			}
+			if (modifyOriginal) {
+				strObj->value = result;
 				return target;
 			}
-			if (m->args.size() == 2) {
-				string a = eval(m->args[1]).asString();
-				if (a.empty() || a.size() > 1)
-					error("padding can only be one character", "ValueError");
-				str->value = center(str->value, eval(m->args[0]).asInt(), a[0]);
-				return target;
-			}
+			return Value::String(result);
 		}
 		if (m->method == "count") {
 			if (m->args.empty() || m->args.size() > 3)
@@ -13980,66 +14134,179 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			return Value::Bool(isupper_str(str->value));
 		}
 		if (m->method == "ljust") {
-			checkConst();
-			if (m->args.empty() || m->args.size() > 2)
-				error("ljust() needs 1 or 2 arguments", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			if (m->args.size() == 1)
-				str->value = ljust(str->value, eval(m->args[0]).asInt());
-			else {
-				string p = eval(m->args[1]).asString();
-				if (p.size() != 1)
-					error("padding can only be one character", "ValueError");
-				str->value = ljust(str->value, eval(m->args[0]).asInt(), p[0]);
+			if (m->args.empty() || m->args.size() > 3)
+				error("ljust() needs 1 to 3 arguments (width, fillchar, modify_original)", "ArgumentError");
+			int width = eval(m->args[0]).asInt();
+			bool useFillChar = false;
+			char fillChar = ' ';
+			bool modifyOriginal = true;
+			if (m->args.size() >= 2) {
+				Value arg1 = eval(m->args[1]);
+				if (arg1.type == ValueType::BOOL) {
+					modifyOriginal = arg1.asBool();
+				} else {
+					string p = arg1.asString();
+					if (p.size() != 1)
+						error("padding can only be one character", "ValueError");
+					fillChar = p[0];
+					useFillChar = true;
+				}
 			}
-			return target;
+			if (m->args.size() == 3) {
+				modifyOriginal = eval(m->args[2]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result;
+			if (useFillChar) {
+				result = ljust(strObj->value, width, fillChar);
+			} else {
+				result = ljust(strObj->value, width);
+			}
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "lower") {
-			checkConst();
-			if (!m->args.empty())
-				error("lower() does not accept arguments", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value = lower(str->value);
-			return target;
+			if (m->args.size() > 1)
+				error("lower() accepts at most 1 argument (modify_original:bool)", "ArgumentError");
+			bool modifyOriginal = true;
+			if (m->args.size() == 1) {
+				modifyOriginal = eval(m->args[0]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result = lower(strObj->value);
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "lstrip") {
-			checkConst();
-			if (m->args.size() > 1)
-				error("lstrip() takes at most one argument", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value = lstrip(str->value, m->args.size() == 1
-														  ? eval(m->args[0]).asString()
-														  : " \t\n\r\v\f");
-			return target;
+			if (m->args.size() > 2)
+				error("lstrip() takes at most 2 arguments (chars, modify_original)", "ArgumentError");
+			string chars = " \t\n\r\v\f";
+			bool modifyOriginal = true;
+			if (m->args.size() >= 1) {
+				Value arg0 = eval(m->args[0]);
+				if (arg0.type == ValueType::BOOL) {
+					modifyOriginal = arg0.asBool();
+				} else {
+					chars = arg0.asString();
+				}
+			}
+			if (m->args.size() == 2) {
+				modifyOriginal = eval(m->args[1]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result = lstrip(strObj->value, chars);
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "rstrip") {
-			checkConst();
-			if (m->args.size() > 1)
-				error("rstrip() takes at most one argument", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value = rstrip(str->value, m->args.size() == 1
-														  ? eval(m->args[0]).asString()
-														  : " \t\n\r\v\f");
-			return target;
+			if (m->args.size() > 2)
+				error("rstrip() takes at most 2 arguments (chars, modify_original)", "ArgumentError");
+			string chars = " \t\n\r\v\f";
+			bool modifyOriginal = true;
+			if (m->args.size() >= 1) {
+				Value arg0 = eval(m->args[0]);
+				if (arg0.type == ValueType::BOOL) {
+					modifyOriginal = arg0.asBool();
+				} else {
+					chars = arg0.asString();
+				}
+			}
+			if (m->args.size() == 2) {
+				modifyOriginal = eval(m->args[1]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result = rstrip(strObj->value, chars);
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "rjust") {
-			if (m->args.size() > 2)
-				error("rjust() needs 1 or 2 arguments", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value =
-				rjust(str->value, eval(m->args[0]).asInt(),
-					m->args.size() == 1 ? ' ' : eval(m->args[1]).asString()[0]);
-			return target;
+			if (m->args.empty() || m->args.size() > 3)
+				error("rjust() needs 1 to 3 arguments (width, fillchar, modify_original)", "ArgumentError");
+			int width = eval(m->args[0]).asInt();
+			bool useFillChar = false;
+			char fillChar = ' ';
+			bool modifyOriginal = true;
+			if (m->args.size() >= 2) {
+				Value arg1 = eval(m->args[1]);
+				if (arg1.type == ValueType::BOOL) {
+					modifyOriginal = arg1.asBool();
+				} else {
+					string p = arg1.asString();
+					if (p.size() != 1)
+						error("padding can only be one character", "ValueError");
+					fillChar = p[0];
+					useFillChar = true;
+				}
+			}
+			if (m->args.size() == 3) {
+				modifyOriginal = eval(m->args[2]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst(); // Added this since it was missing in your original code!
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result;
+			if (useFillChar) {
+				result = rjust(strObj->value, width, fillChar);
+			} else {
+				result = rjust(strObj->value, width, ' ');
+			}
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "strip") {
-			checkConst();
-			if (m->args.size() > 1)
-				error("strip() takes at most one argument", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value =
-				strip(str->value, m->args.size() == 1 ? eval(m->args[0]).asString()
-																  : " \t\n\r\v\f");
-			return target;
+			if (m->args.size() > 2)
+				error("strip() takes at most 2 arguments (chars, modify_original)", "ArgumentError");
+			string chars = " \t\n\r\v\f";
+			bool modifyOriginal = true;
+			if (m->args.size() >= 1) {
+				Value arg0 = eval(m->args[0]);
+				if (arg0.type == ValueType::BOOL) {
+					modifyOriginal = arg0.asBool();
+				} else {
+					chars = arg0.asString();
+				}
+			}
+			if (m->args.size() == 2) {
+				modifyOriginal = eval(m->args[1]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result = strip(strObj->value, chars);
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
 		if (m->method == "split") {
 			string delimiter = " ";
@@ -14059,15 +14326,24 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			return Value::List(resultList);
 		}
 		if (m->method == "upper") {
-			checkConst();
-			if (!m->args.empty())
-				error("upper() does not accept arguments", "ArgumentError");
-			auto *str = static_cast<StringObject *>(target.ref.get());
-			str->value = upper(str->value);
-			return target;
+			if (m->args.size() > 1)
+				error("upper() accepts at most 1 argument (modify_original:bool)", "ArgumentError");
+			bool modifyOriginal = true;
+			if (m->args.size() == 1) {
+				modifyOriginal = eval(m->args[0]).asBool();
+			}
+			if (modifyOriginal) {
+				checkConst();
+			}
+			auto *strObj = static_cast<StringObject *>(target.ref.get());
+			string result = upper(strObj->value);
+			if (modifyOriginal) {
+				strObj->value = result;
+				return target;
+			}
+			return Value::String(result);
 		}
-		error("Object '" + m->method + "' is not a string method",
-			"AttributeError");
+		error("Object '" + m->method + "' is not a string method", "AttributeError");
 	}
 	// ---------- RANGE METHODS ----------
 	if (target.type == ValueType::RANGE) {
@@ -15413,6 +15689,31 @@ void Interpreter::registerStdLib() {
 			int result = std::system(cmd.c_str());
 			return Value::Int(result);
 		});
+		define("Exec", [](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1)
+				throw ArgumentError("Exec() expects 1 argument (command)", l, c);
+			string cmd = valueToString(args[0]);
+			string result = "";
+			char buffer[128];
+#ifdef _WIN32
+			FILE *pipe = _popen(cmd.c_str(), "r");
+#else
+         FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+			if (!pipe)
+				throw RuntimeError("popen() failed!", l, c);
+
+			while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+				result += buffer;
+			}
+
+#ifdef _WIN32
+			_pclose(pipe);
+#else
+         pclose(pipe);
+#endif
+			return Value::String(result);
+		});
 		Value modVal;
 		modVal.type = ValueType::CLASS;
 		modVal.ref = moduleNamespace;
@@ -15548,8 +15849,26 @@ void Interpreter::registerStdLib() {
 				throw ValueError("Frequency or duration should be positive", l, c);
 #ifdef _WIN32
 			Beep(args[0].asFloat(), args[1].asFloat());
+#else
+			std::cout << '\a' << std::flush;
 #endif
 			return Value::None();
+		});
+		define("ReadKey", [](const vector<Value> &args, int l, int c) {
+			char ch = 0;
+#ifdef _WIN32
+			// Windows has native getch() in <conio.h>
+			ch = _getch();
+#else
+         struct termios oldt, newt;
+         tcgetattr(STDIN_FILENO, &oldt);
+         newt = oldt;
+         newt.c_lflag &= ~(ICANON | ECHO);
+         tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+         ch = getchar();
+         tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+#endif
+			return Value::String(string(1, ch));
 		});
 		Value modVal;
 		modVal.type = ValueType::CLASS;
@@ -15587,14 +15906,27 @@ void Interpreter::registerStdLib() {
 			}
 			throw TypeError("Expected a number", l, c);
 		};
+		auto defineValue = [&](string name, Value v) {
+			moduleNamespace->staticFields[name] = v;
+			if (symbols.size() == 1 && symbols[0] == "*") {
+				env->set(name, v, true, true);
+				return;
+			}
+			for (const auto &s : symbols) {
+				if (s == name) {
+					env->set(name, v, true, true);
+					break;
+				}
+			}
+		};
 		// Constants
-		env->set("PI", Value::Float(3.141592653589793), true, true);
-		env->set("E", Value::Float(2.718281828459045), true, true);
-		env->set("PHI", Value::Float(1.618033988749894), true, true);
-		env->set("G", Value::Float(6.6743e-11), true, true);
-		env->set("G_EARTH", Value::Float(9.80665), true, true);
-		env->set("EPSILON_0", Value::Float(8.8541878128e-12), true, true);
-		env->set("PLANCK_H", Value::Float(6.62607015e-34), true, true);
+		defineValue("PI", Value::Float(3.141592653589793));
+		defineValue("E", Value::Float(2.718281828459045));
+		defineValue("PHI", Value::Float(1.618033988749894));
+		defineValue("G", Value::Float(6.6743e-11));
+		defineValue("G_EARTH", Value::Float(9.80665));
+		defineValue("EPSILON_0", Value::Float(8.8541878128e-12));
+		defineValue("PLANCK_H", Value::Float(6.62607015e-34));
 		// Basic Functions
 		define("Abs", [&](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
@@ -15657,14 +15989,40 @@ void Interpreter::registerStdLib() {
 		define("RadToDeg", [&](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("RadToDeg() expects 1 argument (num)", l, c);
-			return Value::Float(valueToFloat(args[0], l, c) * (long double)180 /
-									  3.141592653589793);
+			return Value::Float(valueToFloat(args[0], l, c) * (long double)180 / 3.141592653589793);
 		});
 		define("DegToRad", [&](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("DegToRad() expects 1 argument (num)", l, c);
 			return Value::Float(valueToFloat(args[0], l, c) * 3.141592653589793 /
 									  (long double)180);
+		});
+		define("MapRange", [&](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5)
+				throw ArgumentError("MapRange() expects 5 arguments (num, num_range_min_inclusive, num_range_max_inclusive, new_range_min_inclusive, new_range_max_inclusive)", l, c);
+			double num = valueToFloat(args[0], l, c);
+			double in_min = valueToFloat(args[1], l, c);
+			double in_max = valueToFloat(args[2], l, c);
+			double out_min = valueToFloat(args[3], l, c);
+			double out_max = valueToFloat(args[4], l, c);
+			double in_range = in_max - in_min;
+			if (in_range == 0.0) {
+				return Value::Float(out_min);
+			}
+			double result = out_min + ((num - in_min) * (out_max - out_min)) / in_range;
+			return Value::Float(result);
+		});
+		define("RoundToPower", [&](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2)
+				throw ArgumentError("RoundToPower() expects exactly 2 arguments (number, power)", l, c);
+			double num = valueToFloat(args[0], l, c);
+			double power = valueToFloat(args[1], l, c);
+			double scale = std::pow(10.0, power);
+			double result = std::round(num / scale) * scale;
+			if (power >= 0.0 && (args[0].type == ValueType::INT || args[0].type == ValueType::BIGINT)) {
+				return Value::Int((long long)result);
+			}
+			return Value::Float(result);
 		});
 		// Trig
 		define("Sin", [&](const vector<Value> &args, int l, int c) {
@@ -17889,6 +18247,8 @@ void Interpreter::registerStdLib() {
 		if (args.size() != 1)
 			throw ArgumentError("typeof() takes exactly one argument", l, c);
 		switch (args[0].type) {
+		case ValueType::NOTYPE:
+			return Value::String("NoType");
 		case ValueType::INT:
 			return Value::String("integer");
 		case ValueType::FLOAT:
@@ -17932,7 +18292,7 @@ void Interpreter::registerStdLib() {
 		case ValueType::REFERENCE:
 			return Value::String("Reference");
 		default:
-			return Value::String("NoType");
+			return Value::String("Unknown type: " + to_string(static_cast<int>(args[0].type)));
 		}
 	}),
 		false);
@@ -17956,6 +18316,11 @@ void Interpreter::registerStdLib() {
 		if (args.size() > 1)
 			throw ArgumentError("length() takes exactly one argument", l, c);
 		Value v = args[0];
+		while (v.type == ValueType::REFERENCE) {
+			if (!v.ptr)
+				throw RuntimeError("Attempted to dereference a null pointer!", l, c);
+			v = *v.ptr;
+		}
 		if (v.type == ValueType::LIST) {
 			auto *list = static_cast<ListObject *>(v.ref.get());
 			return Value::Int(list->elements.size());
