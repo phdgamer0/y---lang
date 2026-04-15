@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <string>
 void printErrorContext(const std::string &, int, int);
 int main(int argc, char *argv[]) {
 	/*
@@ -20,7 +21,15 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 	// Read the path from the first command-line argument
-	string path = argv[1];
+	std::string path = argv[1];
+	std::filesystem::path p(path);
+	if (p.extension() != ".ymm") {
+		std::string filename = p.filename().string();
+		std::cerr << "FATAL ERROR: " << filename << " must end with .ymm extension.\n";
+		std::cerr << "Usage: " << p.stem().string() << ".ymm\n";
+		std::cerr << "Interpretation aborted...\n";
+		return 1;
+	}
 	// -------------------------------------------------------------------------------
 	// string path = "/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/test.ymm";
 	std::ifstream file(path);
