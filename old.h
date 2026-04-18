@@ -32,6 +32,7 @@
 #undef max
 #undef LoadImage
 #else // Who decided that?
+#include <dlfcn.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
@@ -3844,7 +3845,7 @@ struct VectorEqual {
 		return true;
 	}
 };
-static void setAdd(std::vector<Value> &elems, const Value &v);
+static void setAdd(std::unordered_set<Value, ValueHash, ValueEqual> &elems, const Value &v);
 Value shallowCopy(const Value &v) {
 	switch (v.type) {
 	case ValueType::LIST: {
@@ -4474,7 +4475,7 @@ struct FunctionObject : HeapObject {
 			delete chunk;
 	}
 };
-void setAdd(std::unordered_set<Value, ValueHash, ValueEqual> &elems, const Value &v) {
+static void setAdd(std::unordered_set<Value, ValueHash, ValueEqual> &elems, const Value &v) {
 	Value finalVal = deepCopy(v);
 	finalVal.isConst = true;
 	elems.insert(finalVal);
@@ -5511,6 +5512,9 @@ struct LoopContext {
 struct Local {
 	string name;
 	int depth;
+	bool isConst = false;
+	bool hasKnownValue = false;
+	Value knownValue;
 };
 struct ExceptionHandler {
 	int catchAddress;
@@ -5526,6 +5530,7 @@ struct CallFrame {
 	vector<Value> cacheKey;
 	vector<ExceptionHandler> handlerStack;
 };
+inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b);
 // ------------ AST WALKER -------------
 struct Interpreter {
 	std::shared_ptr<Env> env;
@@ -8334,7 +8339,7 @@ struct ByteCodeCompiler {
 		}
 		case ExprType::BINARY: {
 			auto b = static_cast<BinExpr *>(e);
-			if (b->op == TokenType::AND || b->op == TokenType::OR)
+			if (b->op == TokenType::AND || b->op == TokenType::OR || b->op == TokenType::NAND || b->op == TokenType::NOR)
 				compileLogical(b);
 			else
 				compileBinary(b);
@@ -8348,6 +8353,10 @@ struct ByteCodeCompiler {
 			}
 			int arg = resolveLocal(v->name);
 			if (arg != -1) {
+				if (locals[arg].hasKnownValue) {
+					emitConstant(locals[arg].knownValue, v->line, v->col);
+					break; // Bypass OP_GET_LOCAL entirely!
+				}
 				emitByte(OpCode::OP_GET_LOCAL, v->line, v->col);
 				chunk->write((uint8_t)arg, v->line, v->col);
 			} else
@@ -8555,6 +8564,12 @@ struct ByteCodeCompiler {
 			emitByte(OpCode::OP_NOT, b->line, b->col);
 			return; // Exit early!
 		}
+		// constant folding (experimental):
+		Value foldedResult;
+		if (tryExtractConstant(b, foldedResult)) {
+			emitConstant(foldedResult, b->line, b->col);
+			return;
+		}
 		compile(b->left);
 		compile(b->right);
 		switch (b->op) {
@@ -8624,12 +8639,6 @@ struct ByteCodeCompiler {
 		case TokenType::NXOR:
 			emitByte(OpCode::OP_NXOR, b->line, b->col);
 			break;
-		case TokenType::NOR:
-			emitByte(OpCode::OP_NOR, b->line, b->col);
-			break;
-		case TokenType::NAND:
-			emitByte(OpCode::OP_NAND, b->line, b->col);
-			break;
 			//"pairing" op
 		case TokenType::COLON:
 			emitByte(OpCode::OP_COLON, b->line, b->col);
@@ -8652,6 +8661,29 @@ struct ByteCodeCompiler {
 			patchJump(elseJump);
 			emitByte(OpCode::OP_POP, l->line, l->col); // Pop left if it was false
 			compile(l->right);
+			patchJump(endJump);
+		} else if (l->op == TokenType::NAND) {
+			compile(l->left);
+			int shortCircuitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line, l->col);
+			emitByte(OpCode::OP_POP, l->line, l->col);
+			compile(l->right);
+			emitByte(OpCode::OP_NOT, l->line, l->col);
+			int endJump = emitJump(OpCode::OP_JUMP, l->line, l->col);
+			patchJump(shortCircuitJump);
+			emitByte(OpCode::OP_POP, l->line, l->col);
+			emitByte(OpCode::OP_TRUE, l->line, l->col);
+			patchJump(endJump);
+		} else if (l->op == TokenType::NOR) {
+			compile(l->left);
+			int evalRightJump = emitJump(OpCode::OP_JUMP_IF_FALSE, l->line, l->col);
+			emitByte(OpCode::OP_POP, l->line, l->col);
+			emitByte(OpCode::OP_FALSE, l->line, l->col);
+			int endJump = emitJump(OpCode::OP_JUMP, l->line, l->col);
+			patchJump(evalRightJump);
+			emitByte(OpCode::OP_POP, l->line, l->col);
+			compile(l->right);
+			emitByte(OpCode::OP_NOT, l->line, l->col);
+
 			patchJump(endJump);
 		}
 	}
@@ -8998,6 +9030,14 @@ struct ByteCodeCompiler {
 					chunk->write(flags, let->line, let->col);
 				}
 				addLocal(let->name);
+				if (let->isConst && let->value) {
+					Value constVal;
+					if (tryExtractConstant(let->value, constVal)) {
+						locals.back().isConst = true;
+						locals.back().hasKnownValue = true;
+						locals.back().knownValue = constVal;
+					}
+				}
 				if (DEBUGGER_MODE_IS_ENABLED)
 					emitIdentifier(OpCode::OP_DEBUG_NAME, let->name, let->line,
 						let->col);
@@ -9667,8 +9707,7 @@ struct ByteCodeCompiler {
 		chunk->write((offset >> 8) & 0xff, line, col);
 		chunk->write(offset & 0xff, line, col);
 	}
-	void emitFunction(FuncStmt *f, bool isMethod = false,
-		const vector<Stmt *> &fieldInits = {}) {
+	void emitFunction(FuncStmt *f, bool isMethod = false, const vector<Stmt *> &fieldInits = {}) {
 		Chunk *funcChunk = new Chunk();
 		ByteCodeCompiler subCompiler(funcChunk);
 		subCompiler.beginScope();
@@ -9701,6 +9740,43 @@ struct ByteCodeCompiler {
 #endif
 		funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
 		emitConstant(funcVal, f->line, f->col);
+	}
+	bool tryExtractConstant(Expr *e, Value &outVal) {
+		try {
+			std::function<Value(Expr *)> extract = [&](Expr *expr) -> Value {
+				if (expr->type == ExprType::NUMBER) {
+					auto n = static_cast<NumberExpr *>(expr);
+					return n->isFloat ? Value::Float(n->val) : Value::Int((long long)n->val);
+				}
+				if (expr->type == ExprType::STRING)
+					return Value::String(static_cast<StringExpr *>(expr)->val);
+				if (expr->type == ExprType::BOOL)
+					return Value::Bool(static_cast<BoolExpr *>(expr)->value);
+				if (expr->type == ExprType::VECTOR) {
+					auto ve = static_cast<VectorExpr *>(expr);
+					std::vector<Value> elems;
+					for (auto *el : ve->elements)
+						elems.push_back(extract(el));
+					return Value::Vector(elems);
+				}
+				if (expr->type == ExprType::BINARY) {
+					auto bin = static_cast<BinExpr *>(expr);
+					return EvaluateConstBinary(bin->op, extract(bin->left), extract(bin->right));
+				}
+				if (expr->type == ExprType::VAR) {
+					auto v = static_cast<VarExpr *>(expr);
+					int arg = resolveLocal(v->name);
+					if (arg != -1 && locals[arg].hasKnownValue) {
+						return locals[arg].knownValue; // INJECT THE VALUE!
+					}
+				}
+				throw std::runtime_error("Not a constant");
+			};
+			outVal = extract(e);
+			return true;
+		} catch (...) {
+			return false;
+		}
 	}
 };
 // 1. Detect the Compiler
@@ -10343,10 +10419,11 @@ struct VM {
 						{
 							uint8_t nameIndex = *ip++;
 							string name = currentChunk->constants[nameIndex].asString();
-						}
+
 #ifdef VM_DEBUG_MODE
-						stack.back().__DEBUGGING__NAME__ = name;
+							stack.back().__DEBUGGING__NAME__ = name;
 #endif
+						}
 						DISPATCH();
 					}
 					OP(OP_SET_FLAGS) : {
@@ -10640,77 +10717,72 @@ struct VM {
 					}
 					OP(OP_IADD) : {
 						bool goToAdd = false;
-
-						{ // 🔒 START SCOPE LOCK
+						{
 							Value b = pop();
 							Value a = pop();
-
 							if (!invokeBinaryDunder(a, b, "__plus_eq__", "", line, col)) {
-								// Dunder failed, push them back and flag the goto!
 								stack.push_back(a);
 								stack.push_back(b);
 								goToAdd = true;
 							}
-						} // 🔓 END SCOPE LOCK: 'a' and 'b' are safely destroyed!
-
+						}
 						if (goToAdd) {
 							goto execute_op_add;
 						}
-
-						DISPATCH(); // Dunder succeeded, safe to jump now!
+						DISPATCH();
 					}
-
 					OP(OP_ADD) : {
-					execute_op_add: { // 🔒 START SCOPE LOCK
+					execute_op_add: {
 						Value b = pop();
 						Value a = pop();
-
 						if (!invokeBinaryDunder(a, b, "__plus__", "__r_plus__", line, col)) {
 							// DUNDER FAILED: Do standard math inside this else block!
-
-							if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								long long res = a.iVal + b.iVal;
-								bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;
-								if (overflow)
-									stack.push_back(BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
-								else
-									stack.push_back(Value::Int(res));
-							} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-								stack.push_back(BigIntObject::add(a, b));
-							} else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
-								// Temporary strings created here are safely destroyed when scope closes!
-								stack.push_back(Value::String(valueToString(a) + valueToString(b)));
-							} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-								auto *v1 = static_cast<VectorObject *>(a.ref.get());
-								auto *v2 = static_cast<VectorObject *>(b.ref.get());
-								if (v1->elements.size() != v2->elements.size())
-									throw ValueError("Vector dimension mismatch", line, 0);
-
-								vector<Value> res; // <-- THIS WAS THE 11MB LEAK!
-								res.reserve(v1->elements.size());
-								for (size_t i = 0; i < v1->elements.size(); i++) {
-									Value x = v1->elements[i];
-									Value y = v2->elements[i];
-									if (x.type == ValueType::INT && y.type == ValueType::INT) {
-										long long r = x.iVal + y.iVal;
-										bool ovf = ((x.iVal ^ r) & (y.iVal ^ r)) < 0;
-										if (ovf)
-											res.push_back(BigIntObject::add(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
-										else
-											res.push_back(Value::Int(r));
-									} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
-										res.push_back(BigIntObject::add(x, y));
-									} else {
-										res.push_back(Value::Float(x.asFloat() + y.asFloat()));
-									}
-								}
-								stack.push_back(Value::Vector(res));
-							} else {
-								stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::PLUS, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
 							}
+							// if (a.type == ValueType::INT && b.type == ValueType::INT) {
+							// 	long long res = a.iVal + b.iVal;
+							// 	bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;
+							// 	if (overflow)
+							// 		stack.push_back(BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
+							// 	else
+							// 		stack.push_back(Value::Int(res));
+							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+							// 	stack.push_back(BigIntObject::add(a, b));
+							// } else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
+							// 	// Temporary strings created here are safely destroyed when scope closes!
+							// 	stack.push_back(Value::String(valueToString(a) + valueToString(b)));
+							// } else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+							// 	auto *v1 = static_cast<VectorObject *>(a.ref.get());
+							// 	auto *v2 = static_cast<VectorObject *>(b.ref.get());
+							// 	if (v1->elements.size() != v2->elements.size())
+							// 		throw ValueError("Vector dimension mismatch", line, 0);
+							// 	vector<Value> res; // <-- THIS WAS THE 11MB LEAK!
+							// 	res.reserve(v1->elements.size());
+							// 	for (size_t i = 0; i < v1->elements.size(); i++) {
+							// 		Value x = v1->elements[i];
+							// 		Value y = v2->elements[i];
+							// 		if (x.type == ValueType::INT && y.type == ValueType::INT) {
+							// 			long long r = x.iVal + y.iVal;
+							// 			bool ovf = ((x.iVal ^ r) & (y.iVal ^ r)) < 0;
+							// 			if (ovf)
+							// 				res.push_back(BigIntObject::add(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
+							// 			else
+							// 				res.push_back(Value::Int(r));
+							// 		} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+							// 			res.push_back(BigIntObject::add(x, y));
+							// 		} else {
+							// 			res.push_back(Value::Float(x.asFloat() + y.asFloat()));
+							// 		}
+							// 	}
+							// 	stack.push_back(Value::Vector(res));
+							// } else {
+							// 	stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
+							// }
 						}
-					} // 🔓 END SCOPE LOCK: 'a', 'b', 'vector<Value> res', and strings are SAFELY DESTROYED!
-
+					}
 						DISPATCH(); // Safe to jump for BOTH dunder success and standard math!
 					}
 					OP(OP_ISUB) : {
@@ -10734,44 +10806,49 @@ struct VM {
 						Value b = pop();
 						Value a = pop();
 						if (!invokeBinaryDunder(a, b, "__minus__", "__r_minus__", line, col)) {
-							if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								long long res = a.iVal - b.iVal;
-								bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
-								if (overflow)
-									stack.push_back(BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
-								else
-									stack.push_back(Value::Int(res));
-							} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-								stack.push_back(BigIntObject::sub(a, b));
-							} else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
-								stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
-							} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-								auto *v1 = static_cast<VectorObject *>(a.ref.get());
-								auto *v2 = static_cast<VectorObject *>(b.ref.get());
-								if (v1->elements.size() != v2->elements.size())
-									throw ValueError("Vector dimension mismatch", line, col);
-								vector<Value> res;
-								res.reserve(v1->elements.size());
-								for (size_t i = 0; i < v1->elements.size(); i++) {
-									Value x = v1->elements[i];
-									Value y = v2->elements[i];
-									if (x.type == ValueType::INT && y.type == ValueType::INT) {
-										long long r = x.iVal - y.iVal;
-										bool ovf = ((x.iVal ^ y.iVal) & (x.iVal ^ r)) < 0;
-										if (ovf)
-											res.push_back(BigIntObject::sub(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
-										else
-											res.push_back(Value::Int(r));
-									} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
-										res.push_back(BigIntObject::sub(x, y));
-									} else {
-										res.push_back(Value::Float(x.asFloat() - y.asFloat()));
-									}
-								}
-								stack.push_back(Value::Vector(res));
-							} else {
-								stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::MINUS, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
 							}
+							// if (a.type == ValueType::INT && b.type == ValueType::INT) {
+							// 	long long res = a.iVal - b.iVal;
+							// 	bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
+							// 	if (overflow)
+							// 		stack.push_back(BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
+							// 	else
+							// 		stack.push_back(Value::Int(res));
+							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+							// 	stack.push_back(BigIntObject::sub(a, b));
+							// } else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
+							// 	stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
+							// } else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+							// 	auto *v1 = static_cast<VectorObject *>(a.ref.get());
+							// 	auto *v2 = static_cast<VectorObject *>(b.ref.get());
+							// 	if (v1->elements.size() != v2->elements.size())
+							// 		throw ValueError("Vector dimension mismatch", line, col);
+							// 	vector<Value> res;
+							// 	res.reserve(v1->elements.size());
+							// 	for (size_t i = 0; i < v1->elements.size(); i++) {
+							// 		Value x = v1->elements[i];
+							// 		Value y = v2->elements[i];
+							// 		if (x.type == ValueType::INT && y.type == ValueType::INT) {
+							// 			long long r = x.iVal - y.iVal;
+							// 			bool ovf = ((x.iVal ^ y.iVal) & (x.iVal ^ r)) < 0;
+							// 			if (ovf)
+							// 				res.push_back(BigIntObject::sub(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
+							// 			else
+							// 				res.push_back(Value::Int(r));
+							// 		} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+							// 			res.push_back(BigIntObject::sub(x, y));
+							// 		} else {
+							// 			res.push_back(Value::Float(x.asFloat() - y.asFloat()));
+							// 		}
+							// 	}
+							// 	stack.push_back(Value::Vector(res));
+							// } else {
+							// 	stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
+							// }
 						}
 					}
 						DISPATCH();
@@ -10797,26 +10874,38 @@ struct VM {
 						Value b = pop();
 						Value a = pop();
 						if (!invokeBinaryDunder(a, b, "__divide__", "__r_divide__", line, col)) {
-							if (a.type == ValueType::VECTOR) {
-								if (!b.isNumber())
-									throw TypeError("Vector can only be divided by a number", line, col);
-								if (b.asFloat() == 0)
-									throw DivisionByZeroError("Vector division by zero", line, col);
-								auto *v = static_cast<VectorObject *>(a.ref.get());
-								vector<Value> res;
-								res.reserve(v->elements.size());
-								double s = b.asFloat();
-								for (const auto &elem : v->elements)
-									res.push_back(Value::Float(elem.asFloat() / s));
-								stack.push_back(Value::Vector(res));
-							} else if (b.type == ValueType::VECTOR) {
-								throw TypeError("Cannot divide by a vector", line, col);
-							} else {
-								double db = b.asFloat();
-								if (db == 0)
-									throw DivisionByZeroError("Division by zero", line, col);
-								stack.push_back(Value::Float(a.asFloat() / db));
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::SLASH, a, b));
+							} catch (const std::runtime_error &e) {
+								std::string msg = e.what();
+								if (msg.find("zero") != std::string::npos) {
+									throw DivisionByZeroError(msg, line, col);
+								} else if (msg.find("Vector") != std::string::npos || msg.find("divide by") != std::string::npos) {
+									throw TypeError(msg, line, col);
+								} else {
+									throw ValueError(msg, line, col);
+								}
 							}
+							// if (a.type == ValueType::VECTOR) {
+							// 	if (!b.isNumber())
+							// 		throw TypeError("Vector can only be divided by a number", line, col);
+							// 	if (b.asFloat() == 0)
+							// 		throw DivisionByZeroError("Vector division by zero", line, col);
+							// 	auto *v = static_cast<VectorObject *>(a.ref.get());
+							// 	vector<Value> res;
+							// 	res.reserve(v->elements.size());
+							// 	double s = b.asFloat();
+							// 	for (const auto &elem : v->elements)
+							// 		res.push_back(Value::Float(elem.asFloat() / s));
+							// 	stack.push_back(Value::Vector(res));
+							// } else if (b.type == ValueType::VECTOR) {
+							// 	throw TypeError("Cannot divide by a vector", line, col);
+							// } else {
+							// 	double db = b.asFloat();
+							// 	if (db == 0)
+							// 		throw DivisionByZeroError("Division by zero", line, col);
+							// 	stack.push_back(Value::Float(a.asFloat() / db));
+							// }
 						}
 					}
 						DISPATCH();
@@ -10842,18 +10931,7 @@ struct VM {
 						Value b = pop();
 						Value a = pop();
 						if (!invokeBinaryDunder(a, b, "__times__", "__r_times__", line, col)) {
-							if (a.type == ValueType::STRING && b.type == ValueType::INT) {
-								string res = "";
-								string base = a.asString();
-								long long count = b.asInt();
-								if (count < 0)
-									count = 0;
-								if (count > 1000000)
-									throw MemoryError("String repetition too large", line, col);
-								for (long long i = 0; i < count; i++)
-									res += base;
-								stack.push_back(Value::String(res));
-							} else if (a.type == ValueType::LIST && b.type == ValueType::INT) {
+							if (a.type == ValueType::LIST && b.type == ValueType::INT) {
 								auto *listObj = static_cast<ListObject *>(a.ref.get());
 								long long count = b.asInt();
 								vector<Value> res;
@@ -10867,66 +10945,6 @@ struct VM {
 									}
 								}
 								stack.push_back(Value::List(res));
-							} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-								auto *v1 = static_cast<VectorObject *>(a.ref.get());
-								auto *v2 = static_cast<VectorObject *>(b.ref.get());
-								if (v1->elements.size() != v2->elements.size())
-									throw ValueError("Vector dimension mismatch", line, col);
-								Value dot = Value::Int(0);
-								for (size_t i = 0; i < v1->elements.size(); i++) {
-									Value x = v1->elements[i];
-									Value y = v2->elements[i];
-									Value prod;
-									if (x.type == ValueType::INT && y.type == ValueType::INT) {
-										long long r = x.iVal * y.iVal;
-										bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
-										if (ovf)
-											prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
-										else
-											prod = Value::Int(r);
-									} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
-										prod = BigIntObject::mul(x, y);
-									} else {
-										prod = Value::Float(x.asFloat() * y.asFloat());
-									}
-									if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
-										long long r = dot.iVal + prod.iVal;
-										bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
-										if (ovf)
-											dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
-										else
-											dot = Value::Int(r);
-									} else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) {
-										dot = BigIntObject::add(dot, prod);
-									} else {
-										dot = Value::Float(dot.asFloat() + prod.asFloat());
-									}
-								}
-								stack.push_back(dot);
-							} else if ((a.type == ValueType::VECTOR && b.isNumber()) ||
-										  (a.isNumber() && b.type == ValueType::VECTOR)) {
-								VectorObject *vec =
-									(a.type == ValueType::VECTOR)
-										? static_cast<VectorObject *>(a.ref.get())
-										: static_cast<VectorObject *>(b.ref.get());
-								Value scalar = (a.type == ValueType::VECTOR) ? b : a;
-								vector<Value> res;
-								res.reserve(vec->elements.size());
-								for (const auto &elem : vec->elements) {
-									if (elem.type == ValueType::INT && scalar.type == ValueType::INT) {
-										long long r = elem.iVal * scalar.iVal;
-										bool ovf = (elem.iVal != 0 && r / elem.iVal != scalar.iVal);
-										if (ovf)
-											res.push_back(BigIntObject::mul(Value::BigInt(elem.iVal), Value::BigInt(scalar.iVal)));
-										else
-											res.push_back(Value::Int(r));
-									} else if (elem.type == ValueType::BIGINT || scalar.type == ValueType::BIGINT) {
-										res.push_back(BigIntObject::mul(elem, scalar));
-									} else {
-										res.push_back(Value::Float(elem.asFloat() * scalar.asFloat()));
-									}
-								}
-								stack.push_back(Value::Vector(res));
 							} else if ((a.type == ValueType::FLOAT && b.type == ValueType::BIGINT) ||
 										  (a.type == ValueType::BIGINT && b.type == ValueType::FLOAT)) {
 								Value fVal = (a.type == ValueType::FLOAT) ? a : b;
@@ -10981,20 +10999,171 @@ struct VM {
 									product.isNegative = resultNeg;
 									stack.push_back(Value::BigInt(std::make_shared<BigIntObject>(product)));
 								}
-							} else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
-								stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
-							} else if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								long long res = a.iVal * b.iVal;
-								bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
-								if (overflow)
-									stack.push_back(BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
-								else
-									stack.push_back(Value::Int(res));
-							} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-								stack.push_back(BigIntObject::mul(a, b));
 							} else {
-								stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
+								try {
+									stack.push_back(EvaluateConstBinary(TokenType::STAR, a, b));
+								} catch (const std::runtime_error &e) {
+									std::string msg = e.what();
+									if (msg.find("Memory") != std::string::npos || msg.find("large") != std::string::npos) {
+										throw MemoryError(msg, line, col);
+									} else {
+										throw ValueError(msg, line, col);
+									}
+								}
 							}
+							// if (a.type == ValueType::STRING && b.type == ValueType::INT) {
+							// 	string res = "";
+							// 	string base = a.asString();
+							// 	long long count = b.asInt();
+							// 	if (count < 0)
+							// 		count = 0;
+							// 	if (count > 1000000)
+							// 		throw MemoryError("String repetition too large", line, col);
+							// 	for (long long i = 0; i < count; i++)
+							// 		res += base;
+							// 	stack.push_back(Value::String(res));
+							// } else if (a.type == ValueType::LIST && b.type == ValueType::INT) {
+							// 	auto *listObj = static_cast<ListObject *>(a.ref.get());
+							// 	long long count = b.asInt();
+							// 	vector<Value> res;
+							// 	if (count > 0) {
+							// 		if (listObj->elements.size() * count > 1000000)
+							// 			throw MemoryError("List repetition too large", line, col);
+							// 		res.reserve(listObj->elements.size() * count);
+							// 		for (int i = 0; i < count; i++) {
+							// 			for (const auto &elem : listObj->elements)
+							// 				res.push_back(deepCopy(elem));
+							// 		}
+							// 	}
+							// 	stack.push_back(Value::List(res));
+							// } else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+							// 	auto *v1 = static_cast<VectorObject *>(a.ref.get());
+							// 	auto *v2 = static_cast<VectorObject *>(b.ref.get());
+							// 	if (v1->elements.size() != v2->elements.size())
+							// 		throw ValueError("Vector dimension mismatch", line, col);
+							// 	Value dot = Value::Int(0);
+							// 	for (size_t i = 0; i < v1->elements.size(); i++) {
+							// 		Value x = v1->elements[i];
+							// 		Value y = v2->elements[i];
+							// 		Value prod;
+							// 		if (x.type == ValueType::INT && y.type == ValueType::INT) {
+							// 			long long r = x.iVal * y.iVal;
+							// 			bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
+							// 			if (ovf)
+							// 				prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
+							// 			else
+							// 				prod = Value::Int(r);
+							// 		} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+							// 			prod = BigIntObject::mul(x, y);
+							// 		} else {
+							// 			prod = Value::Float(x.asFloat() * y.asFloat());
+							// 		}
+							// 		if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
+							// 			long long r = dot.iVal + prod.iVal;
+							// 			bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
+							// 			if (ovf)
+							// 				dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
+							// 			else
+							// 				dot = Value::Int(r);
+							// 		} else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) {
+							// 			dot = BigIntObject::add(dot, prod);
+							// 		} else {
+							// 			dot = Value::Float(dot.asFloat() + prod.asFloat());
+							// 		}
+							// 	}
+							// 	stack.push_back(dot);
+							// } else if ((a.type == ValueType::VECTOR && b.isNumber()) ||
+							// 			  (a.isNumber() && b.type == ValueType::VECTOR)) {
+							// 	VectorObject *vec =
+							// 		(a.type == ValueType::VECTOR)
+							// 			? static_cast<VectorObject *>(a.ref.get())
+							// 			: static_cast<VectorObject *>(b.ref.get());
+							// 	Value scalar = (a.type == ValueType::VECTOR) ? b : a;
+							// 	vector<Value> res;
+							// 	res.reserve(vec->elements.size());
+							// 	for (const auto &elem : vec->elements) {
+							// 		if (elem.type == ValueType::INT && scalar.type == ValueType::INT) {
+							// 			long long r = elem.iVal * scalar.iVal;
+							// 			bool ovf = (elem.iVal != 0 && r / elem.iVal != scalar.iVal);
+							// 			if (ovf)
+							// 				res.push_back(BigIntObject::mul(Value::BigInt(elem.iVal), Value::BigInt(scalar.iVal)));
+							// 			else
+							// 				res.push_back(Value::Int(r));
+							// 		} else if (elem.type == ValueType::BIGINT || scalar.type == ValueType::BIGINT) {
+							// 			res.push_back(BigIntObject::mul(elem, scalar));
+							// 		} else {
+							// 			res.push_back(Value::Float(elem.asFloat() * scalar.asFloat()));
+							// 		}
+							// 	}
+							// 	stack.push_back(Value::Vector(res));
+							// } else if ((a.type == ValueType::FLOAT && b.type == ValueType::BIGINT) ||
+							// 			  (a.type == ValueType::BIGINT && b.type == ValueType::FLOAT)) {
+							// 	Value fVal = (a.type == ValueType::FLOAT) ? a : b;
+							// 	Value intVal = (a.type == ValueType::FLOAT) ? b : a;
+							// 	auto *bigObj = static_cast<BigIntObject *>(intVal.ref.get());
+							// 	std::vector<uint32_t> tempChunks = bigObj->chunks;
+							// 	double floatBase = fVal.asFloat();
+							// 	double result = 0.0;
+							// 	double powerOf10 = 1.0;
+							// 	bool overflow = false;
+							// 	if (tempChunks.size() > 40) {
+							// 		overflow = true;
+							// 	} else {
+							// 		while (!tempChunks.empty() && !(tempChunks.size() == 1 && tempChunks[0] == 0)) {
+							// 			int digit = divMod10(tempChunks);
+							// 			result += (floatBase * digit * powerOf10);
+							// 			powerOf10 *= 10.0;
+							// 			if (std::isinf(result) || std::isinf(powerOf10)) {
+							// 				overflow = true;
+							// 				break;
+							// 			}
+							// 		}
+							// 	}
+							// 	if (!overflow) {
+							// 		if (bigObj->isNegative)
+							// 			result = -result;
+							// 		stack.push_back(Value::Float(result));
+							// 	} else {
+							// 		std::ostringstream ss;
+							// 		ss << std::fixed << std::setprecision(6) << std::abs(floatBase);
+							// 		std::string s = ss.str();
+							// 		size_t decimalPos = s.find('.');
+							// 		long long power = 0;
+							// 		if (decimalPos != std::string::npos) {
+							// 			power = s.length() - decimalPos - 1;
+							// 			s.erase(decimalPos, 1);
+							// 		}
+							// 		BigIntObject mantissa(0);
+							// 		BigIntObject ten(10);
+							// 		for (char c : s) {
+							// 			BigIntObject digit(c - '0');
+							// 			mantissa = (mantissa * ten) + digit;
+							// 		}
+							// 		BigIntObject product = (*bigObj) * mantissa;
+							// 		if (power > 0) {
+							// 			BigIntObject divisor(1);
+							// 			for (int i = 0; i < power; i++)
+							// 				divisor = divisor * ten;
+							// 			product = product / divisor;
+							// 		}
+							// 		bool resultNeg = (bigObj->isNegative) != (floatBase < 0);
+							// 		product.isNegative = resultNeg;
+							// 		stack.push_back(Value::BigInt(std::make_shared<BigIntObject>(product)));
+							// 	}
+							// } else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
+							// 	stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
+							// } else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+							// 	long long res = a.iVal * b.iVal;
+							// 	bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
+							// 	if (overflow)
+							// 		stack.push_back(BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
+							// 	else
+							// 		stack.push_back(Value::Int(res));
+							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+							// 	stack.push_back(BigIntObject::mul(a, b));
+							// } else {
+							// 	stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
+							// }
 						}
 					}
 						DISPATCH();
@@ -11020,35 +11189,47 @@ struct VM {
 						Value b = pop();
 						Value a = pop();
 						if (!invokeBinaryDunder(a, b, "__int_divide__", "__r_int_divide__", line, col)) {
-							if (a.type == ValueType::VECTOR) {
-								if (!b.isNumber())
-									throw TypeError("Vector can only be floor-divided by a number", line, col);
-								if (b.asFloat() == 0)
-									throw DivisionByZeroError("Vector floor division by zero", line, col);
-								auto *v = static_cast<VectorObject *>(a.ref.get());
-								vector<Value> res;
-								res.reserve(v->elements.size());
-								double db = b.asFloat();
-								for (const auto &elem : v->elements) {
-									if (elem.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-										res.push_back(BigIntObject::div(elem, b));
-									} else {
-										res.push_back(Value::Int((long long)(elem.asFloat() / db)));
-									}
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::FLOOR_DIV, a, b));
+							} catch (const std::runtime_error &e) {
+								std::string msg = e.what();
+								if (msg.find("zero") != std::string::npos) {
+									throw DivisionByZeroError(msg, line, col);
+								} else if (msg.find("Vector") != std::string::npos || msg.find("floor-divide by") != std::string::npos) {
+									throw TypeError(msg, line, col);
+								} else {
+									throw ValueError(msg, line, col);
 								}
-								stack.push_back(Value::Vector(res));
-							} else if (b.type == ValueType::VECTOR) {
-								throw TypeError("Cannot floor-divide by a vector", line, col);
-							} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-								if (b.asFloat() == 0)
-									throw DivisionByZeroError("Division by zero", line, col);
-								stack.push_back(BigIntObject::div(a, b));
-							} else {
-								double db = b.asFloat();
-								if (db == 0)
-									throw DivisionByZeroError("Division by zero", line, col);
-								stack.push_back(Value::Int((long long)(a.asFloat() / db)));
 							}
+							// if (a.type == ValueType::VECTOR) {
+							// 	if (!b.isNumber())
+							// 		throw TypeError("Vector can only be floor-divided by a number", line, col);
+							// 	if (b.asFloat() == 0)
+							// 		throw DivisionByZeroError("Vector floor division by zero", line, col);
+							// 	auto *v = static_cast<VectorObject *>(a.ref.get());
+							// 	vector<Value> res;
+							// 	res.reserve(v->elements.size());
+							// 	double db = b.asFloat();
+							// 	for (const auto &elem : v->elements) {
+							// 		if (elem.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+							// 			res.push_back(BigIntObject::div(elem, b));
+							// 		} else {
+							// 			res.push_back(Value::Int((long long)(elem.asFloat() / db)));
+							// 		}
+							// 	}
+							// 	stack.push_back(Value::Vector(res));
+							// } else if (b.type == ValueType::VECTOR) {
+							// 	throw TypeError("Cannot floor-divide by a vector", line, col);
+							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+							// 	if (b.asFloat() == 0)
+							// 		throw DivisionByZeroError("Division by zero", line, col);
+							// 	stack.push_back(BigIntObject::div(a, b));
+							// } else {
+							// 	double db = b.asFloat();
+							// 	if (db == 0)
+							// 		throw DivisionByZeroError("Division by zero", line, col);
+							// 	stack.push_back(Value::Int((long long)(a.asFloat() / db)));
+							// }
 						}
 					}
 						DISPATCH();
@@ -11074,17 +11255,27 @@ struct VM {
 						Value b = pop();
 						Value a = pop();
 						if (!invokeBinaryDunder(a, b, "__modulo__", "__r_modulo__", line, col)) {
-							if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								if (b.iVal == 0)
-									throw DivisionByZeroError("Modulo by zero", line, col);
-								stack.push_back(Value::Int(a.iVal % b.iVal));
-							} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-								stack.push_back(BigIntObject::mod(a, b));
-							} else {
-								if (b.asFloat() == 0)
-									throw DivisionByZeroError("Modulo by zero", line, col);
-								stack.push_back(Value::Float(fmod(a.asFloat(), b.asFloat())));
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::MOD, a, b));
+							} catch (const std::runtime_error &e) {
+								std::string msg = e.what();
+								if (msg.find("zero") != std::string::npos) {
+									throw DivisionByZeroError(msg, line, col);
+								} else {
+									throw ValueError(msg, line, col);
+								}
 							}
+							// if (a.type == ValueType::INT && b.type == ValueType::INT) {
+							// 	if (b.iVal == 0)
+							// 		throw DivisionByZeroError("Modulo by zero", line, col);
+							// 	stack.push_back(Value::Int(a.iVal % b.iVal));
+							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+							// 	stack.push_back(BigIntObject::mod(a, b));
+							// } else {
+							// 	if (b.asFloat() == 0)
+							// 		throw DivisionByZeroError("Modulo by zero", line, col);
+							// 	stack.push_back(Value::Float(fmod(a.asFloat(), b.asFloat())));
+							// }
 						}
 					}
 						DISPATCH();
@@ -11110,18 +11301,23 @@ struct VM {
 						Value b = pop();
 						Value a = pop();
 						if (!invokeBinaryDunder(a, b, "__power__", "__r_power__", line, col)) {
-							if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-								stack.push_back(BigIntObject::pow(a, b));
-							} else if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								double resultLog = (double)b.asInt() * std::log10(a.asInt());
-								double maxLog = std::log10(LLONG_MAX);
-								if (resultLog >= maxLog)
-									stack.push_back(BigIntObject::pow(a, b));
-								else
-									stack.push_back(Value::Int(static_cast<long long>(pow(a.asInt(), b.asInt()))));
-							} else {
-								stack.push_back(Value::Float(pow(a.asFloat(), b.asFloat())));
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::POW, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
 							}
+							// if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+							// 	stack.push_back(BigIntObject::pow(a, b));
+							// } else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+							// 	double resultLog = (double)b.asInt() * std::log10(a.asInt());
+							// 	double maxLog = std::log10(LLONG_MAX);
+							// 	if (resultLog >= maxLog)
+							// 		stack.push_back(BigIntObject::pow(a, b));
+							// 	else
+							// 		stack.push_back(Value::Int(static_cast<long long>(pow(a.asInt(), b.asInt()))));
+							// } else {
+							// 	stack.push_back(Value::Float(pow(a.asFloat(), b.asFloat())));
+							// }
 						}
 					}
 						DISPATCH();
@@ -12905,7 +13101,6 @@ struct VM {
 									interceptedByFinally = true; // Triggers dispatch instead of return logic
 								}
 							}
-
 							if (!interceptedByFinally) {
 								Value result = pop();
 								FunctionObject *func = frame->function;
@@ -18567,6 +18762,198 @@ void Interpreter::registerStdLib() {
 		return Value::String(line);
 	}),
 		false);
+	env->set("cppCompile", Value::Native([this](const vector<Value> &args, int l, int c) {
+		if (args.size() < 3 || args[0].type != ValueType::STRING || args[2].type != ValueType::DICT) {
+			throw TypeError("cppCompile expects (String code, Value return_type, Dict args)", l, c);
+		}
+		std::string user_code = args[0].asString();
+		auto *dict = static_cast<DictObject *>(args[2].ref.get());
+		std::vector<std::string> sorted_keys;
+		for (const auto &[key, val] : dict->items) {
+			sorted_keys.push_back(key.asString());
+		}
+		std::sort(sorted_keys.begin(), sorted_keys.end());
+		std::string cache_key = user_code;
+		for (const auto &k : sorted_keys) {
+			Value val = dict->items.at(Value::String(k));
+			cache_key += "|" + k + ":" + std::to_string((int)val.type);
+		}
+		static std::unordered_map<std::string, void *> ffi_cache;
+		typedef Value (*MacroFunc)(Value *);
+		MacroFunc exec_func = nullptr;
+		if (ffi_cache.find(cache_key) != ffi_cache.end()) {
+			// CACHED
+			exec_func = (MacroFunc)ffi_cache[cache_key];
+		} else {
+			// --- NOT CACHED: MUST COMPILE ---
+			std::stringstream cpp;
+			cpp << "#include \"value_for_cpp_compile.h\"\n";
+			cpp << "#include <string>\n";
+			cpp << "#include <type_traits>\n\n";
+
+			// Generic Casters (C++ -> y--)
+			cpp << "template<typename T> Value CppToValue(T val);\n";
+			cpp << "template<> Value CppToValue(long long v) { return Value::Int(v); }\n";
+			cpp << "template<> Value CppToValue(int v) { return Value::Int(v); }\n";
+			cpp << "template<> Value CppToValue(double v) { return Value::Float(v); }\n";
+			cpp << "template<> Value CppToValue(bool v) { return Value::Bool(v); }\n";
+			cpp << "template<> Value CppToValue(std::string v) { return Value::String(v); }\n";
+			cpp << "template<> Value CppToValue(const char* v) { return Value::String(std::string(v)); }\n\n";
+
+			// Auto-Boxing
+			cpp << "template<typename T> Value CppToValue(const std::vector<T>& vec) {\n";
+			cpp << "    std::vector<Value> res;\n";
+			cpp << "    res.reserve(vec.size());\n";
+			cpp << "    for(const auto& e : vec) res.push_back(CppToValue(e));\n";
+			cpp << "    return Value::List(res);\n";
+			cpp << "}\n\n";
+
+			cpp << "template<typename K, typename V> Value CppToValue(const std::unordered_map<K, V>& m) {\n";
+			cpp << "    std::unordered_map<Value, Value, ValueHash, ValueEqual> res;\n";
+			cpp << "    for(const auto& [k, v] : m) res[CppToValue(k)] = CppToValue(v);\n";
+			cpp << "    return Value::Dict(res);\n";
+			cpp << "}\n\n";
+
+			cpp << "extern \"C\" {\n";
+			cpp << "#ifdef _WIN32\n__declspec(dllexport)\n#endif\n";
+			cpp << "Value y_macro_exec(Value* args_array) {\n";
+			auto getCppInfo = [&](ValueType t, int l, int c, std::string &typeStr, std::string &extMethod) {
+				if (t == ValueType::INT) {
+					typeStr = "long long";
+					extMethod = "asInt()";
+				} else if (t == ValueType::FLOAT) {
+					typeStr = "double";
+					extMethod = "asFloat()";
+				} else if (t == ValueType::STRING) {
+					typeStr = "std::string";
+					extMethod = "asString()";
+				} else if (t == ValueType::BOOL) {
+					typeStr = "bool";
+					extMethod = "asBool()";
+				} else
+					throw TypeError("Unsupported nested type for C++ FFI translation", l, c);
+			};
+			for (size_t i = 0; i < sorted_keys.size(); i++) {
+				std::string var_name = sorted_keys[i];
+				Value val = dict->items.at(Value::String(var_name));
+				if (val.type == ValueType::INT || val.type == ValueType::FLOAT ||
+					 val.type == ValueType::BOOL || val.type == ValueType::STRING) {
+					std::string tStr, ext;
+					getCppInfo(val.type, l, c, tStr, ext);
+					cpp << "    " << tStr << " " << var_name << " = args_array[" << i << "]." << ext << ";\n";
+				} else if (val.type == ValueType::LIST || val.type == ValueType::VECTOR || val.type == ValueType::TUPLE) {
+					const auto &listElems = (val.type == ValueType::LIST)		 ? static_cast<ListObject *>(val.ref.get())->elements
+													: (val.type == ValueType::VECTOR) ? static_cast<VectorObject *>(val.ref.get())->elements
+																								 : static_cast<TupleObject *>(val.ref.get())->elements;
+					if (listElems.empty())
+						throw TypeError("Cannot deduce C++ type from an empty List/Vector", l, c);
+					std::string tStr, ext;
+					getCppInfo(listElems[0].type, l, c, tStr, ext);
+					std::string objType = (val.type == ValueType::LIST) ? "ListObject" : "VectorObject";
+					cpp << "    std::vector<" << tStr << "> " << var_name << ";\n";
+					cpp << "    for (const auto& elem : static_cast<" << objType << "*>(args_array[" << i << "].ref.get())->elements) {\n";
+					cpp << "        " << var_name << ".push_back(elem." << ext << ");\n";
+					cpp << "    }\n";
+				} else if (val.type == ValueType::DICT) {
+					auto *dictObj = static_cast<DictObject *>(val.ref.get());
+					if (dictObj->items.empty())
+						throw TypeError("Cannot deduce C++ type from an empty Dict", l, c);
+					auto first_pair = dictObj->items.begin();
+					std::string kStr, kExt, vStr, vExt;
+					getCppInfo(first_pair->first.type, l, c, kStr, kExt);
+					getCppInfo(first_pair->second.type, l, c, vStr, vExt);
+					cpp << "    std::unordered_map<" << kStr << ", " << vStr << "> " << var_name << ";\n";
+					cpp << "    for (const auto& [k, v] : static_cast<DictObject*>(args_array[" << i << "].ref.get())->items) {\n";
+					cpp << "        " << var_name << "[k." << kExt << "] = v." << vExt << ";\n";
+					cpp << "    }\n";
+				} else if (val.type == ValueType::SET) {
+					auto *setObj = static_cast<SetObject *>(val.ref.get());
+					if (setObj->elements.empty())
+						throw TypeError("Cannot deduce C++ type from an empty Set", l, c);
+					auto first_it = setObj->elements.begin();
+					std::string tStr, ext;
+					getCppInfo(first_it->type, l, c, tStr, ext);
+					cpp << "    std::unordered_set<" << tStr << "> " << var_name << ";\n";
+					cpp << "    for (const auto& elem : static_cast<SetObject*>(args_array[" << i << "].ref.get())->elements) {\n";
+					cpp << "        " << var_name << ".insert(elem." << ext << ");\n";
+					cpp << "    }\n";
+				} else {
+					throw TypeError("Unsupported dictionary value type passed to cppCompile", l, c);
+				}
+			}
+			cpp << "\n    auto user_logic = [&]() {\n";
+			cpp << "        " << user_code << "\n";
+			cpp << "    };\n\n";
+			cpp << "    using RetType = decltype(user_logic());\n";
+			cpp << "    if constexpr (std::is_same_v<RetType, void>) {\n";
+			cpp << "        user_logic();\n";
+			cpp << "        return Value::None();\n";
+			cpp << "    } else {\n";
+			cpp << "        return CppToValue(user_logic());\n";
+			cpp << "    }\n";
+			cpp << "}\n}\n";
+			std::string current_dir = std::filesystem::current_path().string();
+			std::string hash_str = std::to_string(std::hash<std::string>{}(cache_key));
+			std::string debug_flag = "";
+#ifdef VM_DEBUG_MODE
+			debug_flag = " -DVM_DEBUG_MODE ";
+#endif
+#ifdef _WIN32
+			std::string cpp_file = "y_macro_" + hash_str + ".cpp";
+			std::string lib_file = "y_macro_" + hash_str + ".dll";
+			std::string cmd = "g++ -std=c++17 -shared -O3 " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " 2>&1";
+#else
+			std::string cpp_file = "/tmp/y_macro_" + hash_str + ".cpp";
+			std::string lib_file = "/tmp/y_macro_" + hash_str + ".so";
+			std::string cmd = "g++ -std=c++17 -shared -fPIC -O3 " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " 2>&1";
+#endif
+			std::ofstream out(cpp_file);
+			out << cpp.str();
+			out.flush();
+			out.close();
+			if (system(cmd.c_str()) != 0)
+				throw RuntimeError("C++ FFI Compilation failed!", l, c);
+#ifdef _WIN32
+			HINSTANCE handle = LoadLibraryA(lib_file.c_str());
+			if (!handle)
+				throw RuntimeError("Failed to load DLL", l, c);
+			exec_func = (MacroFunc)GetProcAddress(handle, "y_macro_exec");
+#else
+			void *handle = dlopen(lib_file.c_str(), RTLD_NOW);
+			if (!handle)
+				throw RuntimeError(std::string("Failed to load SO: ") + dlerror(), l, c);
+			exec_func = (MacroFunc)dlsym(handle, "y_macro_exec");
+#endif
+			if (!exec_func)
+				throw RuntimeError("Failed to find execution hook", l, c);
+			ffi_cache[cache_key] = (void *)exec_func;
+		}
+		std::vector<Value> packed_args;
+		for (const auto &k : sorted_keys) {
+			packed_args.push_back(dict->items.at(Value::String(k)));
+		}
+		Value raw_result = exec_func(packed_args.data());
+		ValueType expected = args[1].type;
+		if (expected == ValueType::NONE || expected == ValueType::NOTYPE || expected == raw_result.type) {
+			return raw_result;
+		}
+		if (expected == ValueType::VECTOR && raw_result.type == ValueType::LIST) {
+			return Value::Vector(static_cast<ListObject *>(raw_result.ref.get())->elements);
+		}
+		if (expected == ValueType::LIST && raw_result.type == ValueType::VECTOR) {
+			return Value::List(static_cast<VectorObject *>(raw_result.ref.get())->elements);
+		}
+		if (expected == ValueType::SET && raw_result.type == ValueType::LIST) {
+			auto &elems = static_cast<ListObject *>(raw_result.ref.get())->elements;
+			std::unordered_set<Value, ValueHash, ValueEqual> s(elems.begin(), elems.end());
+			return Value::Set(s);
+		}
+		if (expected == ValueType::TUPLE && raw_result.type == ValueType::LIST) {
+			return Value::Tuple(static_cast<ListObject *>(raw_result.ref.get())->elements);
+		}
+		return raw_result;
+	}),
+		false);
 }
 
 JitRuntime &AsmJitCompiler::getRuntime() {
@@ -18807,4 +19194,244 @@ void AsmJitCompiler::emitTypeGuard(x86::Compiler &cc, x86::Gp value_address, Lab
 	cc.je(type_is_safe);
 	cc.jmp(bailout_label);
 	cc.bind(type_is_safe);
+}
+inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
+	if (op == TokenType::PLUS) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT) {
+			long long res = a.iVal + b.iVal;
+			bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;
+			if (overflow)
+				return BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
+			else
+				return Value::Int(res);
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+			return BigIntObject::add(a, b);
+		} else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
+			return Value::String(valueToString(a) + valueToString(b));
+		} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+			auto *v1 = static_cast<VectorObject *>(a.ref.get());
+			auto *v2 = static_cast<VectorObject *>(b.ref.get());
+			if (v1->elements.size() != v2->elements.size())
+				throw std::runtime_error("Vector dimension mismatch");
+			std::vector<Value> res;
+			res.reserve(v1->elements.size());
+			for (size_t i = 0; i < v1->elements.size(); i++) {
+				Value x = v1->elements[i];
+				Value y = v2->elements[i];
+				if (x.type == ValueType::INT && y.type == ValueType::INT) {
+					long long r = x.iVal + y.iVal;
+					bool ovf = ((x.iVal ^ r) & (y.iVal ^ r)) < 0;
+					if (ovf)
+						res.push_back(BigIntObject::add(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
+					else
+						res.push_back(Value::Int(r));
+				} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+					res.push_back(BigIntObject::add(x, y));
+				} else {
+					res.push_back(Value::Float(x.asFloat() + y.asFloat()));
+				}
+			}
+			return Value::Vector(res);
+		} else if (a.isNumber() || b.isNumber()) {
+			return Value::Float(a.asFloat() + b.asFloat());
+		}
+	} else if (op == TokenType::MINUS) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT) {
+			long long res = a.iVal - b.iVal;
+			bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
+			if (overflow)
+				return BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
+			else
+				return Value::Int(res);
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+			return BigIntObject::sub(a, b);
+		} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+			auto *v1 = static_cast<VectorObject *>(a.ref.get());
+			auto *v2 = static_cast<VectorObject *>(b.ref.get());
+			if (v1->elements.size() != v2->elements.size())
+				throw std::runtime_error("Vector dimension mismatch");
+			std::vector<Value> res;
+			res.reserve(v1->elements.size());
+			for (size_t i = 0; i < v1->elements.size(); i++) {
+				Value x = v1->elements[i];
+				Value y = v2->elements[i];
+				if (x.type == ValueType::INT && y.type == ValueType::INT) {
+					long long r = x.iVal - y.iVal;
+					bool ovf = ((x.iVal ^ y.iVal) & (x.iVal ^ r)) < 0;
+					if (ovf)
+						res.push_back(BigIntObject::sub(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
+					else
+						res.push_back(Value::Int(r));
+				} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+					res.push_back(BigIntObject::sub(x, y));
+				} else {
+					res.push_back(Value::Float(x.asFloat() - y.asFloat()));
+				}
+			}
+			return Value::Vector(res);
+		} else if (a.isNumber() || b.isNumber()) {
+			return Value::Float(a.asFloat() - b.asFloat());
+		}
+	} else if (op == TokenType::SLASH) {
+		if (a.type == ValueType::VECTOR) {
+			if (!b.isNumber())
+				throw std::runtime_error("Vector can only be divided by a number");
+			double s = b.asFloat();
+			if (s == 0.0)
+				throw std::runtime_error("Vector division by zero");
+			auto *v = static_cast<VectorObject *>(a.ref.get());
+			std::vector<Value> res;
+			res.reserve(v->elements.size());
+			for (const auto &elem : v->elements) {
+				res.push_back(Value::Float(elem.asFloat() / s));
+			}
+			return Value::Vector(res);
+		} else if (b.type == ValueType::VECTOR) {
+			throw std::runtime_error("Cannot divide by a vector");
+		} else if (a.isNumber() && b.isNumber()) {
+			double db = b.asFloat();
+			if (db == 0.0)
+				throw std::runtime_error("Division by zero");
+			return Value::Float(a.asFloat() / db);
+		}
+	} else if (op == TokenType::STAR) {
+		if (a.type == ValueType::STRING && b.type == ValueType::INT) {
+			std::string res = "";
+			std::string base = a.asString();
+			long long count = b.asInt();
+			if (count < 0)
+				count = 0;
+			if (count > 1000000)
+				throw std::runtime_error("String repetition too large");
+			for (long long i = 0; i < count; i++)
+				res += base;
+			return Value::String(res);
+		} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+			auto *v1 = static_cast<VectorObject *>(a.ref.get());
+			auto *v2 = static_cast<VectorObject *>(b.ref.get());
+			if (v1->elements.size() != v2->elements.size())
+				throw std::runtime_error("Vector dimension mismatch");
+			Value dot = Value::Int(0);
+			for (size_t i = 0; i < v1->elements.size(); i++) {
+				Value x = v1->elements[i];
+				Value y = v2->elements[i];
+				Value prod;
+				if (x.type == ValueType::INT && y.type == ValueType::INT) {
+					long long r = x.iVal * y.iVal;
+					bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
+					if (ovf)
+						prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
+					else
+						prod = Value::Int(r);
+				} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+					prod = BigIntObject::mul(x, y);
+				} else {
+					prod = Value::Float(x.asFloat() * y.asFloat());
+				}
+				if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
+					long long r = dot.iVal + prod.iVal;
+					bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
+					if (ovf)
+						dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
+					else
+						dot = Value::Int(r);
+				} else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) {
+					dot = BigIntObject::add(dot, prod);
+				} else {
+					dot = Value::Float(dot.asFloat() + prod.asFloat());
+				}
+			}
+			return dot;
+		} else if ((a.type == ValueType::VECTOR && b.isNumber()) || (a.isNumber() && b.type == ValueType::VECTOR)) {
+			VectorObject *vec = (a.type == ValueType::VECTOR) ? static_cast<VectorObject *>(a.ref.get()) : static_cast<VectorObject *>(b.ref.get());
+			Value scalar = (a.type == ValueType::VECTOR) ? b : a;
+			std::vector<Value> res;
+			res.reserve(vec->elements.size());
+			for (const auto &elem : vec->elements) {
+				if (elem.type == ValueType::INT && scalar.type == ValueType::INT) {
+					long long r = elem.iVal * scalar.iVal;
+					bool ovf = (elem.iVal != 0 && r / elem.iVal != scalar.iVal);
+					if (ovf)
+						res.push_back(BigIntObject::mul(Value::BigInt(elem.iVal), Value::BigInt(scalar.iVal)));
+					else
+						res.push_back(Value::Int(r));
+				} else if (elem.type == ValueType::BIGINT || scalar.type == ValueType::BIGINT) {
+					res.push_back(BigIntObject::mul(elem, scalar));
+				} else {
+					res.push_back(Value::Float(elem.asFloat() * scalar.asFloat()));
+				}
+			}
+			return Value::Vector(res);
+		} else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+			long long res = a.iVal * b.iVal;
+			bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
+			if (overflow)
+				return BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
+			else
+				return Value::Int(res);
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+			return BigIntObject::mul(a, b);
+		} else if (a.isNumber() && b.isNumber()) {
+			return Value::Float(a.asFloat() * b.asFloat());
+		}
+	} else if (op == TokenType::FLOOR_DIV) {
+		if (a.type == ValueType::VECTOR) {
+			if (!b.isNumber())
+				throw std::runtime_error("Vector can only be floor-divided by a number");
+			if (b.asFloat() == 0.0)
+				throw std::runtime_error("Vector floor division by zero");
+			auto *v = static_cast<VectorObject *>(a.ref.get());
+			std::vector<Value> res;
+			res.reserve(v->elements.size());
+			double db = b.asFloat();
+			for (const auto &elem : v->elements) {
+				if (elem.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+					res.push_back(BigIntObject::div(elem, b));
+				} else {
+					res.push_back(Value::Int((long long)(elem.asFloat() / db)));
+				}
+			}
+			return Value::Vector(res);
+		} else if (b.type == ValueType::VECTOR) {
+			throw std::runtime_error("Cannot floor-divide by a vector");
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+			if (b.asFloat() == 0.0)
+				throw std::runtime_error("Division by zero");
+			return BigIntObject::div(a, b);
+		} else if (a.isNumber() && b.isNumber()) {
+			double db = b.asFloat();
+			if (db == 0.0)
+				throw std::runtime_error("Division by zero");
+			return Value::Int((long long)(a.asFloat() / db));
+		}
+	} else if (op == TokenType::MOD) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT) {
+			if (b.iVal == 0)
+				throw std::runtime_error("Modulo by zero");
+			return Value::Int(a.iVal % b.iVal);
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+			if (b.asFloat() == 0.0)
+				throw std::runtime_error("Modulo by zero");
+			return BigIntObject::mod(a, b);
+		} else if (a.isNumber() && b.isNumber()) {
+			if (b.asFloat() == 0.0)
+				throw std::runtime_error("Modulo by zero");
+			return Value::Float(std::fmod(a.asFloat(), b.asFloat()));
+		}
+	} else if (op == TokenType::POW) {
+		if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+			return BigIntObject::pow(a, b);
+		} else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+			double resultLog = (double)b.iVal * std::log10(std::abs((double)a.iVal));
+			double maxLog = std::log10(LLONG_MAX);
+			if (resultLog >= maxLog) {
+				return BigIntObject::pow(a, b);
+			} else {
+				return Value::Int(static_cast<long long>(std::pow(a.iVal, b.iVal)));
+			}
+		} else if (a.isNumber() && b.isNumber()) {
+			return Value::Float(std::pow(a.asFloat(), b.asFloat()));
+		}
+	}
+	throw std::runtime_error("Cannot fold this operation at compile time.");
 }
