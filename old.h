@@ -1388,6 +1388,30 @@ class Parser {
 	size_t pos = 0;
 	bool allowGT = true;
 	int classDepth = 0;
+	int scopeDepth = 0;
+
+ public:
+	void synchronize() {
+		advance();
+		while (!isAtEnd()) {
+			switch (peek().type) {
+			case TokenType::DEFINE:
+			case TokenType::CLASS:
+			case TokenType::LET:
+			case TokenType::IF:
+			case TokenType::WHILE:
+			case TokenType::FOR:
+			case TokenType::TRY:
+			case TokenType::SWITCH:
+			case TokenType::RETURN:
+			case TokenType::IMPORT:
+				return;
+			default:
+				break;
+			}
+			advance();
+		}
+	}
 
  private:
 	[[noreturn]] void error(const string &message) {
@@ -1484,14 +1508,17 @@ class Parser {
 	}
 	vector<Stmt *> parseBlock() {
 		vector<Stmt *> body;
+		scopeDepth++;
 		if (match(TokenType::LBRACE)) {
 			while (!isAtEnd() && peek().type != TokenType::RBRACE) {
 				body.push_back(parseStmt());
 			}
 			consume(TokenType::RBRACE, "Expected '}' to close block");
+			scopeDepth--;
 			return body;
 		}
 		body.push_back(parseStmt());
+		scopeDepth--;
 		return body;
 	}
 	Expr *parseOr() {
@@ -2160,6 +2187,13 @@ class Parser {
 		return s;
 	}
 	Stmt *parseStmt() {
+		if (scopeDepth == 0 && classDepth == 0 && !isAtEnd()) {
+			TokenType t = peek().type;
+			if (t != TokenType::IMPORT && t != TokenType::LET &&
+				 t != TokenType::DEFINE && t != TokenType::CLASS) {
+				error("Executable statements (loops, functions, logic) are not allowed at the global scope.");
+			}
+		}
 		if (match(TokenType::SWITCH)) {
 			Token t = tokens[pos - 1];
 			consume(TokenType::LPAREN, "Expected '(' after 'switch'");
@@ -10077,8 +10111,24 @@ struct VM {
 							auto *cls = static_cast<ClassObject *>(classVal.ref.get());
 							auto *func = static_cast<FunctionObject *>(funcVal.ref.get());
 							func->owner = cls;
-							cls->methods[func->name] = {funcVal, access};
-							// Don't pop the class! We might add more methods.
+							if (cls->methods.count(func->name)) {
+								Value existing = cls->methods[func->name].func;
+								if (existing.type == ValueType::FUNCTION || existing.type == ValueType::NATIVE_FUNCTION) {
+									auto ovObj = std::make_shared<OverloadObject>(existing);
+									ovObj->overloads.push_back(funcVal);
+									Value ovVal;
+									ovVal.type = ValueType::OVERLOAD;
+									ovVal.ref = ovObj;
+									cls->methods[func->name] = {ovVal, access};
+								} else if (existing.type == ValueType::OVERLOAD) {
+									auto ovObj = std::make_shared<OverloadObject>(existing);
+									ovObj->overloads.push_back(funcVal);
+								} else {
+									cls->methods[func->name] = {funcVal, access};
+								}
+							} else {
+								cls->methods[func->name] = {funcVal, access};
+							}
 						}
 						DISPATCH();
 					}
@@ -11586,7 +11636,28 @@ struct VM {
 #endif
 							bool isConst = (flags & 0x01) != 0;
 							bool isLocked = (flags & 0x02) != 0;
-							globals->set(name, val, isLocked, isConst);
+							if (val.type == ValueType::FUNCTION || val.type == ValueType::NATIVE_FUNCTION) {
+								if (globals->exists(name)) {
+									Value existing = globals->get(name);
+									if (existing.type == ValueType::FUNCTION || existing.type == ValueType::NATIVE_FUNCTION) {
+										auto ovObj = std::make_shared<OverloadObject>(existing);
+										ovObj->overloads.push_back(val);
+										Value ovVal;
+										ovVal.type = ValueType::OVERLOAD;
+										ovVal.ref = ovObj;
+										globals->set(name, ovVal, isLocked, isConst);
+									} else if (existing.type == ValueType::OVERLOAD) {
+										auto *ov = static_cast<OverloadObject *>(existing.ref.get());
+										ov->overloads.push_back(val);
+									} else {
+										globals->set(name, val, isLocked, isConst);
+									}
+								} else {
+									globals->set(name, val, isLocked, isConst);
+								}
+							} else {
+								globals->set(name, val, isLocked, isConst);
+							}
 						}
 						DISPATCH();
 					}
@@ -13296,6 +13367,9 @@ struct VM {
 		} else if (callee.type == ValueType::OVERLOAD) {
 			auto *ov = static_cast<OverloadObject *>(callee.ref.get());
 			bool found = false;
+			FunctionObject *bestFunc = nullptr;
+			NativeFunctionObject *bestNative = nullptr;
+			int bestScore = -1;
 			for (int i = (int)ov->overloads.size() - 1; i >= 0; i--) {
 				Value candVal = ov->overloads[i];
 				if (candVal.type == ValueType::FUNCTION) {
@@ -13314,6 +13388,7 @@ struct VM {
 					if (!isVariadic && argCount > candidate->params.size())
 						continue;
 					bool typesMatch = true;
+					int currentScore = 0;
 					size_t paramIdx = 0;
 					for (int argIdx = 0; argIdx < argCount; argIdx++) {
 						if (paramIdx >= candidate->params.size()) {
@@ -13321,6 +13396,7 @@ struct VM {
 								typesMatch = false;
 								break;
 							}
+							currentScore++;
 							break;
 						}
 						const ParamSpec &p = candidate->params[paramIdx];
@@ -13328,25 +13404,38 @@ struct VM {
 							break;
 						Value argVal = stack[stack.size() - argCount + argIdx];
 						if (p.type != ValueType::NOTYPE && argVal.type != p.type) {
-							if (!(p.type == ValueType::FLOAT &&
-									 argVal.type == ValueType::INT)) {
+							if (p.type == ValueType::FLOAT && argVal.type == ValueType::INT) {
+								currentScore += 5;
+							} else {
 								typesMatch = false;
 								break;
 							}
+						} else if (p.type != ValueType::NOTYPE && argVal.type == p.type) {
+							currentScore += 10;
+						} else if (p.type == ValueType::NOTYPE) {
+							currentScore += 2;
 						}
 						paramIdx++;
 					}
-					if (typesMatch) {
-						function = candidate;
-						found = true;
-						break;
+					if (typesMatch && currentScore > bestScore) {
+						bestScore = currentScore;
+						bestFunc = candidate;
+						bestNative = nullptr;
 					}
 				} else if (candVal.type == ValueType::NATIVE_FUNCTION) {
-					nativeObj =
-						static_cast<NativeFunctionObject *>(candVal.ref.get());
-					found = true;
-					break;
+					if (0 > bestScore) {
+						bestScore = 0;
+						bestFunc = nullptr;
+						bestNative = static_cast<NativeFunctionObject *>(candVal.ref.get());
+					}
 				}
+			}
+			if (bestFunc) {
+				function = bestFunc;
+				found = true;
+			} else if (bestNative) {
+				nativeObj = bestNative;
+				found = true;
 			}
 			if (!found)
 				throw TypeError(
@@ -18766,17 +18855,63 @@ void Interpreter::registerStdLib() {
 		if (args.size() < 3 || args[0].type != ValueType::STRING || args[2].type != ValueType::DICT) {
 			throw TypeError("cppCompile expects (String code, Value return_type, Dict args)", l, c);
 		}
-		std::string user_code = args[0].asString();
+		std::string raw_user_code = args[0].asString();
+		std::string includes = "";
+		std::string logic = "";
+		std::istringstream stream(raw_user_code);
+		std::string line;
+		while (std::getline(stream, line)) {
+			size_t start = line.find_first_not_of(" \t");
+			if (start != std::string::npos && line.compare(start, 8, "#include") == 0) {
+				includes += line + "\n";
+			} else {
+				logic += line + "\n";
+			}
+		}
+		std::string user_code = logic;
+		std::string cache_key = raw_user_code;
 		auto *dict = static_cast<DictObject *>(args[2].ref.get());
 		std::vector<std::string> sorted_keys;
 		for (const auto &[key, val] : dict->items) {
 			sorted_keys.push_back(key.asString());
 		}
 		std::sort(sorted_keys.begin(), sorted_keys.end());
-		std::string cache_key = user_code;
+		std::function<std::string(const Value &, int, int)> getDeepCppType = [&](const Value &v, int l, int c) -> std::string {
+			if (v.type == ValueType::INT)
+				return "long long";
+			if (v.type == ValueType::FLOAT)
+				return "double";
+			if (v.type == ValueType::BOOL)
+				return "bool";
+			if (v.type == ValueType::STRING)
+				return "std::string";
+			if (v.type == ValueType::LIST || v.type == ValueType::VECTOR || v.type == ValueType::TUPLE) {
+				const auto &elems = (v.type == ValueType::LIST) ? static_cast<ListObject *>(v.ref.get())->elements : (v.type == ValueType::VECTOR) ? static_cast<VectorObject *>(v.ref.get())->elements
+																																															  : static_cast<TupleObject *>(v.ref.get())->elements;
+				if (elems.empty())
+					throw TypeError("Cannot deduce deep C++ type from empty container", l, c);
+				return "std::vector<" + getDeepCppType(elems[0], l, c) + ">";
+			}
+			if (v.type == ValueType::DICT) {
+				auto *dictObj = static_cast<DictObject *>(v.ref.get());
+				if (dictObj->items.empty())
+					throw TypeError("Cannot deduce deep C++ type from empty Dict", l, c);
+				auto first_pair = dictObj->items.begin();
+				return "std::unordered_map<" + getDeepCppType(first_pair->first, l, c) + ", " + getDeepCppType(first_pair->second, l, c) + ">";
+			}
+			if (v.type == ValueType::SET) {
+				auto *setObj = static_cast<SetObject *>(v.ref.get());
+				if (setObj->elements.empty())
+					throw TypeError("Cannot deduce deep C++ type from empty Set", l, c);
+				auto first_it = setObj->elements.begin();
+				return "std::unordered_set<" + getDeepCppType(*first_it, l, c) + ">";
+			}
+			throw TypeError("Unsupported nested type for C++ FFI translation", l, c);
+		};
+
 		for (const auto &k : sorted_keys) {
 			Value val = dict->items.at(Value::String(k));
-			cache_key += "|" + k + ":" + std::to_string((int)val.type);
+			cache_key += "|" + k + ":" + getDeepCppType(val, l, c);
 		}
 		static std::unordered_map<std::string, void *> ffi_cache;
 		typedef Value (*MacroFunc)(Value *);
@@ -18790,17 +18925,63 @@ void Interpreter::registerStdLib() {
 			cpp << "#include \"value_for_cpp_compile.h\"\n";
 			cpp << "#include <string>\n";
 			cpp << "#include <type_traits>\n\n";
+			cpp << includes << "\n";
+			// 1. Unpackers: y-- Value -> Raw C++ (Using Struct Specialization for safe recursion)
+			cpp << "template<typename T> struct Unboxer;\n";
+			cpp << "template<> struct Unboxer<long long> { static long long get(const Value& v) { return v.asInt(); } };\n";
+			cpp << "template<> struct Unboxer<int> { static int get(const Value& v) { return (int)v.asInt(); } };\n";
+			cpp << "template<> struct Unboxer<size_t> { static int get(const Value& v) { return (size_t)v.asInt(); } };\n";
+			cpp << "template<> struct Unboxer<double> { static double get(const Value& v) { return v.asFloat(); } };\n";
+			cpp << "template<> struct Unboxer<float> { static float get(const Value& v) { return (float)v.asFloat(); } };\n";
+			cpp << "template<> struct Unboxer<bool> { static bool get(const Value& v) { return v.asBool(); } };\n";
+			cpp << "template<> struct Unboxer<std::string> { static std::string get(const Value& v) { return v.asString(); } };\n\n";
 
-			// Generic Casters (C++ -> y--)
+			cpp << "template<typename T> struct Unboxer<std::vector<T>> {\n";
+			cpp << "    static std::vector<T> get(const Value& v) {\n";
+			cpp << "        std::vector<T> res;\n";
+			cpp << "        if (v.type == ValueType::LIST) {\n";
+			cpp << "            for(const auto& e : static_cast<ListObject*>(v.ref.get())->elements) res.push_back(Unboxer<T>::get(e));\n";
+			cpp << "        } else if (v.type == ValueType::VECTOR) {\n";
+			cpp << "            for(const auto& e : static_cast<VectorObject*>(v.ref.get())->elements) res.push_back(Unboxer<T>::get(e));\n";
+			cpp << "        } else if (v.type == ValueType::TUPLE) {\n";
+			cpp << "            for(const auto& e : static_cast<TupleObject*>(v.ref.get())->elements) res.push_back(Unboxer<T>::get(e));\n";
+			cpp << "        }\n";
+			cpp << "        return res;\n";
+			cpp << "    }\n";
+			cpp << "};\n";
+			cpp << "template<typename T> T ValueToCpp(const Value& v) { return Unboxer<T>::get(v); }\n\n";
+
+			cpp << "template<typename K, typename V> struct Unboxer<std::unordered_map<K, V>> {\n";
+			cpp << "    static std::unordered_map<K, V> get(const Value& v) {\n";
+			cpp << "        std::unordered_map<K, V> res;\n";
+			cpp << "        for(const auto& [key, val] : static_cast<DictObject*>(v.ref.get())->items) {\n";
+			cpp << "            res[Unboxer<K>::get(key)] = Unboxer<V>::get(val);\n";
+			cpp << "        }\n";
+			cpp << "        return res;\n";
+			cpp << "    }\n";
+			cpp << "};\n";
+
+			cpp << "template<typename T> struct Unboxer<std::unordered_set<T>> {\n";
+			cpp << "    static std::unordered_set<T> get(const Value& v) {\n";
+			cpp << "        std::unordered_set<T> res;\n";
+			cpp << "        for(const auto& e : static_cast<SetObject*>(v.ref.get())->elements) {\n";
+			cpp << "            res.insert(Unboxer<T>::get(e));\n";
+			cpp << "        }\n";
+			cpp << "        return res;\n";
+			cpp << "    }\n";
+			cpp << "};\n";
+
+			// Raw C++ -> y-- Value
 			cpp << "template<typename T> Value CppToValue(T val);\n";
 			cpp << "template<> Value CppToValue(long long v) { return Value::Int(v); }\n";
 			cpp << "template<> Value CppToValue(int v) { return Value::Int(v); }\n";
+			cpp << "template<> Value CppToValue(size_t v) { return Value::Int(v); }\n";
 			cpp << "template<> Value CppToValue(double v) { return Value::Float(v); }\n";
+			cpp << "template<> Value CppToValue(float v) { return Value::Float(v); }\n";
 			cpp << "template<> Value CppToValue(bool v) { return Value::Bool(v); }\n";
 			cpp << "template<> Value CppToValue(std::string v) { return Value::String(v); }\n";
 			cpp << "template<> Value CppToValue(const char* v) { return Value::String(std::string(v)); }\n\n";
 
-			// Auto-Boxing
 			cpp << "template<typename T> Value CppToValue(const std::vector<T>& vec) {\n";
 			cpp << "    std::vector<Value> res;\n";
 			cpp << "    res.reserve(vec.size());\n";
@@ -18814,72 +18995,28 @@ void Interpreter::registerStdLib() {
 			cpp << "    return Value::Dict(res);\n";
 			cpp << "}\n\n";
 
+			cpp << "template<typename T> Value CppToValue(const std::unordered_set<T>& s) {\n";
+			cpp << "    std::unordered_set<Value, ValueHash, ValueEqual> res;\n";
+			cpp << "    for(const auto& e : s) setAdd(res, CppToValue(e));\n";
+			cpp << "    return Value::Set(res);\n";
+			cpp << "}\n\n";
+
+			cpp << "template<typename T1, typename T2> Value CppToValue(const std::pair<T1, T2>& p) {\n";
+			cpp << "    return Value::Tuple({CppToValue(p.first), CppToValue(p.second)});\n";
+			cpp << "}\n\n";
+
 			cpp << "extern \"C\" {\n";
 			cpp << "#ifdef _WIN32\n__declspec(dllexport)\n#endif\n";
 			cpp << "Value y_macro_exec(Value* args_array) {\n";
-			auto getCppInfo = [&](ValueType t, int l, int c, std::string &typeStr, std::string &extMethod) {
-				if (t == ValueType::INT) {
-					typeStr = "long long";
-					extMethod = "asInt()";
-				} else if (t == ValueType::FLOAT) {
-					typeStr = "double";
-					extMethod = "asFloat()";
-				} else if (t == ValueType::STRING) {
-					typeStr = "std::string";
-					extMethod = "asString()";
-				} else if (t == ValueType::BOOL) {
-					typeStr = "bool";
-					extMethod = "asBool()";
-				} else
-					throw TypeError("Unsupported nested type for C++ FFI translation", l, c);
-			};
+			// RECURSIVE Type Sniffer
+			// Unpack variables based on SORTED order
 			for (size_t i = 0; i < sorted_keys.size(); i++) {
 				std::string var_name = sorted_keys[i];
 				Value val = dict->items.at(Value::String(var_name));
-				if (val.type == ValueType::INT || val.type == ValueType::FLOAT ||
-					 val.type == ValueType::BOOL || val.type == ValueType::STRING) {
-					std::string tStr, ext;
-					getCppInfo(val.type, l, c, tStr, ext);
-					cpp << "    " << tStr << " " << var_name << " = args_array[" << i << "]." << ext << ";\n";
-				} else if (val.type == ValueType::LIST || val.type == ValueType::VECTOR || val.type == ValueType::TUPLE) {
-					const auto &listElems = (val.type == ValueType::LIST)		 ? static_cast<ListObject *>(val.ref.get())->elements
-													: (val.type == ValueType::VECTOR) ? static_cast<VectorObject *>(val.ref.get())->elements
-																								 : static_cast<TupleObject *>(val.ref.get())->elements;
-					if (listElems.empty())
-						throw TypeError("Cannot deduce C++ type from an empty List/Vector", l, c);
-					std::string tStr, ext;
-					getCppInfo(listElems[0].type, l, c, tStr, ext);
-					std::string objType = (val.type == ValueType::LIST) ? "ListObject" : "VectorObject";
-					cpp << "    std::vector<" << tStr << "> " << var_name << ";\n";
-					cpp << "    for (const auto& elem : static_cast<" << objType << "*>(args_array[" << i << "].ref.get())->elements) {\n";
-					cpp << "        " << var_name << ".push_back(elem." << ext << ");\n";
-					cpp << "    }\n";
-				} else if (val.type == ValueType::DICT) {
-					auto *dictObj = static_cast<DictObject *>(val.ref.get());
-					if (dictObj->items.empty())
-						throw TypeError("Cannot deduce C++ type from an empty Dict", l, c);
-					auto first_pair = dictObj->items.begin();
-					std::string kStr, kExt, vStr, vExt;
-					getCppInfo(first_pair->first.type, l, c, kStr, kExt);
-					getCppInfo(first_pair->second.type, l, c, vStr, vExt);
-					cpp << "    std::unordered_map<" << kStr << ", " << vStr << "> " << var_name << ";\n";
-					cpp << "    for (const auto& [k, v] : static_cast<DictObject*>(args_array[" << i << "].ref.get())->items) {\n";
-					cpp << "        " << var_name << "[k." << kExt << "] = v." << vExt << ";\n";
-					cpp << "    }\n";
-				} else if (val.type == ValueType::SET) {
-					auto *setObj = static_cast<SetObject *>(val.ref.get());
-					if (setObj->elements.empty())
-						throw TypeError("Cannot deduce C++ type from an empty Set", l, c);
-					auto first_it = setObj->elements.begin();
-					std::string tStr, ext;
-					getCppInfo(first_it->type, l, c, tStr, ext);
-					cpp << "    std::unordered_set<" << tStr << "> " << var_name << ";\n";
-					cpp << "    for (const auto& elem : static_cast<SetObject*>(args_array[" << i << "].ref.get())->elements) {\n";
-					cpp << "        " << var_name << ".insert(elem." << ext << ");\n";
-					cpp << "    }\n";
-				} else {
-					throw TypeError("Unsupported dictionary value type passed to cppCompile", l, c);
-				}
+				// Sniff the deep type signature
+				std::string cpp_type = getDeepCppType(val, l, c);
+				// Emit exactly ONE C++ line to invoke the recursive Unboxer template
+				cpp << "    " << cpp_type << " " << var_name << " = ValueToCpp<" << cpp_type << ">(args_array[" << i << "]);\n";
 			}
 			cpp << "\n    auto user_logic = [&]() {\n";
 			cpp << "        " << user_code << "\n";
@@ -18895,17 +19032,17 @@ void Interpreter::registerStdLib() {
 			std::string current_dir = std::filesystem::current_path().string();
 			std::string hash_str = std::to_string(std::hash<std::string>{}(cache_key));
 			std::string debug_flag = "";
-#ifdef VM_DEBUG_MODE
+#ifdef VM_DEBUG_MODE // NEVER USE
 			debug_flag = " -DVM_DEBUG_MODE ";
 #endif
 #ifdef _WIN32
 			std::string cpp_file = "y_macro_" + hash_str + ".cpp";
 			std::string lib_file = "y_macro_" + hash_str + ".dll";
-			std::string cmd = "g++ -std=c++17 -shared -O3 " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " 2>&1";
+			std::string cmd = "g++ -std=c++17 -shared -O3 -fopenmp " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " 2>&1";
 #else
 			std::string cpp_file = "/tmp/y_macro_" + hash_str + ".cpp";
 			std::string lib_file = "/tmp/y_macro_" + hash_str + ".so";
-			std::string cmd = "g++ -std=c++17 -shared -fPIC -O3 " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " 2>&1";
+			std::string cmd = "g++ -std=c++17 -shared -fPIC -O3 -fopenmp " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " -lraylib 2>&1";
 #endif
 			std::ofstream out(cpp_file);
 			out << cpp.str();
