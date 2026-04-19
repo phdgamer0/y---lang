@@ -4,7 +4,16 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-void printErrorContext(const std::string &, int, int);
+void printErrorContext(const std::string &, int, int, const std::filesystem::path &);
+struct ASTCleaner {
+	std::vector<Stmt *> &program;
+	~ASTCleaner() {
+		for (Stmt *stmt : program) {
+			delete stmt;
+		}
+		program.clear();
+	}
+};
 int main(int argc, char *argv[]) {
 	/*
 	=====================================================================================================================================
@@ -47,8 +56,22 @@ int main(int argc, char *argv[]) {
 		auto tokens = tokenize(code);
 		Parser parser(tokens);
 		vector<Stmt *> program;
-		while (!parser.isAtEnd())
-			program.push_back(parser.parseStmt());
+		ASTCleaner cleanup_guard{program};
+		bool hadError = false;
+		while (!parser.isAtEnd()) {
+			try {
+				program.push_back(parser.parseStmt());
+			} catch (const LangError &e) {
+				hadError = true;
+				printErrorContext(code, e.line, e.col, p);
+				std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n\n";
+				parser.synchronize();
+			}
+		}
+		if (hadError) {
+			std::cerr << "\033[1;31mCompilation aborted due to syntax errors.\033[0m\n";
+			return 1;
+		}
 		int useVM;
 #ifdef VM_DEBUG_MODE
 		cout << "Choose Compiler: AST:0 VM:1 ";
@@ -118,7 +141,7 @@ int main(int argc, char *argv[]) {
 			}
 		}
 	} catch (const LangError &e) {
-		printErrorContext(code, e.line, e.col);
+		printErrorContext(code, e.line, e.col, p);
 		std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
 		std::cerr << "Program crashed with exit code " << e.code;
 	} catch (const std::exception &e) {
@@ -126,7 +149,7 @@ int main(int argc, char *argv[]) {
 	}
 	return 0;
 }
-void printErrorContext(const string &source, int line, int col) {
+void printErrorContext(const string &source, int line, int col, const std::filesystem::path &p) {
 	if (line <= 0)
 		return;
 	std::stringstream ss(source);
@@ -137,7 +160,7 @@ void printErrorContext(const string &source, int line, int col) {
 			if (!currentLineText.empty() && currentLineText.back() == '\r')
 				currentLineText.pop_back();
 			std::cerr << "Traceback (most recent call last):";
-			std::cerr << " File \"test.ymm\", [line: " << line << " | col: " << col << "]:" << "\n";
+			std::cerr << " File " << p.filename().string() << ", [line: " << line << " | col: " << col << "]:" << "\n";
 			std::cerr << ::strip(currentLineText, "\t") << "\n";
 			for (int i = 0; i < col; i++) {
 				if (i < currentLineText.size() && currentLineText[i] == '\t')
