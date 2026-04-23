@@ -1623,7 +1623,8 @@ class Parser {
 			Token opToken = tokens[pos - 1];
 			Expr *target = parsePrimary();
 			if (!dynamic_cast<VarExpr *>(target) &&
-				 !dynamic_cast<IndexExpr *>(target)) {
+				 !dynamic_cast<IndexExpr *>(target) &&
+				 !dynamic_cast<GetExpr *>(target)) {
 				throw SyntaxError("Cannot take reference of non-lvalue",
 					opToken.line, opToken.col);
 			}
@@ -2196,10 +2197,8 @@ class Parser {
 		}
 		if (match(TokenType::SWITCH)) {
 			Token t = tokens[pos - 1];
-			consume(TokenType::LPAREN, "Expected '(' after 'switch'");
 			Expr *target = parseExpr();
-			consume(TokenType::RPAREN, "Expected ')' after switch value");
-			consume(TokenType::COLON, "Expected ':' after ')'");
+			consume(TokenType::COLON, "Expected ':' after switch value");
 			consume(TokenType::LBRACE, "Expected '{' to open switch block");
 			vector<Case> cases;
 			bool expectingMore = true;
@@ -2379,12 +2378,10 @@ class Parser {
 			consume(TokenType::COLON, "Expected ':' after class name");
 			vector<string> parents;
 			if (match(TokenType::INHERITS)) {
-				consume(TokenType::LPAREN, "Expected '(' after inherits");
 				do {
 					consume(TokenType::IDENTIFIER, "Expected parent class name");
 					parents.push_back(tokens[pos - 1].value);
 				} while (match(TokenType::COMMA));
-				consume(TokenType::RPAREN, "Expected ')' after parents");
 				consume(TokenType::COLON,
 					"Expected ':' after inheritance declaration");
 			}
@@ -2903,7 +2900,7 @@ struct Value {
 		void *adress;
 	};
 	std::shared_ptr<HeapObject> ref;
-	static Value Reference(Value *p);
+	static Value Reference(Value *p, std::shared_ptr<HeapObject> owner);
 	static Value Int(long long v, bool locked = false, bool isConst = false);
 	static Value pInt(void *v, bool locked = false, bool isConst = false);
 	static Value BigInt(long long n);
@@ -3407,10 +3404,11 @@ struct SuperObject : HeapObject {
 		 : HeapObject(ValueType::SUPER), instance(inst), startClass(start) {}
 	string toString() const { return "<super: " + startClass->name + ">"; }
 };
-inline Value Value::Reference(Value *p) {
+inline Value Value::Reference(Value *p, std::shared_ptr<HeapObject> owner) {
 	Value v;
 	v.type = ValueType::REFERENCE;
 	v.ptr = p;
+	v.ref = owner;
 	return v;
 }
 inline Value Value::Int(long long v, bool locked, bool isConst) {
@@ -4361,115 +4359,19 @@ static inline std::string PrintStackForDebug(const std::vector<Value> &stack) {
 #ifdef VM_DEBUG_MODE
 			result += val->__DEBUGGING__NAME__;
 #endif
-			// result+= (" " + valueToString(*val));
+			result += (" " + valueToString(*val));
 		}
 		if (val != stack.end() - 1)
 			result += ", ";
 	}
 	return result + "] <- end";
 }
-static inline bool lessValue(const Value &a, const Value &b) {
-	if (a.type != b.type) {
-		bool aIsNum = (a.type == ValueType::INT || a.type == ValueType::FLOAT || a.type == ValueType::BIGINT);
-		bool bIsNum = (b.type == ValueType::INT || b.type == ValueType::FLOAT || b.type == ValueType::BIGINT);
-		if (aIsNum && bIsNum) {
-			if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
-				return a.asFloat() < b.asFloat();
-			}
-			BigIntObject tempA(0), tempB(0);
-			BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
-			BigIntObject *bb = (b.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(b.ref.get()) : &(tempB = BigIntObject(b.asInt()));
-			return *ba < *bb;
-		}
-		return a.type < b.type;
-	}
-	if (a.type == ValueType::REFERENCE) {
-		if (b.type == ValueType::REFERENCE) {
-			return lessValue(*a.ptr, *b.ptr);
-		} else {
-			return lessValue(*a.ptr, b);
-		}
-	} else if (b.type == ValueType::REFERENCE) {
-		return lessValue(a, *b.ptr);
-	}
-	switch (a.type) {
-	case ValueType::INT:
-		return a.asInt() < b.asInt();
-	case ValueType::FLOAT:
-		return a.asFloat() < b.asFloat();
-	case ValueType::STRING:
-		return a.asString() < b.asString();
-	case ValueType::BOOL:
-		return a.asBool() < b.asBool();
-	case ValueType::BIGINT: {
-		auto *b1 = static_cast<BigIntObject *>(a.ref.get());
-		auto *b2 = static_cast<BigIntObject *>(b.ref.get());
-		return *b1 < *b2;
-	}
-	case ValueType::TUPLE: {
-		auto *t1 = static_cast<TupleObject *>(a.ref.get());
-		auto *t2 = static_cast<TupleObject *>(b.ref.get());
-		if (t1->elements.empty() && t2->elements.empty())
-			return false;
-		if (t1->elements.empty())
-			return true;
-		if (t2->elements.empty())
-			return false;
-		return lessValue(t1->elements[0], t2->elements[0]);
-	}
-	case ValueType::VECTOR: {
-		auto *v1 = static_cast<VectorObject *>(a.ref.get());
-		auto *v2 = static_cast<VectorObject *>(b.ref.get());
-		bool hasFloat = false;
-		for (const auto &val : v1->elements)
-			if (val.type == ValueType::FLOAT)
-				hasFloat = true;
-		for (const auto &val : v2->elements)
-			if (val.type == ValueType::FLOAT)
-				hasFloat = true;
-		if (hasFloat) {
-			double mag1 = 0.0, mag2 = 0.0;
-			for (const auto &val : v1->elements) {
-				double v = val.asFloat();
-				mag1 += (v * v);
-			}
-			for (const auto &val : v2->elements) {
-				double v = val.asFloat();
-				mag2 += (v * v);
-			}
-			return mag1 < mag2;
-		} else {
-			Value mag1 = Value::Int(0);
-			for (const auto &val : v1->elements) {
-				Value sq = BigIntObject::mul(val, val);
-				mag1 = BigIntObject::add(mag1, sq);
-			}
-			Value mag2 = Value::Int(0);
-			for (const auto &val : v2->elements) {
-				Value sq = BigIntObject::mul(val, val);
-				mag2 = BigIntObject::add(mag2, sq);
-			}
-			return lessValue(mag1, mag2);
-		}
-	}
-	case ValueType::LIST: {
-		auto *l1 = static_cast<ListObject *>(a.ref.get());
-		auto *l2 = static_cast<ListObject *>(b.ref.get());
-		return std::lexicographical_compare(
-			l1->elements.begin(), l1->elements.end(), l2->elements.begin(),
-			l2->elements.end(),
-			// Recursive call for elements
-			[](const Value &x, const Value &y) { return lessValue(x, y); });
-	}
-	default:
-		return false;
-	}
-}
+static inline bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver);
 struct CacheKeyCmp {
-	bool operator()(const vector<Value> &a, const vector<Value> &b) const {
+	bool operator()(const vector<Value> &a, const vector<Value> &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver) const {
 		return std::lexicographical_compare(
 			a.begin(), a.end(), b.begin(), b.end(),
-			[](const Value &x, const Value &y) { return lessValue(x, y); });
+			[&](const Value &x, const Value &y) { return lessValue(x, y, globals, methodResolver, importResolver); });
 	}
 };
 struct FuncVal {
@@ -4769,23 +4671,23 @@ enum class Magic_Methods : uint8_t {
 
 	/*
 	================================================================
-			  5. LOGIC & BITS
-			  Explicit naming to separate Boolean logic from Bitwise logic
+			  5. LOGIC
+			  Explicit naming to Boolean logic
 	================================================================
 	*/
 	// Standard            // Reverse
-	__bit_and__,
-	__r_bit_and__, // (was __and__)
-	__bit_or__,
-	__r_bit_or__, // (was __or__)
-	__bit_xor__,
-	__r_bit_xor__, // (was __xor__)
-	__bit_nand__,
-	__r_bit_nand__, // (was __nand__)
-	__bit_nor__,
-	__r_bit_nor__, // (was __nor__)
-	__bit_nxor__,
-	__r_bit_nxor__, // (was __nxor__)
+	__and__,
+	__r_and__, // (was __and__)
+	__or__,
+	__r_or__, // (was __or__)
+	__xor__,
+	__r_xor__, // (was __xor__)
+	__nand__,
+	__r_nand__, // (was __nand__)
+	__nor__,
+	__r_nor__, // (was __nor__)
+	__nxor__,
+	__r_nxor__, // (was __nxor__)
 
 	/*
 	================================================================
@@ -4818,12 +4720,15 @@ enum class Magic_Methods : uint8_t {
 			  Moving away from "getitem/setitem" to "at/put" style
 	================================================================
 	*/
-	__count__,	 // (was __len__)    Size of container
-	__at__,		 // (was __get__)    val = obj[key]
-	__put__,		 // (was __set__)    obj[key] = val
-	__has__,		 // (was __contains__) if x in obj
-	__missing__, // (was __getattr__) Called when property lookup fails
-	__assign__,	 // (was __setattr__) Called when setting a property
+	__count__, // (was __len__)    Size of container
+	__at__,	  // (was __get__)    val = obj[key]
+	__put__,	  // (was __set__)    obj[key] = val
+	__call__,
+	__has__, // (was __contains__) if x is in obj
+	__lacks__,
+	__missing__,
+	__not__missing__, // (was __getattr__) if x is not in obj
+	__assign__,			// (was __setattr__) Called when setting a property
 
 	/*
 	================================================================
@@ -4840,6 +4745,7 @@ enum class Magic_Methods : uint8_t {
 	================================================================
 	*/
 	__to_int__,		// (was __int__)
+	__to_float__,	// (was __float__)
 	__to_string__, // (was __string__)
 	__to_bool__,	// (was __bool__)
 	__to_list__,	// (was __list__)
@@ -4847,6 +4753,7 @@ enum class Magic_Methods : uint8_t {
 	__to_dict__,	// (was __dict__)
 	__to_tuple__,	// (was __tuple__)
 	__to_vector__, // (was __vector__)
+	__to_range__,	// (was __range__)
 
 	/*
 	================================================================
@@ -4963,41 +4870,41 @@ static inline std::string magic_methods_to_string(Magic_Methods Magic_method) {
 	case Magic_Methods::__invert__: // ~ operator overload for unary bitwise
 											  // not ~obj
 		return "__invert__";
-	case Magic_Methods::__bit_and__: // and operator overload for normal
-												// bitwise and obj1 and obj2
+	case Magic_Methods::__and__: // and operator overload for normal
+										  // bitwise and obj1 and obj2
 		return "__bit_and__";
-	case Magic_Methods::__r_bit_and__: // and operator overload for reverse
-												  // bitwise and obj2 and obj1
+	case Magic_Methods::__r_and__: // and operator overload for reverse
+											 // bitwise and obj2 and obj1
 		return "__r_bit_and__";
-	case Magic_Methods::__bit_or__: // or operator overload for normal
-											  // bitwise or obj1 or obj2
+	case Magic_Methods::__or__: // or operator overload for normal
+										 // bitwise or obj1 or obj2
 		return "__bit_or__";
-	case Magic_Methods::__r_bit_or__: // or operator overload for reverse
-												 // bitwise or obj2 or obj1
+	case Magic_Methods::__r_or__: // or operator overload for reverse
+											// bitwise or obj2 or obj1
 		return "__r_bit_or__";
-	case Magic_Methods::__bit_xor__: // xor operator overload for normal
-												// bitwise xor obj1 xor obj2
+	case Magic_Methods::__xor__: // xor operator overload for normal
+										  // bitwise xor obj1 xor obj2
 		return "__bit_xor__";
-	case Magic_Methods::__r_bit_xor__: // xor operator overload for reverse
-												  // bitwise xor obj2 xor obj1
+	case Magic_Methods::__r_xor__: // xor operator overload for reverse
+											 // bitwise xor obj2 xor obj1
 		return "__r_bit_xor__";
-	case Magic_Methods::__bit_nand__: // nand operator overload for normal
-												 // bitwise nand obj1 nand obj2
+	case Magic_Methods::__nand__: // nand operator overload for normal
+											// bitwise nand obj1 nand obj2
 		return "__bit_nand__";
-	case Magic_Methods::__r_bit_nand__: // nand operator overload for reverse
-													// bitwise nand obj2 nand obj1
+	case Magic_Methods::__r_nand__: // nand operator overload for reverse
+											  // bitwise nand obj2 nand obj1
 		return "__r_bit_nand__";
-	case Magic_Methods::__bit_nor__: // nor operator overload for normal
-												// bitwise nor obj1 nor obj2
+	case Magic_Methods::__nor__: // nor operator overload for normal
+										  // bitwise nor obj1 nor obj2
 		return "__bit_nor__";
-	case Magic_Methods::__r_bit_nor__: // nor operator overload for reverse
-												  // bitwise nor obj2 nor obj1
+	case Magic_Methods::__r_nor__: // nor operator overload for reverse
+											 // bitwise nor obj2 nor obj1
 		return "__r_bit_nor__";
-	case Magic_Methods::__bit_nxor__: // nxor operator overload for normal
-												 // bitwise nxor obj1 nxor obj2
+	case Magic_Methods::__nxor__: // nxor operator overload for normal
+											// bitwise nxor obj1 nxor obj2
 		return "__bit_nxor__";
-	case Magic_Methods::__r_bit_nxor__: // nxor operator overload for reverse
-													// bitwise nxor obj2 nxor obj1
+	case Magic_Methods::__r_nxor__: // nxor operator overload for reverse
+											  // bitwise nxor obj2 nxor obj1
 		return "__r_bit_nxor__";
 	case Magic_Methods::__and_equals__: // &= operator overload for bitwise
 													// and assignment obj1 &= obj2
@@ -8985,17 +8892,22 @@ struct ByteCodeCompiler {
 			emitByte(OpCode::OP_IMPORT, imp->line, 0);
 			chunk->write((uint8_t)imp->symbols.size(), imp->line, 0);
 			if (imp->symbols.empty()) {
-				if (scopeDepth > 0)
+				if (scopeDepth > 0) {
 					addLocal(imp->libName);
-				emitIdentifier(OpCode::OP_DEFINE_VAR, imp->libName, imp->line,
-					0);
-				chunk->write(0, imp->line, 0);
-			} else {
-				for (const auto &sym : imp->symbols) {
-					if (scopeDepth > 0)
-						addLocal(sym);
-					emitIdentifier(OpCode::OP_DEFINE_VAR, sym, imp->line, 0);
+				} else {
+					emitIdentifier(OpCode::OP_DEFINE_VAR, imp->libName, imp->line, 0);
 					chunk->write(0, imp->line, 0);
+				}
+			} else {
+				if (scopeDepth > 0) {
+					for (const auto &sym : imp->symbols) {
+						addLocal(sym);
+					}
+				} else {
+					for (int i = (int)imp->symbols.size() - 1; i >= 0; i--) {
+						emitIdentifier(OpCode::OP_DEFINE_VAR, imp->symbols[i], imp->line, 0);
+						chunk->write(0, imp->line, 0);
+					}
 				}
 			}
 			break;
@@ -9854,7 +9766,9 @@ struct ByteCodeCompiler {
 #else
 #define DISPATCH() goto loop_start
 #endif
-
+// Helper: Attempts to synchronously execute a native dunder method.
+// Returns a pair: <bool found, Value result>
+static inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver);
 struct VM {
 	std::vector<Value> stack;
 	std::shared_ptr<Env> globals;
@@ -10016,20 +9930,28 @@ struct VM {
 				}
 			}
 		};
+		auto invokeUnaryDunder = [&](Value a, const string &opName, int line, int col) -> bool {
+			if (a.type == ValueType::INSTANCE) {
+				auto *instanceA = static_cast<InstanceObject *>(a.ref.get());
+				ClassObject *clsA = instanceA->klass;
+				for (auto *ancestor : clsA->mro) {
+					if (ancestor->methods.count(opName)) {
+						stack.push_back(a);
+						Value objVal;
+						objVal.type = ValueType::CLASS;
+						objVal.ref = std::shared_ptr<HeapObject>(clsA, [](HeapObject *) {});
+						stack.push_back(objVal);
+						callValue(ancestor->methods[opName].func, 2, line, col);
+						return true;
+					}
+				}
+			}
+			return false;
+		};
 		while (true) {
 			Chunk *currentChunk = frame->function ? frame->function->chunk : &chunk;
 			try {
 				OpCode instruction;
-				// --- DEBUGGER START ---
-// #ifdef VM_DEBUG_MODE
-// 				if (DEBUGGER_MODE_IS_ENABLED) {
-// 					int currentOffset = (int)(ip - currentChunk->code.data());
-// 					std::cout << "LINE: " << std::left << std::setw(4) << line << " | ";
-// 					std::cout << std::left << std::setw(18) << OpCodeToString((OpCode)*ip) << " | " << PrintStackForDebug(stack) << "\n";
-// 					std::cout << "Stack Size: " << stack.size() << "\n";
-// 				}
-// #endif
-// --- DEBUGGER END ---
 #ifdef USE_COMPUTED_GOTOS
 				DISPATCH();
 #else
@@ -10137,57 +10059,131 @@ struct VM {
 							uint8_t nameIdx = *ip++;
 							string name = currentChunk->constants[nameIdx].asString();
 							Value obj = pop();
-							if (obj.type == ValueType::INSTANCE) {
-								auto *instance =
-									static_cast<InstanceObject *>(obj.ref.get());
-								checkFieldAccess(instance->klass, name, line, col);
-								if (instance->fields.count(name))
-									stack.push_back(instance->fields[name]);
-								else {
-									ClassObject *cls = instance->klass;
+							if (name == "__mro__" || name == "__var_count__" || name == "__var_names__" ||
+								 name == "__function_count__" || name == "__function_names__" ||
+								 name == "__all_count__" || name == "__all_names__") {
+								ClassObject *cls = nullptr;
+								InstanceObject *inst = nullptr;
+								if (obj.type == ValueType::INSTANCE) {
+									inst = static_cast<InstanceObject *>(obj.ref.get());
+									cls = inst->klass;
+								} else if (obj.type == ValueType::CLASS) {
+									cls = static_cast<ClassObject *>(obj.ref.get());
+								}
+								if (name == "__mro__") {
+									auto mroList = std::make_shared<ListObject>();
+									if (cls) {
+										for (auto *ancestor : cls->mro) {
+											mroList->elements.push_back(Value::String(ancestor->name));
+										}
+									}
+									stack.push_back(Value::List(mroList->elements));
+								} else {
+									bool wantsNames = (name.find("_names__") != string::npos);
+									bool wantsVars = (name.find("__var_") != string::npos || name.find("__all_") != string::npos);
+									bool wantsFuncs = (name.find("__function_") != string::npos || name.find("__all_") != string::npos);
+									std::unordered_set<std::string> seen;
+									auto nameList = std::make_shared<ListObject>();
+									auto addName = [&](const std::string &n) {
+										if (seen.insert(n).second && wantsNames) {
+											nameList->elements.push_back(Value::String(n));
+										}
+									};
+									if (cls) {
+										if (wantsVars) {
+											if (inst) {
+												for (const auto &pair : inst->fields) {
+													AccessLevel acc = cls->fieldAccess.count(pair.first) ? cls->fieldAccess[pair.first] : AccessLevel::PUBLIC;
+													if (acc == AccessLevel::PUBLIC)
+														addName(pair.first);
+												}
+											}
+											for (auto *ancestor : cls->mro) {
+												for (const auto &pair : ancestor->staticFields) {
+													AccessLevel acc = ancestor->fieldAccess.count(pair.first) ? ancestor->fieldAccess[pair.first] : AccessLevel::PUBLIC;
+													if (acc == AccessLevel::PUBLIC)
+														addName(pair.first);
+												}
+											}
+										}
+										if (wantsFuncs) {
+											for (auto *ancestor : cls->mro) {
+												for (const auto &pair : ancestor->methods) {
+													if (pair.second.access == AccessLevel::PUBLIC) {
+														addName(pair.first);
+													}
+												}
+											}
+										}
+									}
+									if (wantsNames) {
+										stack.push_back(Value::List(nameList->elements));
+									} else {
+										stack.push_back(Value::Int(seen.size()));
+									}
+								}
+							} else {
+								std::shared_ptr<HeapObject> lifeline = obj.ref;
+								if (obj.type == ValueType::REFERENCE) {
+									if (obj.ptr == nullptr) {
+										throw RuntimeError("Null pointer dereference.", line, col);
+									}
+									obj = *(obj.ptr);
+									if (obj.type == ValueType::INSTANCE)
+										lifeline = obj.ref;
+								}
+								if (obj.type == ValueType::INSTANCE) {
+									auto *instance =
+										static_cast<InstanceObject *>(obj.ref.get());
+									checkFieldAccess(instance->klass, name, line, col);
+									if (instance->fields.count(name))
+										stack.push_back(instance->fields[name]);
+									else {
+										ClassObject *cls = instance->klass;
+										bool found = false;
+										for (auto *ancestor : cls->mro) {
+											if (ancestor->methods.count(name)) {
+												stack.push_back(ancestor->methods[name].func);
+												found = true;
+												break;
+											}
+											if (ancestor->staticFields.count(name)) {
+												stack.push_back(ancestor->staticFields[name]);
+												found = true;
+												break;
+											}
+										}
+										if (!found)
+											throw AttributeError("Instance of '" + cls->name +
+																			"' has no attribute '" +
+																			name + "'",
+												line, col);
+									}
+								} else if (obj.type == ValueType::CLASS) {
+									auto *cls = static_cast<ClassObject *>(obj.ref.get());
 									bool found = false;
 									for (auto *ancestor : cls->mro) {
-										if (ancestor->methods.count(name)) {
-											stack.push_back(ancestor->methods[name].func);
-											found = true;
-											break;
-										}
 										if (ancestor->staticFields.count(name)) {
 											stack.push_back(ancestor->staticFields[name]);
 											found = true;
 											break;
 										}
+										if (ancestor->methods.count(name)) {
+											stack.push_back(ancestor->methods[name].func);
+											found = true;
+											break;
+										}
 									}
 									if (!found)
-										throw AttributeError("Instance of '" + cls->name +
-																		"' has no attribute '" +
-																		name + "'",
+										throw AttributeError("Class '" + cls->name +
+																		"' has no attribute '" + name +
+																		"'",
 											line, col);
-								}
-							} else if (obj.type == ValueType::CLASS) {
-								auto *cls = static_cast<ClassObject *>(obj.ref.get());
-								bool found = false;
-								for (auto *ancestor : cls->mro) {
-									if (ancestor->staticFields.count(name)) {
-										stack.push_back(ancestor->staticFields[name]);
-										found = true;
-										break;
-									}
-									if (ancestor->methods.count(name)) {
-										stack.push_back(ancestor->methods[name].func);
-										found = true;
-										break;
-									}
-								}
-								if (!found)
-									throw AttributeError("Class '" + cls->name +
-																	"' has no attribute '" + name +
-																	"'",
-										line, col);
-							} else
-								throw AttributeError(
-									"Only instances and classes have properties", line,
-									col);
+								} else
+									throw AttributeError(
+										"Only instances and classes have properties", line,
+										col);
+							}
 						}
 						DISPATCH();
 					}
@@ -10196,20 +10192,29 @@ struct VM {
 							uint8_t nameIdx = *ip++;
 							string name = currentChunk->constants[nameIdx].asString();
 							Value obj = pop();
+							std::shared_ptr<HeapObject> lifeline = obj.ref;
+							if (obj.type == ValueType::REFERENCE) {
+								if (obj.ptr == nullptr) {
+									throw RuntimeError("Null pointer dereference.", line, col);
+								}
+								obj = *(obj.ptr);
+								if (obj.type == ValueType::INSTANCE)
+									lifeline = obj.ref;
+							}
 							if (obj.type == ValueType::INSTANCE) {
-								auto *instance =
-									static_cast<InstanceObject *>(obj.ref.get());
+								auto *instance = static_cast<InstanceObject *>(obj.ref.get());
 								checkFieldAccess(instance->klass, name, line, col);
+								if (instance->fields.find(name) == instance->fields.end()) {
+									instance->fields[name] = Value::None();
+								}
 								Value *ptr = &instance->fields[name];
-								stack.push_back(Value::Reference(ptr));
+								stack.push_back(Value::Reference(ptr, obj.ref));
 							} else if (obj.type == ValueType::CLASS) {
 								auto *cls = static_cast<ClassObject *>(obj.ref.get());
 								Value *ptr = &cls->staticFields[name];
-								stack.push_back(Value::Reference(ptr));
+								stack.push_back(Value::Reference(ptr, obj.ref));
 							} else {
-								throw TypeError(
-									"Cannot take reference of property on non-object",
-									line, col);
+								throw TypeError("Cannot take reference of property on non-object", line, col);
 							}
 						}
 						DISPATCH();
@@ -10222,20 +10227,24 @@ struct VM {
 							AccessLevel access = (AccessLevel)accessByte;
 							Value val = pop();
 							Value obj = pop();
+							std::shared_ptr<HeapObject> lifeline = obj.ref;
+							if (obj.type == ValueType::REFERENCE) {
+								if (obj.ptr == nullptr) {
+									throw RuntimeError("Null pointer dereference.", line, col);
+								}
+								obj = *(obj.ptr);
+								if (obj.type == ValueType::INSTANCE)
+									lifeline = obj.ref;
+							}
 							if (obj.type == ValueType::INSTANCE) {
 								auto *instance = static_cast<InstanceObject *>(obj.ref.get());
 								checkFieldAccess(instance->klass, name, line, col);
 								instance->fields[name] = val;
-								if (access != AccessLevel::PUBLIC) {
-									instance->klass->fieldAccess[name] = access;
-								}
-
+								instance->klass->fieldAccess[name] = access;
 							} else if (obj.type == ValueType::CLASS) {
 								auto *cls = static_cast<ClassObject *>(obj.ref.get());
 								cls->staticFields[name] = val;
-								if (access != AccessLevel::PUBLIC) {
-									cls->fieldAccess[name] = access;
-								}
+								cls->fieldAccess[name] = access;
 							} else
 								throw AttributeError("Cannot set property on non-object",
 									line, col);
@@ -10308,11 +10317,8 @@ struct VM {
 									for (int i = 0; i < argCount; i++)
 										args.push_back(pop());
 									std::reverse(args.begin(), args.end());
-									stack.push_back(instance); // 'self'
+									stack.push_back(instance);
 									stack.push_back(callee);
-									// Each function of class has access to both self and
-									// obj by default so we need to somehow add the obj as
-									// an arg as well...
 									for (auto &a : args)
 										stack.push_back(a);
 									callValue(initMethod, argCount + 2, line, col);
@@ -10321,49 +10327,35 @@ struct VM {
 										pop();
 									stack.push_back(instance);
 								}
-							}
-							// --- ASMJIT HOT-SPOT DETECTOR START ---
-							// else if (callee.type == ValueType::FUNCTION) {
-							// 	auto *func = static_cast<FunctionObject *>(callee.ref.get());
-							// 	if (func->nativeCode != nullptr) {
-							// 		long long nativeResult = 0;
-							// 		int bailoutOffset = func->nativeCode(stack.data(), &nativeResult);
-
-							// 		if (bailoutOffset == -1) {
-							// 			for (int i = 0; i < argCount; i++)
-							// 				pop();
-							// 			stack.push_back(Value::Int(nativeResult));
-							// 		} else {
-							// 			std::cout << "[JIT] Type Guard Failed at offset " << bailoutOffset << "! Falling back to C++..." << std::endl;
-							// 			callValue(callee, argCount, line, col);
-							// 			frames.back().ip = func->chunk->code.data() + bailoutOffset;
-							// 		}
-							// 	} else {
-							// 		func->callCount++;
-							// 		if (func->callCount > 50) {
-							// 			long long nativeResult = 0;
-							// 			std::cout << "\n[JIT] Hot-spot detected! Rewiring " << "to native machine code..." << std::endl;
-							// 			func->nativeCode = AsmJitCompiler::compileChunk(func->chunk);
-
-							// 			int bailoutOffset = func->nativeCode(stack.data(), &nativeResult);
-
-							// 			if (bailoutOffset == -1) {
-							// 				for (int i = 0; i < argCount; i++)
-							// 					pop();
-							// 				stack.push_back(Value::Int(nativeResult));
-							// 			} else {
-							// 				std::cout << "[JIT] Type Guard Failed at offset " << bailoutOffset << "! Falling back to C++..." << std::endl;
-							// 				callValue(callee, argCount, line, col);
-							// 				frames.back().ip = func->chunk->code.data() + bailoutOffset;
-							// 			}
-							// 		} else {
-							// 			// 4. Still cold. Run normally in the slow C++
-							// 			// interpreter
-							// 			callValue(callee, argCount, line, col);
-							// 		}
-							// 	}
-							// }
-							else
+							} else if (callee.type == ValueType::INSTANCE) {
+								auto *inst = static_cast<InstanceObject *>(callee.ref.get());
+								ClassObject *cls = inst->klass;
+								ClassObject::MethodInfo *callMethod = nullptr;
+								ClassObject *methodOwner = nullptr;
+								for (auto *ancestor : cls->mro) {
+									if (ancestor->methods.count("__call__")) {
+										callMethod = &ancestor->methods["__call__"];
+										methodOwner = ancestor;
+										break;
+									}
+								}
+								if (callMethod) {
+									Value classObjVal;
+									classObjVal.type = ValueType::CLASS;
+									classObjVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject *) {});
+									vector<Value> args;
+									for (int i = 0; i < argCount; i++)
+										args.push_back(pop());
+									std::reverse(args.begin(), args.end());
+									stack.push_back(callee);
+									stack.push_back(classObjVal);
+									for (auto &a : args)
+										stack.push_back(a);
+									callValue(callMethod->func, argCount + 2, line, col);
+								} else {
+									throw TypeError("Instance object is not callable", line, col);
+								}
+							} else
 								callValue(callee, argCount, line, col);
 						}
 						DISPATCH();
@@ -10590,7 +10582,13 @@ struct VM {
 							uint8_t slot = *ip++;
 							Value &slotVal = stack[frame->basePointer + slot];
 							Value newVal = stack.back();
-							if (slotVal.type == ValueType::REFERENCE) {
+							if (newVal.type == ValueType::REFERENCE) {
+								bool wasConst = slotVal.isConst;
+								bool wasLocked = slotVal.isLocked;
+								slotVal = newVal;
+								slotVal.isConst = wasConst;
+								slotVal.isLocked = wasLocked;
+							} else if (slotVal.type == ValueType::REFERENCE) {
 								if (slotVal.isConst)
 									throw OwnershipError("Cannot assign to const reference",
 										line, col);
@@ -10631,9 +10629,14 @@ struct VM {
 						{
 							uint8_t slot = *ip++;
 							Value *ptr = &stack[frame->basePointer + slot];
-							if (ptr->type == ValueType::REFERENCE)
-								ptr = ptr->ptr;
-							stack.push_back(Value::Reference(ptr));
+							if (!invokeUnaryDunder(*ptr, "__ref__", line, col)) {
+								std::shared_ptr<HeapObject> owner = nullptr;
+								if (ptr->type == ValueType::REFERENCE) {
+									owner = ptr->ref;
+									ptr = ptr->ptr;
+								}
+								stack.push_back(Value::Reference(ptr, owner));
+							}
 						}
 						DISPATCH();
 					}
@@ -10643,7 +10646,9 @@ struct VM {
 							string name = currentChunk->constants[nameIndex].asString();
 							Var &v = globals->lookup(name);
 							Value *ptr = v.alias ? v.alias : &v.value;
-							stack.push_back(Value::Reference(ptr));
+							if (!invokeUnaryDunder(*ptr, "__ref__", line, col)) {
+								stack.push_back(Value::Reference(ptr, nullptr));
+							}
 						}
 						DISPATCH();
 					}
@@ -10652,6 +10657,7 @@ struct VM {
 							Value index = pop();
 							Value base = pop();
 							Value *ptr = nullptr;
+							std::shared_ptr<HeapObject> owner = base.ref;
 							if (base.type == ValueType::LIST) {
 								auto *list = static_cast<ListObject *>(base.ref.get());
 								long long idx = index.asInt();
@@ -10663,7 +10669,7 @@ struct VM {
 							} else
 								throw OwnershipError("Cannot take reference of this type",
 									line, col);
-							stack.push_back(Value::Reference(ptr));
+							stack.push_back(Value::Reference(ptr, owner));
 						}
 						DISPATCH();
 					}
@@ -10786,54 +10792,14 @@ struct VM {
 						Value b = pop();
 						Value a = pop();
 						if (!invokeBinaryDunder(a, b, "__plus__", "__r_plus__", line, col)) {
-							// DUNDER FAILED: Do standard math inside this else block!
 							try {
 								stack.push_back(EvaluateConstBinary(TokenType::PLUS, a, b));
 							} catch (const std::runtime_error &e) {
 								throw ValueError(e.what(), line, col);
 							}
-							// if (a.type == ValueType::INT && b.type == ValueType::INT) {
-							// 	long long res = a.iVal + b.iVal;
-							// 	bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;
-							// 	if (overflow)
-							// 		stack.push_back(BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
-							// 	else
-							// 		stack.push_back(Value::Int(res));
-							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-							// 	stack.push_back(BigIntObject::add(a, b));
-							// } else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
-							// 	// Temporary strings created here are safely destroyed when scope closes!
-							// 	stack.push_back(Value::String(valueToString(a) + valueToString(b)));
-							// } else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-							// 	auto *v1 = static_cast<VectorObject *>(a.ref.get());
-							// 	auto *v2 = static_cast<VectorObject *>(b.ref.get());
-							// 	if (v1->elements.size() != v2->elements.size())
-							// 		throw ValueError("Vector dimension mismatch", line, 0);
-							// 	vector<Value> res; // <-- THIS WAS THE 11MB LEAK!
-							// 	res.reserve(v1->elements.size());
-							// 	for (size_t i = 0; i < v1->elements.size(); i++) {
-							// 		Value x = v1->elements[i];
-							// 		Value y = v2->elements[i];
-							// 		if (x.type == ValueType::INT && y.type == ValueType::INT) {
-							// 			long long r = x.iVal + y.iVal;
-							// 			bool ovf = ((x.iVal ^ r) & (y.iVal ^ r)) < 0;
-							// 			if (ovf)
-							// 				res.push_back(BigIntObject::add(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
-							// 			else
-							// 				res.push_back(Value::Int(r));
-							// 		} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
-							// 			res.push_back(BigIntObject::add(x, y));
-							// 		} else {
-							// 			res.push_back(Value::Float(x.asFloat() + y.asFloat()));
-							// 		}
-							// 	}
-							// 	stack.push_back(Value::Vector(res));
-							// } else {
-							// 	stack.push_back(Value::Float(a.asFloat() + b.asFloat()));
-							// }
 						}
 					}
-						DISPATCH(); // Safe to jump for BOTH dunder success and standard math!
+						DISPATCH();
 					}
 					OP(OP_ISUB) : {
 						bool goToSub = false;
@@ -10861,44 +10827,6 @@ struct VM {
 							} catch (const std::runtime_error &e) {
 								throw ValueError(e.what(), line, col);
 							}
-							// if (a.type == ValueType::INT && b.type == ValueType::INT) {
-							// 	long long res = a.iVal - b.iVal;
-							// 	bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
-							// 	if (overflow)
-							// 		stack.push_back(BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
-							// 	else
-							// 		stack.push_back(Value::Int(res));
-							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-							// 	stack.push_back(BigIntObject::sub(a, b));
-							// } else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
-							// 	stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
-							// } else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-							// 	auto *v1 = static_cast<VectorObject *>(a.ref.get());
-							// 	auto *v2 = static_cast<VectorObject *>(b.ref.get());
-							// 	if (v1->elements.size() != v2->elements.size())
-							// 		throw ValueError("Vector dimension mismatch", line, col);
-							// 	vector<Value> res;
-							// 	res.reserve(v1->elements.size());
-							// 	for (size_t i = 0; i < v1->elements.size(); i++) {
-							// 		Value x = v1->elements[i];
-							// 		Value y = v2->elements[i];
-							// 		if (x.type == ValueType::INT && y.type == ValueType::INT) {
-							// 			long long r = x.iVal - y.iVal;
-							// 			bool ovf = ((x.iVal ^ y.iVal) & (x.iVal ^ r)) < 0;
-							// 			if (ovf)
-							// 				res.push_back(BigIntObject::sub(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
-							// 			else
-							// 				res.push_back(Value::Int(r));
-							// 		} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
-							// 			res.push_back(BigIntObject::sub(x, y));
-							// 		} else {
-							// 			res.push_back(Value::Float(x.asFloat() - y.asFloat()));
-							// 		}
-							// 	}
-							// 	stack.push_back(Value::Vector(res));
-							// } else {
-							// 	stack.push_back(Value::Float(a.asFloat() - b.asFloat()));
-							// }
 						}
 					}
 						DISPATCH();
@@ -10936,26 +10864,6 @@ struct VM {
 									throw ValueError(msg, line, col);
 								}
 							}
-							// if (a.type == ValueType::VECTOR) {
-							// 	if (!b.isNumber())
-							// 		throw TypeError("Vector can only be divided by a number", line, col);
-							// 	if (b.asFloat() == 0)
-							// 		throw DivisionByZeroError("Vector division by zero", line, col);
-							// 	auto *v = static_cast<VectorObject *>(a.ref.get());
-							// 	vector<Value> res;
-							// 	res.reserve(v->elements.size());
-							// 	double s = b.asFloat();
-							// 	for (const auto &elem : v->elements)
-							// 		res.push_back(Value::Float(elem.asFloat() / s));
-							// 	stack.push_back(Value::Vector(res));
-							// } else if (b.type == ValueType::VECTOR) {
-							// 	throw TypeError("Cannot divide by a vector", line, col);
-							// } else {
-							// 	double db = b.asFloat();
-							// 	if (db == 0)
-							// 		throw DivisionByZeroError("Division by zero", line, col);
-							// 	stack.push_back(Value::Float(a.asFloat() / db));
-							// }
 						}
 					}
 						DISPATCH();
@@ -11061,159 +10969,6 @@ struct VM {
 									}
 								}
 							}
-							// if (a.type == ValueType::STRING && b.type == ValueType::INT) {
-							// 	string res = "";
-							// 	string base = a.asString();
-							// 	long long count = b.asInt();
-							// 	if (count < 0)
-							// 		count = 0;
-							// 	if (count > 1000000)
-							// 		throw MemoryError("String repetition too large", line, col);
-							// 	for (long long i = 0; i < count; i++)
-							// 		res += base;
-							// 	stack.push_back(Value::String(res));
-							// } else if (a.type == ValueType::LIST && b.type == ValueType::INT) {
-							// 	auto *listObj = static_cast<ListObject *>(a.ref.get());
-							// 	long long count = b.asInt();
-							// 	vector<Value> res;
-							// 	if (count > 0) {
-							// 		if (listObj->elements.size() * count > 1000000)
-							// 			throw MemoryError("List repetition too large", line, col);
-							// 		res.reserve(listObj->elements.size() * count);
-							// 		for (int i = 0; i < count; i++) {
-							// 			for (const auto &elem : listObj->elements)
-							// 				res.push_back(deepCopy(elem));
-							// 		}
-							// 	}
-							// 	stack.push_back(Value::List(res));
-							// } else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-							// 	auto *v1 = static_cast<VectorObject *>(a.ref.get());
-							// 	auto *v2 = static_cast<VectorObject *>(b.ref.get());
-							// 	if (v1->elements.size() != v2->elements.size())
-							// 		throw ValueError("Vector dimension mismatch", line, col);
-							// 	Value dot = Value::Int(0);
-							// 	for (size_t i = 0; i < v1->elements.size(); i++) {
-							// 		Value x = v1->elements[i];
-							// 		Value y = v2->elements[i];
-							// 		Value prod;
-							// 		if (x.type == ValueType::INT && y.type == ValueType::INT) {
-							// 			long long r = x.iVal * y.iVal;
-							// 			bool ovf = (x.iVal != 0 && r / x.iVal != y.iVal);
-							// 			if (ovf)
-							// 				prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
-							// 			else
-							// 				prod = Value::Int(r);
-							// 		} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
-							// 			prod = BigIntObject::mul(x, y);
-							// 		} else {
-							// 			prod = Value::Float(x.asFloat() * y.asFloat());
-							// 		}
-							// 		if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
-							// 			long long r = dot.iVal + prod.iVal;
-							// 			bool ovf = ((dot.iVal ^ r) & (prod.iVal ^ r)) < 0;
-							// 			if (ovf)
-							// 				dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
-							// 			else
-							// 				dot = Value::Int(r);
-							// 		} else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) {
-							// 			dot = BigIntObject::add(dot, prod);
-							// 		} else {
-							// 			dot = Value::Float(dot.asFloat() + prod.asFloat());
-							// 		}
-							// 	}
-							// 	stack.push_back(dot);
-							// } else if ((a.type == ValueType::VECTOR && b.isNumber()) ||
-							// 			  (a.isNumber() && b.type == ValueType::VECTOR)) {
-							// 	VectorObject *vec =
-							// 		(a.type == ValueType::VECTOR)
-							// 			? static_cast<VectorObject *>(a.ref.get())
-							// 			: static_cast<VectorObject *>(b.ref.get());
-							// 	Value scalar = (a.type == ValueType::VECTOR) ? b : a;
-							// 	vector<Value> res;
-							// 	res.reserve(vec->elements.size());
-							// 	for (const auto &elem : vec->elements) {
-							// 		if (elem.type == ValueType::INT && scalar.type == ValueType::INT) {
-							// 			long long r = elem.iVal * scalar.iVal;
-							// 			bool ovf = (elem.iVal != 0 && r / elem.iVal != scalar.iVal);
-							// 			if (ovf)
-							// 				res.push_back(BigIntObject::mul(Value::BigInt(elem.iVal), Value::BigInt(scalar.iVal)));
-							// 			else
-							// 				res.push_back(Value::Int(r));
-							// 		} else if (elem.type == ValueType::BIGINT || scalar.type == ValueType::BIGINT) {
-							// 			res.push_back(BigIntObject::mul(elem, scalar));
-							// 		} else {
-							// 			res.push_back(Value::Float(elem.asFloat() * scalar.asFloat()));
-							// 		}
-							// 	}
-							// 	stack.push_back(Value::Vector(res));
-							// } else if ((a.type == ValueType::FLOAT && b.type == ValueType::BIGINT) ||
-							// 			  (a.type == ValueType::BIGINT && b.type == ValueType::FLOAT)) {
-							// 	Value fVal = (a.type == ValueType::FLOAT) ? a : b;
-							// 	Value intVal = (a.type == ValueType::FLOAT) ? b : a;
-							// 	auto *bigObj = static_cast<BigIntObject *>(intVal.ref.get());
-							// 	std::vector<uint32_t> tempChunks = bigObj->chunks;
-							// 	double floatBase = fVal.asFloat();
-							// 	double result = 0.0;
-							// 	double powerOf10 = 1.0;
-							// 	bool overflow = false;
-							// 	if (tempChunks.size() > 40) {
-							// 		overflow = true;
-							// 	} else {
-							// 		while (!tempChunks.empty() && !(tempChunks.size() == 1 && tempChunks[0] == 0)) {
-							// 			int digit = divMod10(tempChunks);
-							// 			result += (floatBase * digit * powerOf10);
-							// 			powerOf10 *= 10.0;
-							// 			if (std::isinf(result) || std::isinf(powerOf10)) {
-							// 				overflow = true;
-							// 				break;
-							// 			}
-							// 		}
-							// 	}
-							// 	if (!overflow) {
-							// 		if (bigObj->isNegative)
-							// 			result = -result;
-							// 		stack.push_back(Value::Float(result));
-							// 	} else {
-							// 		std::ostringstream ss;
-							// 		ss << std::fixed << std::setprecision(6) << std::abs(floatBase);
-							// 		std::string s = ss.str();
-							// 		size_t decimalPos = s.find('.');
-							// 		long long power = 0;
-							// 		if (decimalPos != std::string::npos) {
-							// 			power = s.length() - decimalPos - 1;
-							// 			s.erase(decimalPos, 1);
-							// 		}
-							// 		BigIntObject mantissa(0);
-							// 		BigIntObject ten(10);
-							// 		for (char c : s) {
-							// 			BigIntObject digit(c - '0');
-							// 			mantissa = (mantissa * ten) + digit;
-							// 		}
-							// 		BigIntObject product = (*bigObj) * mantissa;
-							// 		if (power > 0) {
-							// 			BigIntObject divisor(1);
-							// 			for (int i = 0; i < power; i++)
-							// 				divisor = divisor * ten;
-							// 			product = product / divisor;
-							// 		}
-							// 		bool resultNeg = (bigObj->isNegative) != (floatBase < 0);
-							// 		product.isNegative = resultNeg;
-							// 		stack.push_back(Value::BigInt(std::make_shared<BigIntObject>(product)));
-							// 	}
-							// } else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
-							// 	stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
-							// } else if (a.type == ValueType::INT && b.type == ValueType::INT) {
-							// 	long long res = a.iVal * b.iVal;
-							// 	bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
-							// 	if (overflow)
-							// 		stack.push_back(BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal)));
-							// 	else
-							// 		stack.push_back(Value::Int(res));
-							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-							// 	stack.push_back(BigIntObject::mul(a, b));
-							// } else {
-							// 	stack.push_back(Value::Float(a.asFloat() * b.asFloat()));
-							// }
 						}
 					}
 						DISPATCH();
@@ -11251,35 +11006,6 @@ struct VM {
 									throw ValueError(msg, line, col);
 								}
 							}
-							// if (a.type == ValueType::VECTOR) {
-							// 	if (!b.isNumber())
-							// 		throw TypeError("Vector can only be floor-divided by a number", line, col);
-							// 	if (b.asFloat() == 0)
-							// 		throw DivisionByZeroError("Vector floor division by zero", line, col);
-							// 	auto *v = static_cast<VectorObject *>(a.ref.get());
-							// 	vector<Value> res;
-							// 	res.reserve(v->elements.size());
-							// 	double db = b.asFloat();
-							// 	for (const auto &elem : v->elements) {
-							// 		if (elem.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-							// 			res.push_back(BigIntObject::div(elem, b));
-							// 		} else {
-							// 			res.push_back(Value::Int((long long)(elem.asFloat() / db)));
-							// 		}
-							// 	}
-							// 	stack.push_back(Value::Vector(res));
-							// } else if (b.type == ValueType::VECTOR) {
-							// 	throw TypeError("Cannot floor-divide by a vector", line, col);
-							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-							// 	if (b.asFloat() == 0)
-							// 		throw DivisionByZeroError("Division by zero", line, col);
-							// 	stack.push_back(BigIntObject::div(a, b));
-							// } else {
-							// 	double db = b.asFloat();
-							// 	if (db == 0)
-							// 		throw DivisionByZeroError("Division by zero", line, col);
-							// 	stack.push_back(Value::Int((long long)(a.asFloat() / db)));
-							// }
 						}
 					}
 						DISPATCH();
@@ -11315,17 +11041,6 @@ struct VM {
 									throw ValueError(msg, line, col);
 								}
 							}
-							// if (a.type == ValueType::INT && b.type == ValueType::INT) {
-							// 	if (b.iVal == 0)
-							// 		throw DivisionByZeroError("Modulo by zero", line, col);
-							// 	stack.push_back(Value::Int(a.iVal % b.iVal));
-							// } else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-							// 	stack.push_back(BigIntObject::mod(a, b));
-							// } else {
-							// 	if (b.asFloat() == 0)
-							// 		throw DivisionByZeroError("Modulo by zero", line, col);
-							// 	stack.push_back(Value::Float(fmod(a.asFloat(), b.asFloat())));
-							// }
 						}
 					}
 						DISPATCH();
@@ -11356,18 +11071,6 @@ struct VM {
 							} catch (const std::runtime_error &e) {
 								throw ValueError(e.what(), line, col);
 							}
-							// if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-							// 	stack.push_back(BigIntObject::pow(a, b));
-							// } else if (a.type == ValueType::INT && b.type == ValueType::INT) {
-							// 	double resultLog = (double)b.asInt() * std::log10(a.asInt());
-							// 	double maxLog = std::log10(LLONG_MAX);
-							// 	if (resultLog >= maxLog)
-							// 		stack.push_back(BigIntObject::pow(a, b));
-							// 	else
-							// 		stack.push_back(Value::Int(static_cast<long long>(pow(a.asInt(), b.asInt()))));
-							// } else {
-							// 	stack.push_back(Value::Float(pow(a.asFloat(), b.asFloat())));
-							// }
 						}
 					}
 						DISPATCH();
@@ -11377,10 +11080,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								stack.push_back(Value::Bool(a.iVal > b.iVal));
-							} else {
-								stack.push_back(Value::Bool(a.asFloat() > b.asFloat()));
+							if (!invokeBinaryDunder(a, b, "__greater__", "__less__", line, col)) {
+								bool result = lessValue(b, a, this->globals, this->methodResolver, this->importResolver);
+								stack.push_back(Value::Bool(result));
 							}
 						}
 						DISPATCH();
@@ -11389,10 +11091,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								stack.push_back(Value::Bool(a.iVal >= b.iVal));
-							} else {
-								stack.push_back(Value::Bool(a.asFloat() >= b.asFloat()));
+							if (!invokeBinaryDunder(a, b, "__greater_eq__", "__less_eq__", line, col)) {
+								bool result = !lessValue(a, b, this->globals, this->methodResolver, this->importResolver);
+								stack.push_back(Value::Bool(result));
 							}
 						}
 						DISPATCH();
@@ -11401,10 +11102,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								stack.push_back(Value::Bool(a.iVal < b.iVal));
-							} else {
-								stack.push_back(Value::Bool(a.asFloat() < b.asFloat()));
+							if (!invokeBinaryDunder(a, b, "__less__", "__greater__", line, col)) {
+								bool result = lessValue(a, b, this->globals, this->methodResolver, this->importResolver);
+								stack.push_back(Value::Bool(result));
 							}
 						}
 						DISPATCH();
@@ -11413,10 +11113,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							if (a.type == ValueType::INT && b.type == ValueType::INT) {
-								stack.push_back(Value::Bool(a.iVal <= b.iVal));
-							} else {
-								stack.push_back(Value::Bool(a.asFloat() <= b.asFloat()));
+							if (!invokeBinaryDunder(a, b, "__less_eq__", "__greater_eq__", line, col)) {
+								bool result = !lessValue(b, a, this->globals, this->methodResolver, this->importResolver);
+								stack.push_back(Value::Bool(result));
 							}
 						}
 						DISPATCH();
@@ -11425,7 +11124,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							stack.push_back(Value::Bool(a.looseEquals(b)));
+							if (!invokeBinaryDunder(a, b, "__equals__", "__equals__", line, col)) {
+								stack.push_back(Value::Bool(a.looseEquals(b)));
+							}
 						}
 						DISPATCH();
 					}
@@ -11433,7 +11134,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							stack.push_back(Value::Bool(!(a.looseEquals(b))));
+							if (!invokeBinaryDunder(a, b, "__differs__", "__differs__", line, col)) {
+								stack.push_back(Value::Bool(!(a.looseEquals(b))));
+							}
 						}
 						DISPATCH();
 					}
@@ -11441,7 +11144,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							stack.push_back(Value::Bool(a.strictEquals(b)));
+							if (!invokeBinaryDunder(a, b, "__identical__", "__identical__", line, col)) {
+								stack.push_back(Value::Bool(a.strictEquals(b)));
+							}
 						}
 						DISPATCH();
 					}
@@ -11449,7 +11154,9 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							stack.push_back(Value::Bool(!(a.strictEquals(b))));
+							if (!invokeBinaryDunder(a, b, "__distinct__", "__distinct__", line, col)) {
+								stack.push_back(Value::Bool(!(a.strictEquals(b))));
+							}
 						}
 						DISPATCH();
 					}
@@ -11563,55 +11270,95 @@ struct VM {
 						}
 						DISPATCH();
 					}
-					OP(OP_IS_IN) : OP(OP_IS_NOT_IN) : {
+					OP(OP_IS_IN) : {
 						{
-							Value rhs = pop();
-							Value lhs = pop();
-							bool found = false;
-							if (rhs.type == ValueType::STRING) {
-								if (lhs.type == ValueType::STRING) {
-									found =
-										rhs.asString().find(lhs.asString()) != string::npos;
-								}
-							} else if (rhs.type == ValueType::LIST) {
-								auto *list = static_cast<ListObject *>(rhs.ref.get());
-								for (const auto &item : list->elements) {
-									if (item.strictEquals(lhs)) {
-										found = true;
-										break;
+							Value rhs = pop(); // The container
+							Value lhs = pop(); // The item
+							if (!invokeBinaryDunder(rhs, lhs, "__has__", "__missing__", line, col)) {
+								bool found = false;
+								if (rhs.type == ValueType::STRING) {
+									if (lhs.type == ValueType::STRING) {
+										found = rhs.asString().find(lhs.asString()) != string::npos;
+									}
+								} else if (rhs.type == ValueType::LIST) {
+									auto *list = static_cast<ListObject *>(rhs.ref.get());
+									for (const auto &item : list->elements) {
+										if (item.strictEquals(lhs)) {
+											found = true;
+											break;
+										}
+									}
+								} else if (rhs.type == ValueType::DICT) {
+									auto *d = static_cast<DictObject *>(rhs.ref.get());
+									found = d->items.count(lhs) > 0;
+								} else if (rhs.type == ValueType::SET) {
+									auto *s = static_cast<SetObject *>(rhs.ref.get());
+									found = s->elements.count(lhs) > 0;
+								} else if (rhs.type == ValueType::RANGE) {
+									auto *rng = static_cast<RangeObject *>(rhs.ref.get());
+									if (lhs.isNumber()) {
+										double val = lhs.asFloat();
+										bool inBounds =
+											(rng->step > 0)
+												? (val >= rng->start &&
+													  (rng->endInclusive ? val <= rng->end : val < rng->end))
+												: (val <= rng->start &&
+													  (rng->endInclusive ? val >= rng->end : val > rng->end));
+										if (inBounds && !rng->isFloat && lhs.type == ValueType::INT) {
+											found = ((long long)(val - rng->start) % (long long)rng->step == 0);
+										} else {
+											found = inBounds;
+										}
 									}
 								}
-							} else if (rhs.type == ValueType::DICT) {
-								auto *d = static_cast<DictObject *>(rhs.ref.get());
-								found = d->items.count(lhs) > 0;
-							} else if (rhs.type == ValueType::SET) {
-								auto *s = static_cast<SetObject *>(rhs.ref.get());
-								found = s->elements.count(lhs) > 0;
-							} else if (rhs.type == ValueType::RANGE) {
-								auto *rng = static_cast<RangeObject *>(rhs.ref.get());
-								if (lhs.isNumber()) {
-									double val = lhs.asFloat();
-									bool inBounds =
-										(rng->step > 0)
-											? (val >= rng->start &&
-												  (rng->endInclusive ? val <= rng->end
-																			: val < rng->end))
-											: (val <= rng->start &&
-												  (rng->endInclusive ? val >= rng->end
-																			: val > rng->end));
-									if (inBounds && !rng->isFloat &&
-										 lhs.type == ValueType::INT) {
-										found = ((long long)(val - rng->start) %
-														(long long)rng->step ==
-													0);
-									} else {
-										found = inBounds;
-									}
-								}
+								stack.push_back(Value::Bool(found));
 							}
-							bool finalResult =
-								(instruction == OpCode::OP_IS_IN) ? found : !found;
-							stack.push_back(Value::Bool(finalResult));
+						}
+						DISPATCH();
+					}
+					OP(OP_IS_NOT_IN) : {
+						{
+							Value rhs = pop(); // The container
+							Value lhs = pop(); // The item
+							if (!invokeBinaryDunder(rhs, lhs, "__lacks__", "__not_missing__", line, col)) {
+								bool found = false;
+								if (rhs.type == ValueType::STRING) {
+									if (lhs.type == ValueType::STRING) {
+										found = rhs.asString().find(lhs.asString()) != string::npos;
+									}
+								} else if (rhs.type == ValueType::LIST) {
+									auto *list = static_cast<ListObject *>(rhs.ref.get());
+									for (const auto &item : list->elements) {
+										if (item.strictEquals(lhs)) {
+											found = true;
+											break;
+										}
+									}
+								} else if (rhs.type == ValueType::DICT) {
+									auto *d = static_cast<DictObject *>(rhs.ref.get());
+									found = d->items.count(lhs) > 0;
+								} else if (rhs.type == ValueType::SET) {
+									auto *s = static_cast<SetObject *>(rhs.ref.get());
+									found = s->elements.count(lhs) > 0;
+								} else if (rhs.type == ValueType::RANGE) {
+									auto *rng = static_cast<RangeObject *>(rhs.ref.get());
+									if (lhs.isNumber()) {
+										double val = lhs.asFloat();
+										bool inBounds =
+											(rng->step > 0)
+												? (val >= rng->start &&
+													  (rng->endInclusive ? val <= rng->end : val < rng->end))
+												: (val <= rng->start &&
+													  (rng->endInclusive ? val >= rng->end : val > rng->end));
+										if (inBounds && !rng->isFloat && lhs.type == ValueType::INT) {
+											found = ((long long)(val - rng->start) % (long long)rng->step == 0);
+										} else {
+											found = inBounds;
+										}
+									}
+								}
+								stack.push_back(Value::Bool(!found));
+							}
 						}
 						DISPATCH();
 					}
@@ -11636,6 +11383,25 @@ struct VM {
 #endif
 							bool isConst = (flags & 0x01) != 0;
 							bool isLocked = (flags & 0x02) != 0;
+							if (globals->exists(name)) {
+								Value existing = globals->get(name);
+								bool identical = false;
+								if (existing.ref != nullptr && val.ref != nullptr) {
+									identical = (existing.ref.get() == val.ref.get());
+								} else if (existing.type == val.type) {
+									if (existing.type == ValueType::FLOAT)
+										identical = (existing.fVal == val.fVal);
+									else if (existing.type == ValueType::INT)
+										identical = (existing.iVal == val.iVal);
+									else if (existing.type == ValueType::BOOL)
+										identical = (existing.bVal == val.bVal);
+									else if (existing.type == ValueType::NONE)
+										identical = true;
+								}
+								if (identical) {
+									goto skip_define;
+								}
+							}
 							if (val.type == ValueType::FUNCTION || val.type == ValueType::NATIVE_FUNCTION) {
 								if (globals->exists(name)) {
 									Value existing = globals->get(name);
@@ -11659,6 +11425,7 @@ struct VM {
 								globals->set(name, val, isLocked, isConst);
 							}
 						}
+					skip_define:;
 						DISPATCH();
 					}
 					OP(OP_GET_VAR) : {
@@ -11681,7 +11448,15 @@ struct VM {
 							uint8_t hi = *ip++;
 							uint8_t lo = *ip++;
 							uint16_t offset = (hi << 8) | lo;
-							if (!stack.back().isTruthy()) {
+							Value val = stack.back();
+							bool truthy = val.isTruthy();
+							if (val.type == ValueType::INSTANCE) {
+								auto dunder = tryCastDunder(val, "__to_bool__", line, col, globals, methodResolver, importResolver);
+								if (dunder.first) {
+									truthy = dunder.second.isTruthy();
+								}
+							}
+							if (!truthy) {
 								ip += offset;
 							}
 						}
@@ -11727,7 +11502,10 @@ struct VM {
 								throw NameError("Undefined variable '" + name + "'", line,
 									col);
 							Var &v = globals->lookup(name);
-							if (v.alias) {
+							if (val.type == ValueType::REFERENCE) {
+								v.alias = val.ptr;
+								v.value.ref = val.ref;
+							} else if (v.alias) {
 								Value *target = v.alias;
 								if (target->isConst)
 									throw ConstError("Cannot assign to const variable '" +
@@ -11816,15 +11594,23 @@ struct VM {
 					OP(OP_TO_STREAM) : {
 						{
 							Value v = pop();
-							stack.push_back(prepareIterable(v, line, col));
+							if (v.type == ValueType::INSTANCE) {
+								auto dunder = tryCastDunder(v, "__traverse__", line, col, this->globals, this->methodResolver, this->importResolver);
+								if (dunder.first) {
+									stack.push_back(dunder.second);
+								} else {
+									stack.push_back(prepareIterable(v, line, col));
+								}
+							} else {
+								stack.push_back(prepareIterable(v, line, col));
+							}
 						}
 						DISPATCH();
 					}
 					OP(OP_FOR_ITER) : {
 						{
 							uint8_t *jumpOffsetAddr = ip;
-							uint16_t offset =
-								(jumpOffsetAddr[0] << 8) | jumpOffsetAddr[1];
+							uint16_t offset = (jumpOffsetAddr[0] << 8) | jumpOffsetAddr[1];
 							ip += 2;
 							uint8_t count = *ip++;
 							Value &indexVal = stack.back();
@@ -11834,17 +11620,16 @@ struct VM {
 							for (int i = 0; i < count; i++) {
 								int stackPos = stack.size() - 1 - count + i;
 								Value &stream = stack[stackPos];
+								std::shared_ptr<HeapObject> owner = stream.ref;
 								if (stream.type == ValueType::LIST) {
 									auto *list = static_cast<ListObject *>(stream.ref.get());
 									if (stepCount >= (long long)list->elements.size()) {
 										valid = false;
 										break;
 									}
-									nextValues.push_back(
-										Value::Reference(&list->elements[stepCount]));
+									nextValues.push_back(Value::Reference(&list->elements[stepCount], owner));
 								} else if (stream.type == ValueType::TUPLE) {
-									auto *tuple =
-										static_cast<TupleObject *>(stream.ref.get());
+									auto *tuple = static_cast<TupleObject *>(stream.ref.get());
 									if (stepCount >= (long long)tuple->elements.size()) {
 										valid = false;
 										break;
@@ -11854,38 +11639,33 @@ struct VM {
 									auto *s = static_cast<SetObject *>(stream.ref.get());
 									std::vector<Value> snapshot(s->elements.begin(), s->elements.end());
 									stream = Value::List(snapshot);
+									owner = stream.ref;
 									auto *list = static_cast<ListObject *>(stream.ref.get());
 									if (stepCount >= (long long)list->elements.size()) {
 										valid = false;
 										break;
 									}
-									nextValues.push_back(Value::Reference(&list->elements[stepCount]));
+									nextValues.push_back(Value::Reference(&list->elements[stepCount], owner));
 								} else if (stream.type == ValueType::STRING) {
 									string s = stream.asString();
 									if (stepCount >= (long long)s.length()) {
 										valid = false;
 										break;
 									}
-									nextValues.push_back(
-										Value::String(string(1, s[stepCount])));
+									nextValues.push_back(Value::String(string(1, s[stepCount])));
 								} else if (stream.type == ValueType::VECTOR) {
-									auto *vec =
-										static_cast<VectorObject *>(stream.ref.get());
+									auto *vec = static_cast<VectorObject *>(stream.ref.get());
 									if (stepCount >= (long long)vec->elements.size()) {
 										valid = false;
 										break;
 									}
-									nextValues.push_back(
-										Value::Reference(&vec->elements[stepCount]));
+									nextValues.push_back(Value::Reference(&vec->elements[stepCount], owner));
 								} else if (stream.type == ValueType::RANGE) {
 									auto *r = static_cast<RangeObject *>(stream.ref.get());
 									double current = r->start + (r->step * stepCount);
-									bool inBounds =
-										(r->step > 0)
-											? (r->endInclusive ? current <= r->end
-																	 : current < r->end)
-											: (r->endInclusive ? current >= r->end
-																	 : current > r->end);
+									bool inBounds = (r->step > 0)
+															 ? (r->endInclusive ? current <= r->end : current < r->end)
+															 : (r->endInclusive ? current >= r->end : current > r->end);
 									if (!inBounds) {
 										valid = false;
 										break;
@@ -11894,16 +11674,70 @@ struct VM {
 										nextValues.push_back(Value::Float(current));
 									else
 										nextValues.push_back(Value::Int((long long)current));
-								} else
-									throw TypeError("Unsupported stream type in iterator",
-										line, col);
+								} else if (stream.type == ValueType::INSTANCE) {
+									auto *inst = static_cast<InstanceObject *>(stream.ref.get());
+									ClassObject *cls = inst->klass;
+									ClassObject::MethodInfo *advMethod = nullptr;
+									ClassObject *methodOwner = nullptr;
+									for (auto *ancestor : cls->mro) {
+										if (ancestor->methods.count("__advance__")) {
+											advMethod = &ancestor->methods["__advance__"];
+											methodOwner = ancestor;
+											break;
+										}
+									}
+									if (advMethod) {
+										Value classObjVal;
+										classObjVal.type = ValueType::CLASS;
+										classObjVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject *) {});
+										VM tempVM;
+										tempVM.globals = this->globals;
+										tempVM.methodResolver = this->methodResolver;
+										tempVM.importResolver = this->importResolver;
+										Chunk tempChunk;
+										int selfIdx = tempChunk.addConstant(stream);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)selfIdx, line, col);
+										int objIdx = tempChunk.addConstant(classObjVal);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)objIdx, line, col);
+										int stepIdx = tempChunk.addConstant(Value::Int(stepCount));
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)stepIdx, line, col);
+										int methIdx = tempChunk.addConstant(advMethod->func);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)methIdx, line, col);
+										tempChunk.write(OpCode::OP_CALL, line, col);
+										tempChunk.write((uint8_t)3, line, col);
+										tempChunk.write(OpCode::OP_RETURN, line, col);
+										try {
+											tempVM.run(tempChunk);
+											if (!tempVM.stack.empty()) {
+												nextValues.push_back(tempVM.stack.back());
+											} else {
+												nextValues.push_back(Value::None());
+											}
+										} catch (const LangError &e) {
+											if (e.type == "IteratorError") {
+												valid = false;
+											} else {
+												throw;
+											}
+										}
+									} else {
+										throw TypeError("Iterator object missing '__advance__' method", line, col);
+									}
+								} else {
+									throw TypeError("Unsupported stream type in iterator", line, col);
+								}
 							}
 							if (valid) {
 								for (const auto &val : nextValues)
 									stack.push_back(val);
 								stack[stack.size() - 1 - count].iVal++;
-							} else
+							} else {
 								ip = jumpOffsetAddr + 2 + offset;
+							}
 						}
 						DISPATCH();
 					}
@@ -12026,20 +11860,30 @@ struct VM {
 					OP(OP_SHALLOW_COPY) : {
 						{
 							Value v = pop();
-							Value res = shallowCopy(v);
-							res.isConst = false;
-							res.isLocked = false;
-							stack.push_back(res);
+							if (!invokeUnaryDunder(v, "__copy__", line, col)) {
+								if (v.type == ValueType::INSTANCE ||
+									 v.type == ValueType::CLASS ||
+									 v.type == ValueType::REFERENCE) {
+									stack.push_back(v);
+								} else {
+									Value res = shallowCopy(v);
+									res.isConst = false;
+									res.isLocked = false;
+									stack.push_back(res);
+								}
+							}
 						}
 						DISPATCH();
 					}
 					OP(OP_DEEP_COPY) : {
 						{
 							Value v = pop();
-							Value res = deepCopy(v);
-							res.isConst = false;
-							res.isLocked = false;
-							stack.push_back(res);
+							if (!invokeUnaryDunder(v, "__clone__", line, col)) {
+								Value res = deepCopy(v);
+								res.isConst = false;
+								res.isLocked = false;
+								stack.push_back(res);
+							}
 						}
 						DISPATCH();
 					}
@@ -12110,152 +11954,154 @@ struct VM {
 									throw RuntimeError("Dead-end reference", line, col);
 								base = *base.ptr;
 							}
-							switch (base.type) {
-							case ValueType::LIST: {
-								auto *list = static_cast<ListObject *>(base.ref.get());
-								if (index.type == ValueType::SLICE) {
-									auto indices =
-										getSliceIndices(list->elements.size());
-									auto newList = std::make_shared<ListObject>();
-									newList->elements.reserve(indices.size());
-									for (long long i : indices)
-										newList->elements.push_back(list->elements[i]);
-									stack.push_back(Value::List(newList->elements));
-								} else {
+							if (!invokeBinaryDunder(base, index, "__at__", "", line, col)) {
+								switch (base.type) {
+								case ValueType::LIST: {
+									auto *list = static_cast<ListObject *>(base.ref.get());
+									if (index.type == ValueType::SLICE) {
+										auto indices =
+											getSliceIndices(list->elements.size());
+										auto newList = std::make_shared<ListObject>();
+										newList->elements.reserve(indices.size());
+										for (long long i : indices)
+											newList->elements.push_back(list->elements[i]);
+										stack.push_back(Value::List(newList->elements));
+									} else {
+										if (!index.isNumber())
+											throw TypeError("List index must be int or slice",
+												line, col);
+										long long idx = index.asInt();
+										if (idx < 0)
+											idx += list->elements.size();
+										if (idx < 0 ||
+											 idx >= (long long)list->elements.size())
+											throw IndexError("List index out of range", line,
+												col);
+										stack.push_back(list->elements[idx]);
+									}
+									break;
+								}
+								case ValueType::SET: {
+									throw TypeError("Sets are unordered collections and do not support indexing or slicing.", line, col);
+								}
+								case ValueType::VECTOR: {
+									auto *vec = static_cast<VectorObject *>(base.ref.get());
+									if (index.type == ValueType::SLICE) {
+										auto indices = getSliceIndices(vec->elements.size());
+										std::vector<Value> newElems;
+										newElems.reserve(indices.size());
+										for (long long i : indices)
+											newElems.push_back(vec->elements[i]);
+										stack.push_back(Value::Vector(newElems));
+									} else {
+										if (!index.isNumber())
+											throw TypeError(
+												"Vector index must be int or slice", line,
+												col);
+										long long idx = index.asInt();
+										if (idx < 0)
+											idx += vec->elements.size();
+										if (idx < 0 ||
+											 idx >= (long long)vec->elements.size())
+											throw IndexError("Vector index out of range",
+												line, col);
+										stack.push_back(vec->elements[idx]);
+									}
+									break;
+								}
+								case ValueType::TUPLE: {
+									auto *tuple = static_cast<TupleObject *>(base.ref.get());
+									if (index.type == ValueType::SLICE) {
+										auto indices =
+											getSliceIndices(tuple->elements.size());
+										std::vector<Value> newElems;
+										newElems.reserve(indices.size());
+										for (long long i : indices)
+											newElems.push_back(tuple->elements[i]);
+										stack.push_back(Value::Tuple(newElems));
+									} else {
+										if (!index.isNumber())
+											throw TypeError(
+												"Tuple index must be int or slice", line,
+												col);
+										long long idx = index.asInt();
+										if (idx < 0)
+											idx += tuple->elements.size();
+										if (idx < 0 ||
+											 idx >= (long long)tuple->elements.size())
+											throw IndexError("Tuple index out of range", line,
+												col);
+										stack.push_back(tuple->elements[idx]);
+									}
+									break;
+								}
+								case ValueType::DICT: {
+									auto *dict = static_cast<DictObject *>(base.ref.get());
+									if (dict->items.count(index) == 0)
+										throw KeyError(
+											"Key not found: " + valueToString(index), line,
+											0);
+									stack.push_back(dict->items.at(index));
+									break;
+								}
+								case ValueType::STRING: {
+									string s = base.asString();
+									if (index.type == ValueType::SLICE) {
+										auto indices = getSliceIndices(s.length());
+										string newStr = "";
+										newStr.reserve(indices.size());
+										for (long long i : indices)
+											newStr += s[i];
+										stack.push_back(Value::String(newStr));
+									} else {
+										if (!index.isNumber())
+											throw TypeError(
+												"String index must be int or slice", line,
+												col);
+										long long idx = index.asInt();
+										if (idx < 0)
+											idx += s.length();
+										if (idx < 0 || idx >= (long long)s.length())
+											throw IndexError("String index out of range",
+												line, col);
+										stack.push_back(Value::String(string(1, s[idx])));
+									}
+									break;
+								}
+								case ValueType::RANGE: {
+									auto *rng = static_cast<RangeObject *>(base.ref.get());
 									if (!index.isNumber())
-										throw TypeError("List index must be int or slice",
+										throw TypeError("Range index must be a number", line,
+											col);
+									long long idx = index.asInt();
+									long long len =
+										(long long)((rng->end - rng->start) / rng->step);
+									if (!rng->endInclusive) {
+										if ((rng->step > 0 && rng->end > rng->start) ||
+											 (rng->step < 0 && rng->end < rng->start))
+											len = (long long)ceil((rng->end - rng->start) /
+																		 rng->step);
+										else
+											len = 0;
+									} else
+										len++;
+									if (idx < 0)
+										throw IndexError("Range index cannot be negative",
 											line, col);
-									long long idx = index.asInt();
-									if (idx < 0)
-										idx += list->elements.size();
-									if (idx < 0 ||
-										 idx >= (long long)list->elements.size())
-										throw IndexError("List index out of range", line,
+									double val = rng->start + (idx * rng->step);
+									if (rng->step > 0 && val >= rng->end &&
+										 !rng->endInclusive)
+										throw IndexError("Range index out of range", line,
 											col);
-									stack.push_back(list->elements[idx]);
+									stack.push_back(rng->isFloat
+															 ? Value::Float(val)
+															 : Value::Int((long long)val));
+									break;
 								}
-								break;
-							}
-							case ValueType::SET: {
-								throw TypeError("Sets are unordered collections and do not support indexing or slicing.", line, col);
-							}
-							case ValueType::VECTOR: {
-								auto *vec = static_cast<VectorObject *>(base.ref.get());
-								if (index.type == ValueType::SLICE) {
-									auto indices = getSliceIndices(vec->elements.size());
-									std::vector<Value> newElems;
-									newElems.reserve(indices.size());
-									for (long long i : indices)
-										newElems.push_back(vec->elements[i]);
-									stack.push_back(Value::Vector(newElems));
-								} else {
-									if (!index.isNumber())
-										throw TypeError(
-											"Vector index must be int or slice", line,
-											col);
-									long long idx = index.asInt();
-									if (idx < 0)
-										idx += vec->elements.size();
-									if (idx < 0 ||
-										 idx >= (long long)vec->elements.size())
-										throw IndexError("Vector index out of range",
-											line, col);
-									stack.push_back(vec->elements[idx]);
+								default:
+									throw TypeError("Object is not subscriptable", line, col);
+									break;
 								}
-								break;
-							}
-							case ValueType::TUPLE: {
-								auto *tuple = static_cast<TupleObject *>(base.ref.get());
-								if (index.type == ValueType::SLICE) {
-									auto indices =
-										getSliceIndices(tuple->elements.size());
-									std::vector<Value> newElems;
-									newElems.reserve(indices.size());
-									for (long long i : indices)
-										newElems.push_back(tuple->elements[i]);
-									stack.push_back(Value::Tuple(newElems));
-								} else {
-									if (!index.isNumber())
-										throw TypeError(
-											"Tuple index must be int or slice", line,
-											col);
-									long long idx = index.asInt();
-									if (idx < 0)
-										idx += tuple->elements.size();
-									if (idx < 0 ||
-										 idx >= (long long)tuple->elements.size())
-										throw IndexError("Tuple index out of range", line,
-											col);
-									stack.push_back(tuple->elements[idx]);
-								}
-								break;
-							}
-							case ValueType::DICT: {
-								auto *dict = static_cast<DictObject *>(base.ref.get());
-								if (dict->items.count(index) == 0)
-									throw KeyError(
-										"Key not found: " + valueToString(index), line,
-										0);
-								stack.push_back(dict->items.at(index));
-								break;
-							}
-							case ValueType::STRING: {
-								string s = base.asString();
-								if (index.type == ValueType::SLICE) {
-									auto indices = getSliceIndices(s.length());
-									string newStr = "";
-									newStr.reserve(indices.size());
-									for (long long i : indices)
-										newStr += s[i];
-									stack.push_back(Value::String(newStr));
-								} else {
-									if (!index.isNumber())
-										throw TypeError(
-											"String index must be int or slice", line,
-											col);
-									long long idx = index.asInt();
-									if (idx < 0)
-										idx += s.length();
-									if (idx < 0 || idx >= (long long)s.length())
-										throw IndexError("String index out of range",
-											line, col);
-									stack.push_back(Value::String(string(1, s[idx])));
-								}
-								break;
-							}
-							case ValueType::RANGE: {
-								auto *rng = static_cast<RangeObject *>(base.ref.get());
-								if (!index.isNumber())
-									throw TypeError("Range index must be a number", line,
-										col);
-								long long idx = index.asInt();
-								long long len =
-									(long long)((rng->end - rng->start) / rng->step);
-								if (!rng->endInclusive) {
-									if ((rng->step > 0 && rng->end > rng->start) ||
-										 (rng->step < 0 && rng->end < rng->start))
-										len = (long long)ceil((rng->end - rng->start) /
-																	 rng->step);
-									else
-										len = 0;
-								} else
-									len++;
-								if (idx < 0)
-									throw IndexError("Range index cannot be negative",
-										line, col);
-								double val = rng->start + (idx * rng->step);
-								if (rng->step > 0 && val >= rng->end &&
-									 !rng->endInclusive)
-									throw IndexError("Range index out of range", line,
-										col);
-								stack.push_back(rng->isFloat
-														 ? Value::Float(val)
-														 : Value::Int((long long)val));
-								break;
-							}
-							default:
-								throw TypeError("Object is not subscriptable", line, col);
-								break;
 							}
 						}
 						DISPATCH();
@@ -12265,206 +12111,117 @@ struct VM {
 							Value val = pop();
 							Value index = pop();
 							Value base = pop();
-							if (base.type == ValueType::LIST) {
-								auto *list = static_cast<ListObject *>(base.ref.get());
-								if (!index.isNumber())
-									throw TypeError("List index must be a number", line,
-										col);
-								long long idx = index.asInt();
-								if (idx < 0)
-									idx += list->elements.size();
-								if (idx < 0 || idx >= (long long)list->elements.size())
-									throw IndexError("List assignment index out of range",
-										line, col);
-								list->elements[idx] = val;
-							} else if (base.type == ValueType::DICT) {
-								auto *dict = static_cast<DictObject *>(base.ref.get());
-								if (index.type == ValueType::LIST ||
-									 index.type == ValueType::SET) {
-									index = deepCopy(index);
-									index.isConst = true;
+							bool dunderFound = false;
+							if (base.type == ValueType::INSTANCE) {
+								auto *inst = static_cast<InstanceObject *>(base.ref.get());
+								ClassObject *cls = inst->klass;
+								ClassObject::MethodInfo *putMethod = nullptr;
+								ClassObject *methodOwner = nullptr;
+								for (auto *ancestor : cls->mro) {
+									if (ancestor->methods.count("__put__")) {
+										putMethod = &ancestor->methods["__put__"];
+										methodOwner = ancestor;
+										break;
+									}
 								}
-								dict->items[index] = val;
-							} else if (base.type == ValueType::STRING) {
-								auto *str = static_cast<StringObject *>(base.ref.get());
-								if (!index.isNumber())
-									throw TypeError("String index must be a number", line,
-										col);
-								long long idx = index.asInt();
-								if (idx < 0)
-									idx += str->value.size();
-								if (idx < 0 || idx >= (long long)str->value.size())
-									throw IndexError("String assignment index out of range",
-										line, col);
-								str->value[idx] = val.asString()[0];
-							} else if (base.type == ValueType::VECTOR) {
-								auto *vec = static_cast<VectorObject *>(base.ref.get());
-								if (!index.isNumber())
-									throw TypeError("Vector index must be a number", line,
-										col);
-								long long idx = index.asInt();
-								if (idx < 0)
-									idx += vec->elements.size();
-								if (idx < 0 || idx >= (long long)vec->elements.size())
-									throw IndexError("Vector assignment index out of range",
-										line, col);
-								vec->elements[idx] = val;
-							} else if (base.type == ValueType::SET) {
-								throw TypeError("Sets are unordered collections and do not support indexing or slicing.", line, col);
-							} else if (base.type == ValueType::TUPLE)
-								throw MutationError(
-									"Tuple object does not support item assignment", line,
-									col);
-							else
-								throw MutationError(
-									"Object does not support item assignment", line, col);
-							stack.push_back(val);
+								if (putMethod) {
+									dunderFound = true;
+									Value classObjVal;
+									classObjVal.type = ValueType::CLASS;
+									classObjVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject *) {});
+									if (putMethod->func.type == ValueType::NATIVE_FUNCTION) {
+										auto *nat = static_cast<NativeFunctionObject *>(putMethod->func.ref.get());
+										std::vector<Value> args = {base, classObjVal, index, val};
+										nat->func(args, line, col);
+									} else {
+										VM tempVM;
+										tempVM.globals = this->globals;
+										tempVM.methodResolver = this->methodResolver;
+										tempVM.importResolver = this->importResolver;
+										Chunk tempChunk;
+										int selfIdx = tempChunk.addConstant(base);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)selfIdx, line, col);
+										int objIdx = tempChunk.addConstant(classObjVal);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)objIdx, line, col);
+										int keyIdx = tempChunk.addConstant(index);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)keyIdx, line, col);
+										int valIdx = tempChunk.addConstant(val);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)valIdx, line, col);
+										int methIdx = tempChunk.addConstant(putMethod->func);
+										tempChunk.write(OpCode::OP_CONSTANT, line, col);
+										tempChunk.write((uint8_t)methIdx, line, col);
+										tempChunk.write(OpCode::OP_CALL, line, col);
+										tempChunk.write((uint8_t)4, line, col);
+										tempChunk.write(OpCode::OP_RETURN, line, col);
+										try {
+											tempVM.run(tempChunk);
+										} catch (...) {
+											throw;
+										}
+									}
+									stack.push_back(val);
+								}
+							}
+							if (!dunderFound) {
+								if (base.type == ValueType::LIST) {
+									auto *list = static_cast<ListObject *>(base.ref.get());
+									if (!index.isNumber())
+										throw TypeError("List index must be a number", line,
+											col);
+									long long idx = index.asInt();
+									if (idx < 0)
+										idx += list->elements.size();
+									if (idx < 0 || idx >= (long long)list->elements.size())
+										throw IndexError("List assignment index out of range",
+											line, col);
+									list->elements[idx] = val;
+								} else if (base.type == ValueType::DICT) {
+									auto *dict = static_cast<DictObject *>(base.ref.get());
+									if (index.type == ValueType::LIST ||
+										 index.type == ValueType::SET) {
+										index = deepCopy(index);
+										index.isConst = true;
+									}
+									dict->items[index] = val;
+								} else if (base.type == ValueType::STRING) {
+									auto *str = static_cast<StringObject *>(base.ref.get());
+									if (!index.isNumber())
+										throw TypeError("String index must be a number", line,
+											col);
+									long long idx = index.asInt();
+									if (idx < 0)
+										idx += str->value.size();
+									if (idx < 0 || idx >= (long long)str->value.size())
+										throw IndexError("String assignment index out of range",
+											line, col);
+									str->value[idx] = val.asString()[0];
+								} else if (base.type == ValueType::VECTOR) {
+									auto *vec = static_cast<VectorObject *>(base.ref.get());
+									if (!index.isNumber())
+										throw TypeError("Vector index must be a number", line,
+											col);
+									long long idx = index.asInt();
+									if (idx < 0)
+										idx += vec->elements.size();
+									if (idx < 0 || idx >= (long long)vec->elements.size())
+										throw IndexError("Vector assignment index out of range",
+											line, col);
+									vec->elements[idx] = val;
+								} else if (base.type == ValueType::SET) {
+									throw TypeError("Sets are unordered collections and do not support indexing or slicing.", line, col);
+								} else if (base.type == ValueType::TUPLE)
+									throw MutationError("Tuple object does not support item assignment", line, col);
+								else
+									throw MutationError("Object does not support item assignment", line, col);
+								stack.push_back(val);
+							}
 						}
 						DISPATCH();
 					}
-					// ENVOKE
-					// OP(OP_INVOKE) : {
-					// 	uint8_t nameIdx = *ip++;
-					// 	uint8_t argCount = *ip++;
-					// 	string methodName =
-					// 		currentChunk->constants[nameIdx].asString();
-					// 	Value receiver = stack[stack.size() - 1 - argCount];
-					// 	if (receiver.type == ValueType::INSTANCE ||
-					// 		 receiver.type == ValueType::CLASS ||
-					// 		 receiver.type == ValueType::SUPER) {
-					// 		Value methodToCall;
-					// 		Value selfVal = Value::None();
-					// 		Value objVal = Value::None();
-					// 		ClassObject *startClass = nullptr;
-					// 		if (receiver.type == ValueType::SUPER) {
-					// 			auto *superObj =
-					// 				static_cast<SuperObject *>(receiver.ref.get());
-					// 			startClass = superObj->startClass;
-					// 			selfVal = superObj->instance;
-					// 		} else if (receiver.type == ValueType::INSTANCE) {
-					// 			auto *instance =
-					// 				static_cast<InstanceObject *>(receiver.ref.get());
-					// 			startClass = instance->klass;
-					// 			selfVal = receiver;
-					// 		} else {
-					// 			startClass =
-					// 				static_cast<ClassObject *>(receiver.ref.get());
-					// 			selfVal = Value::None();
-					// 		}
-					// 		ClassObject *methodOwner = nullptr;
-					// 		ClassObject::MethodInfo *methodInfo = nullptr;
-					// 		if (receiver.type == ValueType::INSTANCE) {
-					// 			auto *inst = static_cast<InstanceObject *>(receiver.ref.get());
-					// 			if (inst->fields.count(methodName)) {
-					// 				Value dynamicMethod = inst->fields[methodName];
-					// 				vector<Value> args(argCount);
-					// 				for (int i = argCount - 1; i >= 0; i--)
-					// 					args[i] = pop();
-					// 				pop();
-					// 				for (const auto &v : args)
-					// 					stack.push_back(v);
-					// 				callValue(dynamicMethod, argCount, line, col);
-					// 				DISPATCH();
-					// 			}
-					// 		}
-					// 		for (auto *ancestor : startClass->mro) {
-					// 			if (ancestor->methods.count(methodName)) {
-					// 				methodOwner = ancestor;
-					// 				methodInfo = &ancestor->methods[methodName];
-					// 				break;
-					// 			}
-					// 		}
-					// 		if (!methodOwner || !methodInfo) {
-					// 			bool foundStatic = false;
-					// 			for (auto *ancestor : startClass->mro) {
-					// 				if (ancestor->staticFields.count(methodName)) {
-					// 					Value staticCallable =
-					// 						ancestor->staticFields[methodName];
-					// 					vector<Value> tempArgs(argCount);
-					// 					for (int i = argCount - 1; i >= 0; i--)
-					// 						tempArgs[i] = pop();
-					// 					pop();
-					// 					for (const auto &v : tempArgs)
-					// 						stack.push_back(v);
-					// 					callValue(staticCallable, argCount, line, col);
-					// 					foundStatic = true;
-					// 					break;
-					// 				}
-					// 			}
-					// 			if (foundStatic)
-					// 				DISPATCH();
-					// 			throw AttributeError("'" + startClass->name +
-					// 											"' object has no attribute '" +
-					// 											methodName + "'",
-					// 				line, col);
-					// 		}
-					// 		if (methodInfo->access != AccessLevel::PUBLIC) {
-					// 			bool allowed = false;
-					// 			if (frame->basePointer + 1 < stack.size()) {
-					// 				Value potentialCaller =
-					// 					stack[frame->basePointer + 1];
-					// 				if (potentialCaller.type == ValueType::CLASS) {
-					// 					auto *callerPtr = static_cast<ClassObject *>(
-					// 						potentialCaller.ref.get());
-					// 					if (methodInfo->access == AccessLevel::PRIVATE) {
-					// 						if (callerPtr == methodOwner) {
-					// 							allowed = true;
-					// 						}
-					// 					} else if (methodInfo->access == AccessLevel::PROTECTED) {
-					// 						for (auto *ancestor : callerPtr->mro) {
-					// 							if (ancestor == methodOwner) {
-					// 								allowed = true;
-					// 								break;
-					// 							}
-					// 						}
-					// 					}
-					// 				}
-					// 			}
-					// 			if (!allowed) {
-					// 				throw RuntimeError(
-					// 					"Cannot access " +
-					// 						string(methodInfo->access ==
-					// 										 AccessLevel::PRIVATE
-					// 									 ? "private"
-					// 									 : "protected") +
-					// 						" method '" + methodName +
-					// 						"' from this context.",
-					// 					line, col);
-					// 			}
-					// 		}
-					// 		methodToCall = methodInfo->func;
-					// 		objVal.type = ValueType::CLASS;
-					// 		objVal.ref = std::shared_ptr<HeapObject>(
-					// 			methodOwner, [](HeapObject *) {});
-					// 		vector<Value> args(argCount);
-					// 		for (int i = argCount - 1; i >= 0; i--)
-					// 			args[i] = pop();
-					// 		pop();
-					// 		stack.push_back(selfVal);
-					// 		stack.push_back(objVal);
-					// 		for (const auto &v : args)
-					// 			stack.push_back(v);
-					// 		callValue(methodToCall, argCount + 2, line, col);
-					// 		DISPATCH();
-					// 	}
-					// 	vector<Expr *> dummyArgs(argCount);
-					// 	for (int i = argCount - 1; i >= 0; i--)
-					// 		dummyArgs[i] = new ValueExpr(pop());
-					// 	Value targetVal = pop();
-					// 	Expr *dummyObject = new ValueExpr(targetVal);
-					// 	MethodCallExpr mockAST(dummyObject, methodName, dummyArgs);
-					// 	mockAST.line = line;
-					// 	if (!methodResolver)
-					// 		throw EnvironmentError(
-					// 			"VM methodResolver bridge not initialized.", line,
-					// 			col);
-					// 	Value result = methodResolver(&mockAST);
-					// 	delete dummyObject;
-					// 	for (auto *a : dummyArgs)
-					// 		delete a;
-					// 	stack.push_back(result);
-					// 	DISPATCH();
-					// }
 					OP(OP_INVOKE) : {
 						{
 							uint8_t nameIdx = *ip++;
@@ -12971,7 +12728,6 @@ struct VM {
 								goToReturn = true;
 							}
 						}
-
 						if (goToReturn) {
 							goto execute_return;
 						}
@@ -13011,152 +12767,6 @@ struct VM {
 						}
 						DISPATCH();
 					}
-					// OP(OP_RETURN) : {
-					// execute_return:
-					// 	if (!frame->handlerStack.empty()) {
-					// 		ExceptionHandler &h = frame->handlerStack.back();
-					// 		if (h.finallyAddress != -1 && !h.isInsideFinally) {
-					// 			isReturning = true;
-					// 			pendingReturn = pop();
-					// 			h.isInsideFinally = true;
-					// 			ip = currentChunk->code.data() + h.finallyAddress;
-					// 			DISPATCH();
-					// 		}
-					// 	}
-					// 	Value result = pop();
-					// 	FunctionObject *func = frame->function;
-					// 	if (func) {
-					// 		if (func->name == magic_methods_to_string(
-					// 									Magic_Methods::__construct__)) {
-					// 			result = stack[frame->basePointer];
-					// 		} else {
-					// 			if (result.type == ValueType::NOTYPE) {
-					// 				if (!func->defaultRetArgs.empty()) {
-					// 					result =
-					// 						executeDefault(func->defaultRetArgs[0], line);
-					// 				} else if (func->returnType != ValueType::NOTYPE) {
-					// 					result = Value::None();
-					// 				} else {
-					// 					result = Value::None();
-					// 				}
-					// 			}
-					// 		}
-					// 		if (func->returnType != ValueType::NOTYPE &&
-					// 			 result.type != func->returnType) {
-					// 			bool converted = false;
-					// 			if (func->returnType == ValueType::FLOAT &&
-					// 				 result.type == ValueType::INT) {
-					// 				result = Value::Float((double)result.asInt());
-					// 				converted = true;
-					// 			} else if (func->returnType == ValueType::INT &&
-					// 						  result.type == ValueType::FLOAT) {
-					// 				result = Value::Int((long long)result.asFloat());
-					// 				converted = true;
-					// 			} else if (func->returnType == ValueType::INT &&
-					// 						  result.type == ValueType::BIGINT) {
-					// 				converted = true;
-					// 			} else if (func->returnType == ValueType::BIGINT &&
-					// 						  result.type == ValueType::INT) {
-					// 				result = Value::BigInt(result.asInt());
-					// 				converted = true;
-					// 			}
-					// 			if (!converted) {
-					// 				string typeName = "";
-					// 				switch (func->returnType) {
-					// 				case ValueType::INT:
-					// 					typeName = "int";
-					// 					break;
-					// 				case ValueType::FLOAT:
-					// 					typeName = "float";
-					// 					break;
-					// 				case ValueType::BOOL:
-					// 					typeName = "bool";
-					// 					break;
-					// 				case ValueType::STRING:
-					// 					typeName = "string";
-					// 					break;
-					// 				case ValueType::LIST:
-					// 					typeName = "list";
-					// 					break;
-					// 				case ValueType::SET:
-					// 					typeName = "set";
-					// 					break;
-					// 				case ValueType::DICT:
-					// 					typeName = "dict";
-					// 					break;
-					// 				case ValueType::TUPLE:
-					// 					typeName = "tuple";
-					// 					break;
-					// 				case ValueType::VECTOR:
-					// 					typeName = "vector";
-					// 					break;
-					// 				case ValueType::RANGE:
-					// 					typeName = "range";
-					// 					break;
-					// 				default:
-					// 					break;
-					// 				}
-					// 				if (!typeName.empty() && globals->exists(typeName)) {
-					// 					Value ctor = globals->get(typeName);
-					// 					vector<Value> args;
-					// 					if (result.type != ValueType::NONE &&
-					// 						 result.type != ValueType::NOTYPE) {
-					// 						args.push_back(result);
-					// 					}
-					// 					try {
-					// 						if (ctor.type == ValueType::NATIVE_FUNCTION) {
-					// 							auto *nat =
-					// 								static_cast<NativeFunctionObject *>(
-					// 									ctor.ref.get());
-					// 							result = nat->func(args, line, 0);
-					// 							converted = true;
-					// 						} else if (ctor.type == ValueType::OVERLOAD) {
-					// 							auto *ov = static_cast<OverloadObject *>(
-					// 								ctor.ref.get());
-					// 							for (const auto &v : ov->overloads) {
-					// 								if (v.type ==
-					// 									 ValueType::NATIVE_FUNCTION) {
-					// 									auto *nat = static_cast<
-					// 										NativeFunctionObject *>(
-					// 										v.ref.get());
-					// 									try {
-					// 										result = nat->func(args, line, 0);
-					// 										converted = true;
-					// 										break;
-					// 									} catch (...) {
-					// 									}
-					// 								}
-					// 							}
-					// 						}
-					// 					} catch (...) {
-					// 					}
-					// 				}
-					// 			}
-					// 			if (!converted && result.type != ValueType::NONE) {
-					// 				throw TypeError(
-					// 					"Return type mismatch. Expected " +
-					// 						std::to_string((int)func->returnType) +
-					// 						" Got " + std::to_string((int)result.type),
-					// 					line, col);
-					// 			}
-					// 		}
-					// 		if (func->returnsConst)
-					// 			result.isConst = true;
-					// 		if (func->isCached)
-					// 			func->cache[frame->cacheKey] = result;
-					// 	}
-					// 	int returnSlot = frame->basePointer;
-					// 	frames.pop_back();
-					// 	if (frames.empty()) {
-					// 		stack.push_back(result);
-					// 		return;
-					// 	}
-					// 	frame = &frames.back();
-					// 	ip = frame->ip;
-					// 	stack.resize(returnSlot);
-					// 	stack.push_back(result);
-					// 	DISPATCH();
-					// }
 					OP(OP_RETURN) : {
 					execute_return: // <--- Safely outside the Scope Lock!
 						bool shouldReturnFromVM = false;
@@ -13327,7 +12937,9 @@ struct VM {
 					std::cerr << "\033[1;36m" << e.type << ": " << e.message << "\033[0m\n";
 				} else {
 					if (frame->handlerStack.empty()) {
-						std::cerr << "Uncaught " << e.type << ": " << e.message << "\n";
+						if (e.type != "IteratorError") {
+							std::cerr << "Uncaught " << e.type << ": " << e.message << "\n";
+						}
 						throw;
 					}
 					ExceptionHandler h = frame->handlerStack.back();
@@ -13403,14 +13015,18 @@ struct VM {
 						if (p.isVariadic || p.isKwargs)
 							break;
 						Value argVal = stack[stack.size() - argCount + argIdx];
-						if (p.type != ValueType::NOTYPE && argVal.type != p.type) {
-							if (p.type == ValueType::FLOAT && argVal.type == ValueType::INT) {
+						ValueType checkType = argVal.type;
+						if (argVal.type == ValueType::REFERENCE && argVal.ptr != nullptr) {
+							checkType = argVal.ptr->type;
+						}
+						if (p.type != ValueType::NOTYPE && checkType != p.type) {
+							if (p.type == ValueType::FLOAT && checkType == ValueType::INT) {
 								currentScore += 5;
 							} else {
 								typesMatch = false;
 								break;
 							}
-						} else if (p.type != ValueType::NOTYPE && argVal.type == p.type) {
+						} else if (p.type != ValueType::NOTYPE && checkType == p.type) {
 							currentScore += 10;
 						} else if (p.type == ValueType::NOTYPE) {
 							currentScore += 2;
@@ -13569,6 +13185,8 @@ struct VM {
 					} else if (p.type == ValueType::BIGINT &&
 								  argVal.type == ValueType::INT) {
 						argVal = Value::BigInt(argVal.asInt());
+						mismatch = false;
+					} else if (argVal.type == ValueType::REFERENCE && argVal.ptr != nullptr && argVal.ptr->type == p.type) {
 						mismatch = false;
 					} else if (argVal.type == ValueType::OMIT_MARKER) {
 						mismatch = false;
@@ -13751,6 +13369,17 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 	Value *targetPtr = nullptr;
 	Value tempVal;
 	bool isConstView = false;
+	auto mRes = [this](MethodCallExpr *m) {
+		return this->Resolve_methods(m);
+	};
+
+	auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		if (this->modules.count(lib)) {
+			this->modules[lib](this->env, sym);
+		} else {
+			throw ImportError("Unknown module '" + lib + "'", 0, 0);
+		}
+	};
 	if (dynamic_cast<VarExpr *>(m->object) ||
 		 dynamic_cast<IndexExpr *>(m->object)) {
 		LValue lv = resolveLValue(m->object);
@@ -14087,7 +13716,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 						Value ret = tempVM.stack.empty() ? Value::None() : tempVM.stack.back();
 						return ret.isTruthy();
 					} else {
-						return lessValue(a, b);
+						return lessValue(a, b, this->env, mRes, iRes);
 					}
 				};
 				std::sort(elems.begin(), elems.end(), cmp);
@@ -14965,7 +14594,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			if (!m->args.empty())
 				error("MaxHeapify() takes no arguments", "ArgumentError");
 			std::make_heap(elems.begin(), elems.end(),
-				[](const Value &a, const Value &b) { return lessValue(a, b); });
+				[&](const Value &a, const Value &b) { return lessValue(a, b, this->env, mRes, iRes); });
 			return target;
 		}
 		if (m->method == "MinHeapify") {
@@ -14973,7 +14602,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			if (!m->args.empty())
 				error("MinHeapify() takes no arguments", "ArgumentError");
 			std::make_heap(elems.begin(), elems.end(),
-				[](const Value &a, const Value &b) { return lessValue(b, a); });
+				[&](const Value &a, const Value &b) { return lessValue(b, a, this->env, mRes, iRes); });
 			return target;
 		}
 		if (m->method == "MaxHeapPop") {
@@ -14983,7 +14612,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			if (elems.empty())
 				throw EmptyContainerError("pop from empty heap", m->line, m->col);
 			std::pop_heap(elems.begin(), elems.end(),
-				[](const Value &a, const Value &b) { return lessValue(a, b); });
+				[&](const Value &a, const Value &b) { return lessValue(a, b, this->env, mRes, iRes); });
 			auto result = elems.back();
 			elems.pop_back();
 			return result;
@@ -14995,7 +14624,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			if (elems.empty())
 				throw EmptyContainerError("pop from empty heap", m->line, m->col);
 			std::pop_heap(elems.begin(), elems.end(),
-				[](const Value &a, const Value &b) { return lessValue(b, a); });
+				[&](const Value &a, const Value &b) { return lessValue(b, a, this->env, mRes, iRes); });
 			auto result = elems.back();
 			elems.pop_back();
 			return result;
@@ -15006,7 +14635,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 				throw ArgumentError("MaxHeapPush() takes one argument", m->line, m->col);
 			elems.push_back(eval(m->args[0]));
 			std::push_heap(elems.begin(), elems.end(),
-				[](const Value &a, const Value &b) { return lessValue(a, b); });
+				[&](const Value &a, const Value &b) { return lessValue(a, b, this->env, mRes, iRes); });
 			return target;
 		}
 		if (m->method == "MinHeapPush") {
@@ -15015,7 +14644,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 				throw ArgumentError("MinHeapPush() takes one argument", m->line, m->col);
 			elems.push_back(eval(m->args[0]));
 			std::push_heap(elems.begin(), elems.end(),
-				[](const Value &a, const Value &b) { return lessValue(b, a); });
+				[&](const Value &a, const Value &b) { return lessValue(b, a, this->env, mRes, iRes); });
 			return target;
 		}
 		error("Object '" + m->method + "' is not a list method", "AttributeError");
@@ -15534,7 +15163,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			}
 			return Value::Float(std::sqrt(sum.asFloat()));
 		}
-		if (m->method == "reverse") {
+		if (m->method == "vector_reversal") {
 			checkConst();
 			std::reverse(v->elements.begin(), v->elements.end());
 			return target;
@@ -18201,7 +17830,20 @@ void Interpreter::registerStdLib() {
 	env->set("int", Value::Native([this](const vector<Value> &args, int l, int c) {
 		if (args.empty())
 			return Value::Int(0);
-		Value v = args[0];
+		auto mRes = [this](MethodCallExpr *m) {
+			return this->Resolve_methods(m);
+		};
+		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			if (this->modules.count(lib)) {
+				this->modules[lib](this->env, sym);
+			} else {
+				throw ImportError("Unknown module '" + lib + "'", 0, 0);
+			}
+		};
+		auto dunder = tryCastDunder(args[0], "__to_int__", l, c, this->env, mRes, iRes);
+		if (dunder.first)
+			return dunder.second;
+		Value v = dunder.second;
 		if (v.type == ValueType::INT)
 			return v;
 		if (v.type == ValueType::BIGINT)
@@ -18256,7 +17898,20 @@ void Interpreter::registerStdLib() {
 	env->set("float", Value::Native([this](const vector<Value> &args, int l, int c) {
 		if (args.empty())
 			return Value::Float(0.0, false);
-		Value v = args[0];
+		auto mRes = [this](MethodCallExpr *m) {
+			return this->Resolve_methods(m);
+		};
+		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			if (this->modules.count(lib)) {
+				this->modules[lib](this->env, sym);
+			} else {
+				throw ImportError("Unknown module '" + lib + "'", 0, 0);
+			}
+		};
+		auto dunder = tryCastDunder(args[0], "__to_float__", l, c, this->env, mRes, iRes);
+		if (dunder.first)
+			return dunder.second;
+		Value v = dunder.second;
 		if (v.type == ValueType::FLOAT)
 			return Value::Float(v.asFloat());
 		if (v.type == ValueType::INT)
@@ -18278,13 +17933,40 @@ void Interpreter::registerStdLib() {
 	env->set("bool", Value::Native([this](const vector<Value> &args, int l, int c) {
 		if (args.empty())
 			return Value::Bool(false);
-		return Value::Bool(args[0].isTruthy());
+		auto mRes = [this](MethodCallExpr *m) {
+			return this->Resolve_methods(m);
+		};
+		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			if (this->modules.count(lib)) {
+				this->modules[lib](this->env, sym);
+			} else {
+				throw ImportError("Unknown module '" + lib + "'", 0, 0);
+			}
+		};
+		auto dunder = tryCastDunder(args[0], "__to_bool__", l, c, this->env, mRes, iRes);
+		if (dunder.first)
+			return dunder.second;
+		Value v = dunder.second;
+		return Value::Bool(v.isTruthy());
 	}),
 		false);
 	env->set("string", Value::Native([this](const vector<Value> &args, int l, int c) {
 		if (args.empty())
 			return Value::String("");
-		Value v = args[0];
+		auto mRes = [this](MethodCallExpr *m) {
+			return this->Resolve_methods(m);
+		};
+		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			if (this->modules.count(lib)) {
+				this->modules[lib](this->env, sym);
+			} else {
+				throw ImportError("Unknown module '" + lib + "'", 0, 0);
+			}
+		};
+		auto dunder = tryCastDunder(args[0], "__to_string__", l, c, this->env, mRes, iRes);
+		if (dunder.first)
+			return dunder.second; // The dunder handled it!
+		Value v = dunder.second;
 		switch (v.type) {
 		case ValueType::INT:
 			return Value::String(v.adress ? ptr_to_string(v.adress) : std::to_string(v.asInt()));
@@ -18315,139 +17997,159 @@ void Interpreter::registerStdLib() {
 	env->set("range", Value::Native([this](const vector<Value> &args, int l, int c) {
 		if (args.empty())
 			return Value::Range(0, 0, 1, false, false, false);
-		if (args.size() == 1 && args[0].type == ValueType::RANGE)
-			return args[0];
+		std::vector<Value> safeArgs = args;
+		if (args.size() == 1) {
+			auto mRes = [this](MethodCallExpr *m) {
+				return this->Resolve_methods(m);
+			};
+			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+				if (this->modules.count(lib)) {
+					this->modules[lib](this->env, sym);
+				} else {
+					throw ImportError("Unknown module '" + lib + "'", 0, 0);
+				}
+			};
+			auto dunder = tryCastDunder(args[0], "__to_range__", l, c, this->env, mRes, iRes);
+			if (dunder.first)
+				return dunder.second;
+			safeArgs[0] = dunder.second;
+			if (safeArgs[0].type == ValueType::RANGE)
+				return safeArgs[0];
+		}
 		double start = 0, end = 0, step = 1;
 		bool isFloat = false;
 		auto checkFloat = [&](const Value &v) {
 			if (v.type == ValueType::FLOAT)
 				isFloat = true;
 		};
-		if (args.size() == 1) {
-			checkFloat(args[0]);
-			end = args[0].asFloat();
-		} else if (args.size() >= 2) {
-			checkFloat(args[0]);
-			checkFloat(args[1]);
-			start = args[0].asFloat();
-			end = args[1].asFloat();
+		if (safeArgs.size() == 1) {
+			checkFloat(safeArgs[0]);
+			end = safeArgs[0].asFloat();
+		} else if (safeArgs.size() >= 2) {
+			checkFloat(safeArgs[0]);
+			checkFloat(safeArgs[1]);
+			start = safeArgs[0].asFloat();
+			end = safeArgs[1].asFloat();
 		}
-		if (args.size() == 3) {
-			checkFloat(args[2]);
-			step = args[2].asFloat();
+		if (safeArgs.size() == 3) {
+			checkFloat(safeArgs[2]);
+			step = safeArgs[2].asFloat();
 		}
 		return Value::Range(start, end, step, true, false, isFloat);
 	}),
 		false);
 	env->set("list", Value::Native([this](const vector<Value> &args, int l, int c) {
-		if (args.empty() || args.size() > 1) {
-			vector<Value> vals;
-			for (auto &v : args)
-				vals.push_back(v);
-			return Value::List(vals);
-		}
-		if (!args.empty() && args[0].type == ValueType::RANGE) {
-			auto *r = static_cast<RangeObject *>(args[0].ref.get());
-			vector<Value> elems;
-			double current = r->start;
-			if (!r->startInclusive)
-				current += r->step;
-			if ((r->step > 0 && r->start > r->end) ||
-				 (r->step < 0 && r->start < r->end) || r->step == 0)
-				return Value::List({});
-			double diff = std::abs(r->end - r->start);
-			double steps = diff / std::abs(r->step);
-			if (steps > 1000000)
-				throw MemoryError(
-					"MemoryError: Range too large to convert to list", l, c);
-			while (true) {
-				bool cond;
-				if (r->step > 0)
-					cond = r->endInclusive ? (current <= r->end) : (current < r->end);
-				else
-					cond = r->endInclusive ? (current >= r->end) : (current > r->end);
-				if (!cond)
-					break;
-				if (r->isFloat)
-					elems.push_back(Value::Float(current));
-				else
-					elems.push_back(Value::Int((long long)current));
-				current += r->step;
+		if (args.empty())
+			return Value::List({});
+		if (args.size() == 1) {
+			auto mRes = [this](MethodCallExpr *m) {
+				return this->Resolve_methods(m);
+			};
+			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+				if (this->modules.count(lib)) {
+					this->modules[lib](this->env, sym);
+				} else {
+					throw ImportError("Unknown module '" + lib + "'", 0, 0);
+				}
+			};
+			auto dunder = tryCastDunder(args[0], "__to_list__", l, c, this->env, mRes, iRes);
+			if (dunder.first)
+				return dunder.second;
+			Value src = dunder.second;
+			if (src.type == ValueType::RANGE) {
+				auto *r = static_cast<RangeObject *>(src.ref.get());
+				vector<Value> elems;
+				double current = r->start;
+				if (!r->startInclusive)
+					current += r->step;
+				if ((r->step > 0 && r->start > r->end) || (r->step < 0 && r->start < r->end) || r->step == 0)
+					return Value::List({});
+				double diff = std::abs(r->end - r->start);
+				double steps = diff / std::abs(r->step);
+				if (steps > 1000000)
+					throw MemoryError("MemoryError: Range too large to convert to list", l, c);
+				while (true) {
+					bool cond = (r->step > 0) ? (r->endInclusive ? (current <= r->end) : (current < r->end))
+													  : (r->endInclusive ? (current >= r->end) : (current > r->end));
+					if (!cond)
+						break;
+					elems.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
+					current += r->step;
+				}
+				return Value::List(elems);
 			}
-			return Value::List(elems);
+			if (src.type == ValueType::SET) {
+				auto *s = static_cast<SetObject *>(src.ref.get());
+				std::vector<Value> res(s->elements.begin(), s->elements.end());
+				return Value::List(res);
+			}
+			if (src.type == ValueType::TUPLE)
+				return Value::List(static_cast<TupleObject *>(src.ref.get())->elements);
+			if (src.type == ValueType::VECTOR)
+				return Value::List(static_cast<VectorObject *>(src.ref.get())->elements);
+			return Value::List({src});
 		}
-		if (!args.empty() && args[0].type == ValueType::SET) {
-			auto *s = static_cast<SetObject *>(args[0].ref.get());
-			std::vector<Value> res;
-			res.reserve(s->elements.size());
-			res.assign(s->elements.begin(), s->elements.end());
-			return Value::List(res);
-		}
-		if (!args.empty() && args[0].type == ValueType::TUPLE) {
-			auto *t = static_cast<TupleObject *>(args[0].ref.get());
-			return Value::List(t->elements);
-		}
-		if (!args.empty() && args[0].type == ValueType::VECTOR) {
-			auto *v = static_cast<VectorObject *>(args[0].ref.get());
-			vector<Value> elems;
-			for (auto d : v->elements)
-				elems.push_back(d);
-			return Value::List(elems);
-		}
+		vector<Value> vals;
+		for (auto &v : args)
+			vals.push_back(v);
+		return Value::List(vals);
 	}),
 		false);
 	env->set("set", Value::Native([this](const vector<Value> &args, int l, int c) {
 		std::unordered_set<Value, ValueHash, ValueEqual> elems;
-		if (args.size() > 1) {
-			for (auto &arg : args)
-				setAdd(elems, arg);
-			return Value::Set(elems);
-		}
 		if (args.empty())
 			return Value::Set({});
-		Value src = args[0];
-		if (src.type == ValueType::LIST) {
-			auto *l = static_cast<ListObject *>(src.ref.get());
-			for (auto &e : l->elements)
-				setAdd(elems, e);
-		} else if (src.type == ValueType::RANGE) {
-			auto *r = static_cast<RangeObject *>(src.ref.get());
-			double current = r->start;
-			if (!r->startInclusive)
-				current += r->step;
-			while (true) {
-				bool cond;
-				if (r->step > 0)
-					cond = r->endInclusive ? (current <= r->end)
-												  : (current < r->end);
-				else
-					cond = r->endInclusive ? (current >= r->end)
-												  : (current > r->end);
-				if (!cond)
-					break;
-				Value v = r->isFloat ? Value::Float(current)
-											: Value::Int((long long)current);
-				setAdd(elems, v);
-				current += r->step;
+		if (args.size() == 1) {
+			auto mRes = [this](MethodCallExpr *m) {
+				return this->Resolve_methods(m);
+			};
+			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+				if (this->modules.count(lib)) {
+					this->modules[lib](this->env, sym);
+				} else {
+					throw ImportError("Unknown module '" + lib + "'", 0, 0);
+				}
+			};
+			auto dunder = tryCastDunder(args[0], "__to_set__", l, c, this->env, mRes, iRes);
+			if (dunder.first)
+				return dunder.second;
+			Value src = dunder.second;
+			if (src.type == ValueType::LIST) {
+				auto *listObj = static_cast<ListObject *>(src.ref.get());
+				for (auto &e : listObj->elements)
+					setAdd(elems, e);
+			} else if (src.type == ValueType::RANGE) {
+				auto *r = static_cast<RangeObject *>(src.ref.get());
+				double current = r->start;
+				if (!r->startInclusive)
+					current += r->step;
+				while (true) {
+					bool cond = (r->step > 0) ? (r->endInclusive ? (current <= r->end) : (current < r->end))
+													  : (r->endInclusive ? (current >= r->end) : (current > r->end));
+					if (!cond)
+						break;
+					setAdd(elems, r->isFloat ? Value::Float(current) : Value::Int((long long)current));
+					current += r->step;
+				}
+			} else if (src.type == ValueType::VECTOR) {
+				for (auto d : static_cast<VectorObject *>(src.ref.get())->elements)
+					setAdd(elems, d);
+			} else if (src.type == ValueType::STRING) {
+				for (char c : src.asString())
+					setAdd(elems, Value::String(string(1, c)));
+			} else if (src.type == ValueType::SET) {
+				for (auto &e : static_cast<SetObject *>(src.ref.get())->elements)
+					setAdd(elems, e);
+			} else if (src.type == ValueType::TUPLE) {
+				for (auto &e : static_cast<TupleObject *>(src.ref.get())->elements)
+					setAdd(elems, e);
+			} else {
+				setAdd(elems, src);
 			}
-		} else if (src.type == ValueType::VECTOR) {
-			auto *v = static_cast<VectorObject *>(src.ref.get());
-			for (auto d : v->elements)
-				setAdd(elems, d);
-		} else if (src.type == ValueType::STRING) {
-			for (char c : src.asString())
-				setAdd(elems, Value::String(string(1, c)));
-		} else if (src.type == ValueType::SET) {
-			auto *s = static_cast<SetObject *>(src.ref.get());
-			for (auto &e : s->elements)
-				setAdd(elems, e);
-		} else if (src.type == ValueType::TUPLE) {
-			auto *t = static_cast<TupleObject *>(src.ref.get());
-			for (auto &e : t->elements)
-				setAdd(elems, e);
-		} else {
-			setAdd(elems, src);
+			return Value::Set(elems);
 		}
+		for (auto &arg : args)
+			setAdd(elems, arg);
 		return Value::Set(elems);
 	}),
 		false);
@@ -18455,15 +18157,25 @@ void Interpreter::registerStdLib() {
 		if (args.empty())
 			return Value::Tuple({});
 		if (args.size() == 1) {
-			Value src = args[0];
+			auto mRes = [this](MethodCallExpr *m) {
+				return this->Resolve_methods(m);
+			};
+			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+				if (this->modules.count(lib)) {
+					this->modules[lib](this->env, sym);
+				} else {
+					throw ImportError("Unknown module '" + lib + "'", 0, 0);
+				}
+			};
+			auto dunder = tryCastDunder(args[0], "__to_tuple__", l, c, this->env, mRes, iRes);
+			if (dunder.first)
+				return dunder.second;
+			Value src = dunder.second;
 			if (src.type == ValueType::LIST)
-				return Value::Tuple(
-					static_cast<ListObject *>(src.ref.get())->elements);
+				return Value::Tuple(static_cast<ListObject *>(src.ref.get())->elements);
 			if (src.type == ValueType::SET) {
 				auto s = static_cast<SetObject *>(src.ref.get())->elements;
-				std::vector<Value> v;
-				v.reserve(s.size());
-				v.assign(s.begin(), s.end());
+				std::vector<Value> v(s.begin(), s.end());
 				return Value::Tuple(v);
 			}
 			if (src.type == ValueType::RANGE) {
@@ -18473,28 +18185,20 @@ void Interpreter::registerStdLib() {
 				if (!r->startInclusive)
 					current += r->step;
 				while (true) {
-					bool cond = (r->step > 0)
-										? (r->endInclusive ? current <= r->end
-																 : current < r->end)
-										: (r->endInclusive ? current >= r->end
-																 : current > r->end);
+					bool cond = (r->step > 0) ? (r->endInclusive ? current <= r->end : current < r->end)
+													  : (r->endInclusive ? current >= r->end : current > r->end);
 					if (!cond)
 						break;
-					elems.push_back(r->isFloat ? Value::Float(current)
-														: Value::Int((long long)current));
+					elems.push_back(r->isFloat ? Value::Float(current) : Value::Int((long long)current));
 					current += r->step;
 				}
 				return Value::Tuple(elems);
 			}
 			if (src.type == ValueType::TUPLE)
 				return src;
-			if (src.type == ValueType::VECTOR) {
-				auto *v = static_cast<VectorObject *>(src.ref.get());
-				vector<Value> elems;
-				for (auto d : v->elements)
-					elems.push_back(d);
-				return Value::Tuple(elems);
-			}
+			if (src.type == ValueType::VECTOR)
+				return Value::Tuple(static_cast<VectorObject *>(src.ref.get())->elements);
+			return Value::Tuple({src});
 		}
 		vector<Value> elems;
 		for (auto &arg : args)
@@ -18503,9 +18207,31 @@ void Interpreter::registerStdLib() {
 	}),
 		false);
 	env->set("dict", Value::Native([this](const vector<Value> &args, int l, int c) {
+		if (args.empty())
+			return Value::Dict({});
+		if (args.size() == 1) {
+			auto mRes = [this](MethodCallExpr *m) {
+				return this->Resolve_methods(m);
+			};
+			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+				if (this->modules.count(lib)) {
+					this->modules[lib](this->env, sym);
+				} else {
+					throw ImportError("Unknown module '" + lib + "'", 0, 0);
+				}
+			};
+			auto dunder = tryCastDunder(args[0], "__to_dict__", l, c, this->env, mRes, iRes);
+			if (dunder.first)
+				return dunder.second;
+		}
 		std::unordered_map<Value, Value, ValueHash, ValueEqual> map;
-		for (const auto &arg : args) {
-			Value v = arg;
+		for (size_t i = 0; i < args.size(); i++) {
+			Value v = args[i];
+			while (v.type == ValueType::REFERENCE) {
+				if (!v.ptr)
+					throw RuntimeError("Null reference in dict()", l, c);
+				v = *v.ptr;
+			}
 			if (v.type != ValueType::PAIRED) {
 				throw TypeError("dict() requires 'key : value' arguments or 'pair()' objects", l, c);
 			}
@@ -18513,8 +18239,7 @@ void Interpreter::registerStdLib() {
 			for (const auto &pair : pObj->pairs) {
 				Value key = pair.first;
 				Value val = pair.second;
-				if (key.type == ValueType::LIST || key.type == ValueType::SET ||
-					 key.type == ValueType::DICT) {
+				if (key.type == ValueType::LIST || key.type == ValueType::SET || key.type == ValueType::DICT) {
 					if (key.type == ValueType::DICT)
 						throw TypeError("Dictionary cannot be used as a key (unhashable)", l, c);
 					key = deepCopy(key);
@@ -18599,12 +18324,18 @@ void Interpreter::registerStdLib() {
 			return Value::Int(0);
 		if (args.size() > 1)
 			throw ArgumentError("length() takes exactly one argument", l, c);
-		Value v = args[0];
-		while (v.type == ValueType::REFERENCE) {
-			if (!v.ptr)
-				throw RuntimeError("Attempted to dereference a null pointer!", l, c);
-			v = *v.ptr;
+		auto mRes = [this](MethodCallExpr *m) { return this->Resolve_methods(m); };
+		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			if (this->modules.count(lib))
+				this->modules[lib](this->env, sym);
+			else
+				throw ImportError("Unknown module '" + lib + "'", 0, 0);
+		};
+		auto dunder = tryCastDunder(args[0], "__count__", l, c, this->env, mRes, iRes);
+		if (dunder.first) {
+			return dunder.second;
 		}
+		Value v = dunder.second;
 		if (v.type == ValueType::LIST) {
 			auto *list = static_cast<ListObject *>(v.ref.get());
 			return Value::Int(list->elements.size());
@@ -18797,8 +18528,19 @@ void Interpreter::registerStdLib() {
 		if (args.size() < 2)
 			throw ArgumentError("max(), takes at least 2 arguments", l, c);
 		auto maxVal = Value::NoType();
+		auto mRes = [this](MethodCallExpr *m) {
+			return this->Resolve_methods(m);
+		};
+
+		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			if (this->modules.count(lib)) {
+				this->modules[lib](this->env, sym);
+			} else {
+				throw ImportError("Unknown module '" + lib + "'", 0, 0);
+			}
+		};
 		for (int i = 1; i < args.size(); i++) {
-			maxVal = lessValue(args[i - 1], args[i]) ? args[i] : args[i - 1];
+			maxVal = lessValue(args[i - 1], args[i], this->env, mRes, iRes) ? args[i] : args[i - 1];
 		}
 		return maxVal;
 	}),
@@ -18807,8 +18549,19 @@ void Interpreter::registerStdLib() {
 		if (args.size() < 2)
 			throw ArgumentError("min(), takes at least 2 arguments", l, c);
 		auto minVal = Value::NoType();
+		auto mRes = [this](MethodCallExpr *m) {
+			return this->Resolve_methods(m);
+		};
+
+		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			if (this->modules.count(lib)) {
+				this->modules[lib](this->env, sym);
+			} else {
+				throw ImportError("Unknown module '" + lib + "'", 0, 0);
+			}
+		};
 		for (int i = 1; i < args.size(); i++) {
-			minVal = lessValue(args[i - 1], args[i]) ? args[i - 1] : args[i];
+			minVal = lessValue(args[i - 1], args[i], this->env, mRes, iRes) ? args[i - 1] : args[i];
 		}
 		return minVal;
 	}),
@@ -19091,6 +18844,240 @@ void Interpreter::registerStdLib() {
 		return raw_result;
 	}),
 		false);
+}
+inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver) {
+	while (v.type == ValueType::REFERENCE) {
+		if (!v.ptr)
+			throw RuntimeError("Attempted to dereference a null pointer!", l, c);
+		v = *v.ptr;
+	}
+
+	if (v.type == ValueType::INSTANCE) {
+		auto *inst = static_cast<InstanceObject *>(v.ref.get());
+		ClassObject *cls = inst->klass;
+		ClassObject::MethodInfo *dunderMethod = nullptr;
+		ClassObject *methodOwner = nullptr;
+
+		for (auto *ancestor : cls->mro) {
+			if (ancestor->methods.count(dunderName)) {
+				dunderMethod = &ancestor->methods[dunderName];
+				methodOwner = ancestor;
+				break;
+			}
+		}
+
+		if (dunderMethod) {
+			Value classObjVal;
+			classObjVal.type = ValueType::CLASS;
+			classObjVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject *) {});
+
+			if (dunderMethod->func.type == ValueType::NATIVE_FUNCTION) {
+				auto *nat = static_cast<NativeFunctionObject *>(dunderMethod->func.ref.get());
+				std::vector<Value> args = {v, classObjVal};
+				return {true, nat->func(args, l, c)};
+			} else {
+				// ---> INJECT THE CONTEXT INTO THE TEMP VM <---
+				VM tempVM;
+				tempVM.globals = globals;
+				tempVM.methodResolver = methodResolver;
+				tempVM.importResolver = importResolver;
+
+				Chunk tempChunk;
+				int selfIdx = tempChunk.addConstant(v);
+				tempChunk.write(OpCode::OP_CONSTANT, l, c);
+				tempChunk.write((uint8_t)selfIdx, l, c);
+
+				int objIdx = tempChunk.addConstant(classObjVal);
+				tempChunk.write(OpCode::OP_CONSTANT, l, c);
+				tempChunk.write((uint8_t)objIdx, l, c);
+
+				int methIdx = tempChunk.addConstant(dunderMethod->func);
+				tempChunk.write(OpCode::OP_CONSTANT, l, c);
+				tempChunk.write((uint8_t)methIdx, l, c);
+
+				tempChunk.write(OpCode::OP_CALL, l, c);
+				tempChunk.write((uint8_t)2, l, c);
+				tempChunk.write(OpCode::OP_RETURN, l, c);
+
+				try {
+					tempVM.run(tempChunk);
+					if (!tempVM.stack.empty())
+						return {true, tempVM.stack.back()};
+				} catch (...) {
+					throw;
+				}
+				return {true, Value::None()};
+			}
+		}
+	}
+	return {false, v};
+}
+inline bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver) {
+	if (a.type == ValueType::REFERENCE) {
+		if (b.type == ValueType::REFERENCE) {
+			return lessValue(*a.ptr, *b.ptr, globals, methodResolver, importResolver);
+		} else {
+			return lessValue(*a.ptr, b, globals, methodResolver, importResolver);
+		}
+	} else if (b.type == ValueType::REFERENCE) {
+		return lessValue(a, *b.ptr, globals, methodResolver, importResolver);
+	}
+	if (a.type == ValueType::INSTANCE) {
+		auto *instA = static_cast<InstanceObject *>(a.ref.get());
+		ClassObject *clsA = instA->klass;
+		ClassObject::MethodInfo *lessMethod = nullptr;
+		ClassObject *methodOwner = nullptr;
+
+		for (auto *ancestor : clsA->mro) {
+			if (ancestor->methods.count("__less__")) {
+				lessMethod = &ancestor->methods["__less__"];
+				methodOwner = ancestor;
+				break;
+			}
+		}
+
+		if (lessMethod) {
+			Value classObjVal;
+			classObjVal.type = ValueType::CLASS;
+			classObjVal.ref = std::shared_ptr<HeapObject>(methodOwner, [](HeapObject *) {});
+
+			// PATH A: Native C++ Dunder
+			if (lessMethod->func.type == ValueType::NATIVE_FUNCTION) {
+				auto *nat = static_cast<NativeFunctionObject *>(lessMethod->func.ref.get());
+				std::vector<Value> args = {a, classObjVal, b};
+				return nat->func(args, 0, 0).isTruthy();
+			}
+			// PATH B: y-- Bytecode Dunder (Temp VM)
+			else {
+				VM tempVM;
+				tempVM.globals = globals;
+				tempVM.methodResolver = methodResolver;
+				tempVM.importResolver = importResolver;
+
+				Chunk tempChunk;
+
+				// Push self
+				int selfIdx = tempChunk.addConstant(a);
+				tempChunk.write(OpCode::OP_CONSTANT, 0, 0);
+				tempChunk.write((uint8_t)selfIdx, 0, 0);
+
+				// Push classObj
+				int objIdx = tempChunk.addConstant(classObjVal);
+				tempChunk.write(OpCode::OP_CONSTANT, 0, 0);
+				tempChunk.write((uint8_t)objIdx, 0, 0);
+
+				// Push other (b)
+				int otherIdx = tempChunk.addConstant(b);
+				tempChunk.write(OpCode::OP_CONSTANT, 0, 0);
+				tempChunk.write((uint8_t)otherIdx, 0, 0);
+
+				// Push method
+				int methIdx = tempChunk.addConstant(lessMethod->func);
+				tempChunk.write(OpCode::OP_CONSTANT, 0, 0);
+				tempChunk.write((uint8_t)methIdx, 0, 0);
+
+				// Call (self, class, other)
+				tempChunk.write(OpCode::OP_CALL, 0, 0);
+				tempChunk.write((uint8_t)3, 0, 0);
+				tempChunk.write(OpCode::OP_RETURN, 0, 0);
+
+				try {
+					tempVM.run(tempChunk);
+					if (!tempVM.stack.empty())
+						return tempVM.stack.back().isTruthy();
+				} catch (...) {
+					throw;
+				} // Let user crashes propagate cleanly
+				return false;
+			}
+		}
+	}
+	if (a.type != b.type) {
+		bool aIsNum = (a.type == ValueType::INT || a.type == ValueType::FLOAT || a.type == ValueType::BIGINT);
+		bool bIsNum = (b.type == ValueType::INT || b.type == ValueType::FLOAT || b.type == ValueType::BIGINT);
+		if (aIsNum && bIsNum) {
+			if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
+				return a.asFloat() < b.asFloat();
+			}
+			BigIntObject tempA(0), tempB(0);
+			BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
+			BigIntObject *bb = (b.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(b.ref.get()) : &(tempB = BigIntObject(b.asInt()));
+			return *ba < *bb;
+		}
+		return a.type < b.type;
+	}
+	switch (a.type) {
+	case ValueType::INT:
+		return a.asInt() < b.asInt();
+	case ValueType::FLOAT:
+		return a.asFloat() < b.asFloat();
+	case ValueType::STRING:
+		return a.asString() < b.asString();
+	case ValueType::BOOL:
+		return a.asBool() < b.asBool();
+	case ValueType::BIGINT: {
+		auto *b1 = static_cast<BigIntObject *>(a.ref.get());
+		auto *b2 = static_cast<BigIntObject *>(b.ref.get());
+		return *b1 < *b2;
+	}
+	case ValueType::TUPLE: {
+		auto *t1 = static_cast<TupleObject *>(a.ref.get());
+		auto *t2 = static_cast<TupleObject *>(b.ref.get());
+		if (t1->elements.empty() && t2->elements.empty())
+			return false;
+		if (t1->elements.empty())
+			return true;
+		if (t2->elements.empty())
+			return false;
+		return lessValue(t1->elements[0], t2->elements[0], globals, methodResolver, importResolver);
+	}
+	case ValueType::VECTOR: {
+		auto *v1 = static_cast<VectorObject *>(a.ref.get());
+		auto *v2 = static_cast<VectorObject *>(b.ref.get());
+		bool hasFloat = false;
+		for (const auto &val : v1->elements)
+			if (val.type == ValueType::FLOAT)
+				hasFloat = true;
+		for (const auto &val : v2->elements)
+			if (val.type == ValueType::FLOAT)
+				hasFloat = true;
+		if (hasFloat) {
+			double mag1 = 0.0, mag2 = 0.0;
+			for (const auto &val : v1->elements) {
+				double v = val.asFloat();
+				mag1 += (v * v);
+			}
+			for (const auto &val : v2->elements) {
+				double v = val.asFloat();
+				mag2 += (v * v);
+			}
+			return mag1 < mag2;
+		} else {
+			Value mag1 = Value::Int(0);
+			for (const auto &val : v1->elements) {
+				Value sq = BigIntObject::mul(val, val);
+				mag1 = BigIntObject::add(mag1, sq);
+			}
+			Value mag2 = Value::Int(0);
+			for (const auto &val : v2->elements) {
+				Value sq = BigIntObject::mul(val, val);
+				mag2 = BigIntObject::add(mag2, sq);
+			}
+			return lessValue(mag1, mag2, globals, methodResolver, importResolver);
+		}
+	}
+	case ValueType::LIST: {
+		auto *l1 = static_cast<ListObject *>(a.ref.get());
+		auto *l2 = static_cast<ListObject *>(b.ref.get());
+		return std::lexicographical_compare(
+			l1->elements.begin(), l1->elements.end(), l2->elements.begin(),
+			l2->elements.end(),
+			// Recursive call for elements
+			[&](const Value &x, const Value &y) { return lessValue(x, y, globals, methodResolver, importResolver); });
+	}
+	default:
+		return false;
+	}
 }
 
 JitRuntime &AsmJitCompiler::getRuntime() {
