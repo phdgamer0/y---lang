@@ -397,10 +397,10 @@ define function main():{
    let sky_ground_texture_array = render_ground_sky()
    let sky = @sky_ground_texture_array[0]
    let ground = @sky_ground_texture_array[1]
-   let wall_texture = LoadTexture('src/pixwall.png')
-   let enemy_txture = LoadTexture("src/images.png")
-   let death_screen_texture = LoadTexture('src/death_screen.png')
-   let arial_font = LoadFont('src/ARIAL.TTF')
+   let wall_texture = LoadTexture('example programs/src/pixwall.png')
+   let enemy_txture = LoadTexture("example programs/src/images.png")
+   let death_screen_texture = LoadTexture('example programs/src/death_screen.png')
+   let arial_font = LoadFont('example programs/src/ARIAL.TTF')
    let Loading_length = MeasureTextEx(arial_font, "LOADING...", 20, 1)
    let game_over_length = MeasureTextEx(arial_font, "Press ENTER to restart...", 20, 1)
    DrawTextEx(arial_font, "LOADING...", <W // 2, H // 2> - Loading_length // 2, 20, 1, WHITE)
