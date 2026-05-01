@@ -50,8 +50,8 @@ int main(int argc, char *argv[]) {
 	ss << file.rdbuf();
 	string code = ss.str();
 	DEBUGGER_MODE_IS_ENABLED = false;
-	std::chrono::time_point<std::chrono::_V2::system_clock, std::chrono::_V2::system_clock::duration> start;
-	std::chrono::time_point<std::chrono::_V2::system_clock, std::chrono::_V2::system_clock::duration> end;
+	std::chrono::steady_clock::time_point start;
+	std::chrono::steady_clock::time_point end;
 	try {
 		auto tokens = tokenize(code);
 		Parser parser(tokens);
@@ -80,10 +80,10 @@ int main(int argc, char *argv[]) {
 #endif
 		useVM = 1;
 		Interpreter interp;
-		start = std::chrono::high_resolution_clock::now();
+		start = std::chrono::steady_clock::now();
 		if (!useVM) {
 			interp.interpret(program);
-			end = std::chrono::high_resolution_clock::now();
+			end = std::chrono::steady_clock::now();
 			std::cout << "Program finished successfully with code 0";
 		} else {
 #ifndef VM_DEBUG_MODE
@@ -129,7 +129,7 @@ int main(int argc, char *argv[]) {
 					bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
 					vm.run(bootChunk);
 				}
-				end = std::chrono::high_resolution_clock::now();
+				end = std::chrono::steady_clock::now();
 				std::chrono::duration<double> elapsed = end - start;
 				std::cout << "Program finished successfully in " << elapsed.count() << " seconds " << "with code 0";
 				vm.globals->clear();
