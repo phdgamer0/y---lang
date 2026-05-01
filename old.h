@@ -1776,6 +1776,8 @@ class Parser {
 							ptype = ValueType::INSTANCE;
 						else if (t == "None")
 							ptype = ValueType::NONE;
+						else if (t == "file")
+							ptype = ValueType::FILE;
 						else
 							throw SyntaxError("Unknown type '" + t + "'",
 								tokens[pos - 1].line,
@@ -1845,6 +1847,8 @@ class Parser {
 					retType = ValueType::INSTANCE;
 				else if (t == "None")
 					retType = ValueType::NONE;
+				else if (t == "file")
+					retType = ValueType::FILE;
 				else
 					throw SyntaxError("Unknown return type '" + t + "'",
 						tokens[pos - 1].line, tokens[pos - 1].col);
@@ -2524,6 +2528,8 @@ class Parser {
 							ptype = ValueType::FUNCTION;
 						else if (t == "object")
 							ptype = ValueType::INSTANCE;
+						else if (t == "file")
+							ptype = ValueType::FILE;
 						else
 							throw SyntaxError("Unknown type '" + t + "'",
 								tokens[pos - 1].line,
@@ -2592,6 +2598,8 @@ class Parser {
 					retType = ValueType::VECTOR;
 				else if (t == "object")
 					retType = ValueType::INSTANCE;
+				else if (t == "file")
+					retType = ValueType::FILE;
 				else
 					throw SyntaxError("Unknown return type '" + t + "'",
 						tokens[pos - 1].line, tokens[pos - 1].col);
@@ -4762,6 +4770,9 @@ enum class Magic_Methods : uint8_t {
 	*/
 	__var_count__,
 	__var_names__,
+	__var_values__,
+	__var_pairs__,
+	__var_reverse_pairs__,
 	__function_count__,
 	__function_names__,
 	__all_count__,
@@ -9956,6 +9967,7 @@ struct VM {
 				DISPATCH();
 #else
 			loop_start:
+				currentChunk = frame->function ? frame->function->chunk : &chunk;
 				RUN_DEBUGGER();
 				instruction = static_cast<OpCode>(*ip++);
 				int offset = (int)(ip - currentChunk->code.data());
@@ -10060,8 +10072,8 @@ struct VM {
 							string name = currentChunk->constants[nameIdx].asString();
 							Value obj = pop();
 							if (name == "__mro__" || name == "__var_count__" || name == "__var_names__" ||
-								 name == "__function_count__" || name == "__function_names__" ||
-								 name == "__all_count__" || name == "__all_names__") {
+								 name == "__function_count__" || name == "__function_names__" || name == "__var_reverse_pairs__" ||
+								 name == "__all_count__" || name == "__all_names__" || name == "__var_values__" || name == "__var_pairs__") {
 								ClassObject *cls = nullptr;
 								InstanceObject *inst = nullptr;
 								if (obj.type == ValueType::INSTANCE) {
@@ -10080,13 +10092,34 @@ struct VM {
 									stack.push_back(Value::List(mroList->elements));
 								} else {
 									bool wantsNames = (name.find("_names__") != string::npos);
+									bool wantsValues = (name.find("_values__") != string::npos);
+									bool wantsPairs = (name.find("_pairs__") != string::npos);
+									bool wantsReverse = (name.find("_reverse_") != string::npos);
 									bool wantsVars = (name.find("__var_") != string::npos || name.find("__all_") != string::npos);
 									bool wantsFuncs = (name.find("__function_") != string::npos || name.find("__all_") != string::npos);
 									std::unordered_set<std::string> seen;
-									auto nameList = std::make_shared<ListObject>();
+									std::unordered_set<Value, ValueHash, ValueEqual> seenVal;
+									auto nameList = std::make_shared<SetObject>();
+									auto valueList = std::make_shared<SetObject>();
+									auto pairDict = std::make_shared<DictObject>();
 									auto addName = [&](const std::string &n) {
 										if (seen.insert(n).second && wantsNames) {
-											nameList->elements.push_back(Value::String(n));
+											nameList->elements.insert(Value::String(n));
+										}
+									};
+									auto addVal = [&](const Value &n) {
+										if (seenVal.insert(n).second && wantsValues) {
+											valueList->elements.insert(n);
+										}
+									};
+									auto addPair = [&](const std::string &n, const Value &v) {
+										if (seen.insert(n).second && seenVal.insert(v).second && wantsPairs) {
+											pairDict->items[Value::String(n)] = v;
+										}
+									};
+									auto addReversePair = [&](const std::string &n, const Value &v) {
+										if (seen.insert(n).second && seenVal.insert(v).second && wantsPairs && wantsReverse) {
+											pairDict->items[v] = Value::String(n);
 										}
 									};
 									if (cls) {
@@ -10094,15 +10127,35 @@ struct VM {
 											if (inst) {
 												for (const auto &pair : inst->fields) {
 													AccessLevel acc = cls->fieldAccess.count(pair.first) ? cls->fieldAccess[pair.first] : AccessLevel::PUBLIC;
-													if (acc == AccessLevel::PUBLIC)
-														addName(pair.first);
+													if (acc == AccessLevel::PUBLIC) {
+														if (wantsValues) {
+															addVal(pair.second);
+														} else if (wantsPairs) {
+															if (wantsReverse)
+																addReversePair(pair.first, pair.second);
+															else
+																addPair(pair.first, pair.second);
+														} else {
+															addName(pair.first);
+														}
+													}
 												}
 											}
 											for (auto *ancestor : cls->mro) {
 												for (const auto &pair : ancestor->staticFields) {
 													AccessLevel acc = ancestor->fieldAccess.count(pair.first) ? ancestor->fieldAccess[pair.first] : AccessLevel::PUBLIC;
-													if (acc == AccessLevel::PUBLIC)
-														addName(pair.first);
+													if (acc == AccessLevel::PUBLIC) {
+														if (wantsValues) {
+															addVal(pair.second);
+														} else if (wantsPairs) {
+															if (wantsReverse)
+																addReversePair(pair.first, pair.second);
+															else
+																addPair(pair.first, pair.second);
+														} else {
+															addName(pair.first);
+														}
+													}
 												}
 											}
 										}
@@ -10117,7 +10170,11 @@ struct VM {
 										}
 									}
 									if (wantsNames) {
-										stack.push_back(Value::List(nameList->elements));
+										stack.push_back(Value::Set(nameList->elements));
+									} else if (wantsValues) {
+										stack.push_back(Value::Set(valueList->elements));
+									} else if (wantsPairs) {
+										stack.push_back(Value::Dict(pairDict->items));
 									} else {
 										stack.push_back(Value::Int(seen.size()));
 									}
@@ -15937,6 +15994,46 @@ void Interpreter::registerStdLib() {
 			}
 			return Value::Float(result);
 		});
+		define("ConvertToBase", [&](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3)
+				throw ArgumentError("ConvertToBase() expects exactly 3 arguments (string_num, curr_base, target_base)", l, c);
+			auto CharToVal = [](char c) -> int {
+				if (c >= '0' && c <= '9')
+					return c - '0';
+				if (c >= 'A' && c <= 'Z')
+					return c - 'A' + 10;
+				if (c >= 'a' && c <= 'z')
+					return c - 'a' + 10;
+			};
+			auto ValToChar = [](long long v) -> char {
+				if (v >= 0 && v <= 9)
+					return v + '0';
+				return v - 10 + 'A';
+			};
+			std::string num = args[0].asString();
+			long long n = args[1].asInt();
+			long long m = args[2].asInt();
+			if (n < 2 || n > 36 || m < 2 || m > 36)
+				throw ValueError("Invalid Base", l, c);
+			long long decimalVal = 0;
+			long long power = 1;
+			for (int i = num.length() - 1; i >= 0; i--) {
+				int val = CharToVal(num[i]);
+				if (val < 0 || val >= n)
+					throw ValueError("Invalid Input for Base", l, c);
+				decimalVal += val * power;
+				power *= n;
+			}
+			if (decimalVal == 0)
+				return Value::String("0");
+			std::string result = "";
+			while (decimalVal > 0) {
+				result += ValToChar(decimalVal % m);
+				decimalVal /= m;
+			}
+			std::reverse(result.begin(), result.end());
+			return Value::String(result);
+		});
 		// Trig
 		define("Sin", [&](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
@@ -16482,6 +16579,7 @@ void Interpreter::registerStdLib() {
 		defineValue("BLACK", MakeColor(0, 0, 0, 255));
 		defineValue("BLANK", MakeColor(0, 0, 0, 0));
 		defineValue("MAGENTA", MakeColor(255, 0, 255, 255));
+		defineValue("CYAN", MakeColor(0, 255, 255, 255));
 		defineValue("RAYWHITE", MakeColor(245, 245, 245, 255));
 		define("Color", [=](const vector<Value> &args, int l, int c) {
 			if (args.size() != 4)
