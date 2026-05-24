@@ -4,7 +4,10 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+
 void printErrorContext(const std::string &, int, int, const std::filesystem::path &);
+void ymm_highlighter(std::string const &input, replxx::Replxx::colors_t &colors);
+void runREPL();
 struct ASTCleaner {
 	std::vector<Stmt *> &program;
 	~ASTCleaner() {
@@ -14,18 +17,14 @@ struct ASTCleaner {
 		program.clear();
 	}
 };
+
 int main(int argc, char *argv[]) {
-	/*
-	=====================================================================================================================================
-	|	Change the path to point to your target .ymm file.                                  															|
-	|	Compile & Link: Compile yrun.cpp ensuring Raylib is linked.                    															      |
-	|	g++ -w -O3 -flto yrun.cpp qrcodegen.cpp -o y_lang -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 -lncurses -lssl -lcrypto -lasmjit  |
-	|	if you see this: "Choose Compiler: AST:0 VM:1 DEBUG_VM:2 :" ALWAYS CHOOSE 1         															|
-	=====================================================================================================================================
-	*/
-	// -------------------------------------------------------------------------------
-	if (argc < 2) {
-		std::cerr << "FATAL ERROR: No input file provided.\n";
+	if (argc == 1) {
+		runREPL();
+		return 0;
+	}
+	else if (argc > 2) {
+		std::cerr << "FATAL ERROR: Too many input file provided.\n";
 		std::cerr << "Usage: " << argv[0] << " <file.ymm>\n";
 		return 1;
 	}
@@ -39,8 +38,6 @@ int main(int argc, char *argv[]) {
 		std::cerr << "Interpretation aborted...\n";
 		return 1;
 	}
-	// -------------------------------------------------------------------------------
-	// string path = "/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/test.ymm";
 	std::ifstream file(path);
 	if (!file) {
 		std::cerr << "FATAL ERROR: Cannot open file at path:" << path << "\n";
@@ -135,6 +132,7 @@ int main(int argc, char *argv[]) {
 				vm.globals->clear();
 			}
 			if (!vm.stack.empty()) {
+				vm.stack.clear();
 				// for debugging only!
 				// std::cout << "\n--- Final Stack Top ---\n";
 				// std::cout << valueToString(vm.stack.back()) << "\n";
@@ -172,5 +170,225 @@ void printErrorContext(const string &source, int line, int col, const std::files
 			break;
 		}
 		currentLineNum++;
+	}
+}
+void runREPL() {
+   std::cout << "y-- 1.0.0 Interactive Shell\n";
+   std::cout << "Type 'exit' to quit.\n";
+   std::cout << "Type 'ts' to toggle output supression.\n";
+   std::cout << "Type 'clear' to clear the screen.\n";
+   VM vm;
+   vm.printOutput = true;
+   Interpreter interp;
+   vm.globals = interp.env;
+   vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
+   vm.importResolver = [&](std::string libName, std::vector<std::string> symbols) {
+      if (interp.modules.find(libName) != interp.modules.end())
+         interp.modules[libName](interp.env, symbols);
+      else
+         throw ImportError("Unknown module '" + libName + "'", 0, 0);
+   };
+   replxx::Replxx rx;
+   rx.install_window_change_handler();
+   rx.set_highlighter_callback(ymm_highlighter);
+   std::string codeBuffer = "";
+   int openBraces = 0;
+   int openParens = 0;
+   int openBrackets = 0;
+   while (true) {
+      std::string prompt = (codeBuffer.empty()) ? ">>> " : "... ";
+      char const* c_line = rx.input(prompt);
+      if (!c_line) break;
+      std::string line(c_line);
+      if (codeBuffer.empty()) {
+         if (line == "exit" || line == "quit") {
+            std::cout << "Exiting the interactive shell...\n";
+            break;
+         }
+         if (line == "ts"){
+            vm.printOutput = !vm.printOutput;
+            std::cout << (vm.printOutput ? "output supression disabled" : "output supression enabled") << "\n";
+            rx.history_add(line);
+            continue;
+         }
+         if (line == "clear") {
+            rx.clear_screen();
+            rx.history_add(line);
+            continue;
+         }
+         if (line.empty()) continue;
+      }
+      if (!line.empty()) {
+         rx.history_add(line);
+      }
+      codeBuffer += line + "\n";
+      for (char c : line) {
+         if (c == '{') openBraces++;
+         if (c == '}') openBraces--;
+         if (c == '(') openParens++;
+         if (c == ')') openParens--;
+         if (c == '[') openBrackets++;
+         if (c == ']') openBrackets--;
+      }
+      if (openBraces > 0 || openParens > 0 || openBrackets > 0) {
+         continue;
+      }
+      try {
+         auto tokens = tokenize(codeBuffer);
+         Parser parser(tokens);
+         parser.isReplMode = true;
+         vector<Stmt *> program;
+         ASTCleaner cleanup_guard{program};
+         while (!parser.isAtEnd()) {
+            program.push_back(parser.parseStmt());
+         }
+         Chunk chunk;
+         ByteCodeCompiler compiler(&chunk);
+         compiler.isReplMode = true;
+         for (Stmt *stmt : program) {
+            compiler.compileStmt(stmt);
+         }
+         compiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+         compiler.emitByte(OpCode::OP_RETURN, 0, 0);
+         vm.run(chunk);
+         vm.stack.clear();
+         vm.frames.clear();
+      } catch (const LangError &e) {
+         std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
+         vm.stack.clear();
+         vm.frames.clear();
+      } catch (const std::exception &e) {
+         std::cerr << "Internal C++ Error: " << e.what() << "\n";
+         vm.stack.clear();
+         vm.frames.clear();
+      }
+      codeBuffer = "";
+      openBraces = 0;
+      openParens = 0;
+      openBrackets = 0;
+   }
+}
+void ymm_highlighter(std::string const &input, replxx::Replxx::colors_t &colors) {
+	try {
+		auto tokens = tokenize(input);
+		size_t charIndex = 0;
+		for (const auto &token : tokens) {
+			replxx::Replxx::Color c = replxx::Replxx::Color::DEFAULT;
+			switch (token.type) {
+			case TokenType::LET:
+			case TokenType::DEFINE:
+			case TokenType::FUNCTION:
+			case TokenType::RETURN:
+			case TokenType::IF:
+			case TokenType::ELSE_IF:
+			case TokenType::ELSE:
+			case TokenType::FOR:
+			case TokenType::WHILE:
+			case TokenType::DO:
+			case TokenType::THEN:
+			case TokenType::BREAK:
+			case TokenType::CONTINUE:
+			case TokenType::SKIP:
+			case TokenType::DELETE:
+			case TokenType::CONST:
+			case TokenType::ASSERT:
+			case TokenType::SWITCH:
+			case TokenType::CASE:
+			case TokenType::DEFAULT:
+			case TokenType::TRY:
+			case TokenType::THROW:
+			case TokenType::CATCH:
+			case TokenType::FINALLY:
+			case TokenType::IMPORT:
+			case TokenType::FROM:
+			case TokenType::LAMBDA:
+			case TokenType::OMIT:
+			case TokenType::CLASS:
+			case TokenType::INHERITS:
+			case TokenType::PUBLIC:
+			case TokenType::PRIVATE:
+			case TokenType::PROTECTED:
+			case TokenType::CACHED:
+			case TokenType::AND:
+			case TokenType::OR:
+			case TokenType::NOT:
+			case TokenType::XOR:
+			case TokenType::NAND:
+			case TokenType::NOR:
+			case TokenType::NXOR:
+			case TokenType::IS:
+			case TokenType::IN:
+			case TokenType::IS_IN:
+			case TokenType::IS_NOT:
+			case TokenType::IS_NOT_IN:
+				c = replxx::Replxx::Color::MAGENTA;
+				break;
+			case TokenType::TRUE:
+			case TokenType::FALSE:
+			case TokenType::NUMBER:
+				c = replxx::Replxx::Color::YELLOW;
+				break;
+			case TokenType::STRING:
+			case TokenType::FSTRING:
+				c = replxx::Replxx::Color::GREEN;
+				break;
+			case TokenType::ASSIGN:
+			case TokenType::PLUS:
+			case TokenType::MINUS:
+			case TokenType::STAR:
+			case TokenType::SLASH:
+			case TokenType::PLUS_EQ:
+			case TokenType::MINUS_EQ:
+			case TokenType::STAR_EQ:
+			case TokenType::DIV_EQ:
+			case TokenType::FLOOR_DIV:
+			case TokenType::FLOOR_DIV_EQ:
+			case TokenType::MOD:
+			case TokenType::MOD_EQ:
+			case TokenType::POW:
+			case TokenType::POW_EQ:
+			case TokenType::INCREMENT:
+			case TokenType::DECREMENT:
+			case TokenType::ARROW:
+			case TokenType::EQ:
+			case TokenType::STRICT_EQ:
+			case TokenType::NEQ:
+			case TokenType::STRICT_NEQ:
+			case TokenType::GT:
+			case TokenType::LT:
+			case TokenType::GTE:
+			case TokenType::LTE:
+			case TokenType::AND_EQ:
+			case TokenType::OR_EQ:
+			case TokenType::XOR_EQ:
+			case TokenType::COLON_EQ:
+				c = replxx::Replxx::Color::CYAN;
+				break;
+			case TokenType::IDENTIFIER: {
+				const string &lex = token.value;
+				if (lex == "int" || lex == "float" || lex == "string" || lex == "bool" || lex == "list" || lex == "set" || lex == "dict" || lex == "tuple" || lex == "vector" || lex == "range") {
+					c = replxx::Replxx::Color::CYAN;
+				}
+				else if (!lex.empty() && std::isupper(lex[0])) {
+					c = replxx::Replxx::Color::YELLOW;
+				}
+				break;
+			}
+			default:
+				c = replxx::Replxx::Color::DEFAULT;
+				break;
+			}
+			size_t pos = input.find(token.value, charIndex);
+			if (pos != std::string::npos) {
+				charIndex = pos;
+				for (size_t i = 0; i < token.value.length(); i++) {
+					if (charIndex < colors.size()) {
+						colors[charIndex] = c;
+					}
+					charIndex++;
+				}
+			}
+		}
+	} catch (...) {
 	}
 }

@@ -96,7 +96,7 @@
 #include "qrcodegen.hpp"
 #include <nlohmann/json.hpp>
 #ifdef _WIN32
-#define IN 
+#define IN
 #define CONST const
 #endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -106,6 +106,19 @@
 #undef CONST
 #endif
 #undef DELETE
+#undef DEFAULT
+#undef MAGENTA
+#undef CYAN
+#undef YELLOW
+#undef GREEN
+#undef BLACK
+#undef RED
+#undef BROWN
+#undef BLUE
+#undef LIGHTGRAY
+#undef GRAY
+#undef WHITE
+#include <replxx.hxx>
 bool DEBUGGER_MODE_IS_ENABLED = false;
 namespace fs = std::filesystem;
 using std::string;
@@ -1394,8 +1407,8 @@ class Parser {
 	bool allowGT = true;
 	int classDepth = 0;
 	int scopeDepth = 0;
-
  public:
+	bool isReplMode = false;
 	void synchronize() {
 		advance();
 		while (!isAtEnd()) {
@@ -2197,10 +2210,9 @@ class Parser {
 		return s;
 	}
 	Stmt *parseStmt() {
-		if (scopeDepth == 0 && classDepth == 0 && !isAtEnd()) {
+		if (!isReplMode && scopeDepth == 0 && classDepth == 0 && !isAtEnd()) {
 			TokenType t = peek().type;
-			if (t != TokenType::IMPORT && t != TokenType::LET &&
-				 t != TokenType::DEFINE && t != TokenType::CLASS) {
+			if (t != TokenType::IMPORT && t != TokenType::LET && t != TokenType::DEFINE && t != TokenType::CLASS) {
 				error("Executable statements (loops, functions, logic) are not allowed at the global scope.");
 			}
 		}
@@ -4142,7 +4154,7 @@ static inline std::string valueToString(const Value &v, int line = 0, int col = 
 	case ValueType::NONE:
 		return "None";
 	case ValueType::NOTYPE:
-		return "Notype";
+		return "NoType";
 	case ValueType::FLOAT:
 		return formatNumber(v.asFloat());
 	case ValueType::INT:
@@ -5197,6 +5209,7 @@ enum class OpCode : uint8_t {
 	OP_IMPORT,
 	OP_POP,
 	OP_DEBUG_NAME,
+	OP_REPL_PRINT,
 	OP_TRY_ENTER,
 	OP_TRY_EXIT,
 	OP_CATCH,
@@ -5417,6 +5430,8 @@ static inline std::string OpCodeToString(OpCode num) {
 		return "OP_POP";
 	case OpCode::OP_DEBUG_NAME:
 		return "OP_DEBUG_NAME";
+	case OpCode::OP_REPL_PRINT:
+		return "OP_REPL_PRINT";
 	case OpCode::OP_TRY_ENTER:
 		return "OP_TRY_ENTER";
 	case OpCode::OP_TRY_EXIT:
@@ -8126,6 +8141,7 @@ struct ByteCodeCompiler {
 	vector<LoopContext> loopStack;
 	vector<Local> locals;
 	int scopeDepth = 0;
+	bool isReplMode = false;
 	ByteCodeCompiler(Chunk *c) : chunk(c) {}
 	int resolveLocal(string name) {
 		for (int i = (int)locals.size() - 1; i >= 0; i--)
@@ -8480,6 +8496,12 @@ struct ByteCodeCompiler {
 			else
 				emitConstant(Value::Int(1), r->line, r->col);
 			emitByte(OpCode::OP_BUILD_RANGE, r->line, r->col);
+			uint8_t flags = 0;
+			if (r->startInclusive)
+				flags |= 0x01;
+			if (r->endInclusive)
+				flags |= 0x02;
+			chunk->write(flags, r->line, r->col);
 			break;
 		}
 		case ExprType::VECTOR: {
@@ -8806,7 +8828,11 @@ struct ByteCodeCompiler {
 		case StmtType::EXPR: {
 			auto es = static_cast<ExprStmt *>(s);
 			compile(es->expr);
-			emitByte(OpCode::OP_POP, es->line, es->col);
+			if (isReplMode && scopeDepth == 0) {
+				emitByte(OpCode::OP_REPL_PRINT, es->line, es->col);
+			} else {
+				emitByte(OpCode::OP_POP, es->line, es->col);
+			}
 			break;
 		}
 		case StmtType::ASSERT: {
@@ -9786,17 +9812,19 @@ struct VM {
 	std::function<void(std::string, std::vector<std::string>)> importResolver;
 	CallFrame *frame;
 	uint8_t *ip;
+	bool printOutput;
 	VM() {
 		globals = std::make_shared<Env>();
 		stack.reserve(65536);
 		frame = nullptr;
 		ip = nullptr;
+		printOutput = false;
 	}
 	void run(Chunk &chunk) {
 		CallFrame mainFrame;
 		mainFrame.function = nullptr;
 		mainFrame.ip = chunk.code.data();
-		mainFrame.basePointer = 0;
+		mainFrame.basePointer = stack.size();
 		frames.push_back(mainFrame);
 		frame = &frames.back();
 		ip = frame->ip;
@@ -9861,7 +9889,7 @@ struct VM {
 
 			// Errors & Systems
 			&&TARGET_OP_THROW, &&TARGET_OP_ASSERT, &&TARGET_OP_IMPORT,
-			&&TARGET_OP_POP, &&TARGET_OP_DEBUG_NAME, &&TARGET_OP_TRY_ENTER,
+			&&TARGET_OP_POP, &&TARGET_OP_DEBUG_NAME, &&TARGET_OP_REPL_PRINT, &&TARGET_OP_TRY_ENTER,
 			&&TARGET_OP_TRY_EXIT, &&TARGET_OP_CATCH, &&TARGET_OP_RETHROW,
 			&&TARGET_OP_END_FINALLY};
 #endif
@@ -9973,6 +10001,15 @@ struct VM {
 				switch (instruction)
 #endif
 				{
+					OP(OP_REPL_PRINT) : {
+						{
+							Value v = pop();
+							if (printOutput /*v.type != ValueType::NOTYPE && v.type != ValueType::NONE*/) {
+								std::cout << "-> " << valueToString(v) << "\n";
+							}
+							DISPATCH();
+						}
+					}
 					OP(OP_CLASS) : {
 						{
 							uint8_t parentCount = *ip++;
@@ -11901,12 +11938,15 @@ struct VM {
 					}
 					OP(OP_BUILD_RANGE) : {
 						{
+							uint8_t flags = *ip++;
+							bool si = (flags & 0x01) != 0;
+							bool ei = (flags & 0x02) != 0;
 							Value step = pop();
 							Value end = pop();
 							Value start = pop();
 							bool isFloat = (start.type == ValueType::FLOAT || end.type == ValueType::FLOAT || step.type == ValueType::FLOAT);
 							stack.push_back(Value::Range(start.asFloat(), end.asFloat(),
-								step.asFloat(), true, false,
+								step.asFloat(), si, ei,
 								isFloat));
 						}
 						DISPATCH();
@@ -17487,7 +17527,7 @@ void Interpreter::registerStdLib() {
 		env->set("Raylib", modVal, false, false);
 	};
 #ifndef _WIN32
-	modules["Ncurses"] = [](std::shared_ptr<Env> env, const vector<string>& symbols) {
+	modules["Ncurses"] = [](std::shared_ptr<Env> env, const vector<string> &symbols) {
 		auto moduleNamespace = std::make_shared<ClassObject>("Ncurses");
 		moduleNamespace->mro.push_back(moduleNamespace.get());
 		auto define = [&](string name, NativeFunc f) {
@@ -17496,7 +17536,7 @@ void Interpreter::registerStdLib() {
 				env->set(name, Value::Native(f), true);
 				return;
 			}
-			for (const auto& s : symbols)
+			for (const auto &s : symbols)
 				if (s == name) {
 					env->set(name, Value::Native(f), true);
 					break;
@@ -17515,93 +17555,93 @@ void Interpreter::registerStdLib() {
 		env->set("A_UNDERLINE", Value::Int(A_UNDERLINE), true, true);
 		env->set("A_REVERSE", Value::Int(A_REVERSE), true, true);
 		env->set("A_BLINK", Value::Int(A_BLINK), true, true);
-		define("InitScr", [](const vector<Value>& args, int l, int c) {
+		define("InitScr", [](const vector<Value> &args, int l, int c) {
 			setlocale(LC_ALL, "");
 			initscr();
 			cbreak();
 			noecho();
 			keypad(stdscr, true);
 			return Value::None();
-			});
-		define("EndWin", [](const vector<Value>& args, int l, int c) {
+		});
+		define("EndWin", [](const vector<Value> &args, int l, int c) {
 			endwin();
 			return Value::None();
-			});
-		define("Print", [](const vector<Value>& args, int l, int c) {
+		});
+		define("Print", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("Print(string)", l, c);
 			printw("%s", args[0].asString().c_str());
 			return Value::None();
-			});
-		define("MovePrint", [](const vector<Value>& args, int l, int c) {
+		});
+		define("MovePrint", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 3)
 				throw ArgumentError("MovePrint(x, y, string)", l, c);
 			mvprintw((int)args[1].asInt(), (int)args[0].asInt(), "%s",
 				args[2].asString().c_str());
 			return Value::None();
-			});
-		define("Refresh", [](const vector<Value>& args, int l, int c) {
+		});
+		define("Refresh", [](const vector<Value> &args, int l, int c) {
 			refresh();
 			return Value::None();
-			});
-		define("Clear", [](const vector<Value>& args, int l, int c) {
+		});
+		define("Clear", [](const vector<Value> &args, int l, int c) {
 			clear();
 			return Value::None();
-			});
-		define("GetCh", [](const vector<Value>& args, int l, int c) {
+		});
+		define("GetCh", [](const vector<Value> &args, int l, int c) {
 			return Value::Int(getch());
-			});
-		define("GetMaxX", [](const vector<Value>& args, int l, int c) {
+		});
+		define("GetMaxX", [](const vector<Value> &args, int l, int c) {
 			return Value::Int(getmaxx(stdscr));
-			});
-		define("GetMaxY", [](const vector<Value>& args, int l, int c) {
+		});
+		define("GetMaxY", [](const vector<Value> &args, int l, int c) {
 			return Value::Int(getmaxy(stdscr));
-			});
-		define("CursSet", [](const vector<Value>& args, int l, int c) {
+		});
+		define("CursSet", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError(
 					"CursSet(visibility: 0=invisible, 1=normal, 2=bright)", l, c);
 			curs_set((int)args[0].asInt());
 			return Value::None();
-			});
-		define("NoDelay", [](const vector<Value>& args, int l, int c) {
+		});
+		define("NoDelay", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("NoDelay(bool)", l, c);
 			nodelay(stdscr, args[0].asBool());
 			return Value::None();
-			});
-		define("StartColor", [](const vector<Value>& args, int l, int c) {
+		});
+		define("StartColor", [](const vector<Value> &args, int l, int c) {
 			start_color();
 			return Value::None();
-			});
-		define("InitPair", [](const vector<Value>& args, int l, int c) {
+		});
+		define("InitPair", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 3)
 				throw ArgumentError("InitPair(pair_id, fg_color, bg_color)", l, c);
 			init_pair((short)args[0].asInt(), (short)args[1].asInt(),
 				(short)args[2].asInt());
 			return Value::None();
-			});
-		define("ColorPair", [](const vector<Value>& args, int l, int c) {
+		});
+		define("ColorPair", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("ColorPair(pair_id)", l, c);
 			return Value::Int(COLOR_PAIR((int)args[0].asInt()));
-			});
-		define("AttrOn", [](const vector<Value>& args, int l, int c) {
+		});
+		define("AttrOn", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("AttrOn(attribute_or_color)", l, c);
 			attron((int)args[0].asInt());
 			return Value::None();
-			});
-		define("AttrOff", [](const vector<Value>& args, int l, int c) {
+		});
+		define("AttrOff", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("AttrOff(attribute_or_color)", l, c);
 			attroff((int)args[0].asInt());
 			return Value::None();
-			});
-		define("DrawBox", [](const vector<Value>& args, int l, int c) {
+		});
+		define("DrawBox", [](const vector<Value> &args, int l, int c) {
 			box(stdscr, 0, 0);
 			return Value::None();
-			});
+		});
 		Value modVal;
 		modVal.type = ValueType::CLASS;
 		modVal.ref = moduleNamespace;
@@ -19177,7 +19217,7 @@ inline bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globa
 		return false;
 	}
 }
-inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
+inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 	if (op == TokenType::PLUS) {
 		if (a.type == ValueType::INT && b.type == ValueType::INT) {
 			long long res = a.iVal + b.iVal;
@@ -19186,16 +19226,13 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 				return BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
 			else
 				return Value::Int(res);
-		}
-		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			return BigIntObject::add(a, b);
-		}
-		else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
+		} else if (a.type == ValueType::STRING || b.type == ValueType::STRING) {
 			return Value::String(valueToString(a) + valueToString(b));
-		}
-		else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-			auto* v1 = static_cast<VectorObject*>(a.ref.get());
-			auto* v2 = static_cast<VectorObject*>(b.ref.get());
+		} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+			auto *v1 = static_cast<VectorObject *>(a.ref.get());
+			auto *v2 = static_cast<VectorObject *>(b.ref.get());
 			if (v1->elements.size() != v2->elements.size())
 				throw std::runtime_error("Vector dimension mismatch");
 			std::vector<Value> res;
@@ -19210,21 +19247,17 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 						res.push_back(BigIntObject::add(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
 					else
 						res.push_back(Value::Int(r));
-				}
-				else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+				} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
 					res.push_back(BigIntObject::add(x, y));
-				}
-				else {
+				} else {
 					res.push_back(Value::Float(x.asFloat() + y.asFloat()));
 				}
 			}
 			return Value::Vector(res);
-		}
-		else if (a.isNumber() || b.isNumber()) {
+		} else if (a.isNumber() || b.isNumber()) {
 			return Value::Float(a.asFloat() + b.asFloat());
 		}
-	}
-	else if (op == TokenType::MINUS) {
+	} else if (op == TokenType::MINUS) {
 		if (a.type == ValueType::INT && b.type == ValueType::INT) {
 			long long res = a.iVal - b.iVal;
 			bool overflow = ((a.iVal ^ b.iVal) & (a.iVal ^ res)) < 0;
@@ -19232,13 +19265,11 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 				return BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
 			else
 				return Value::Int(res);
-		}
-		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			return BigIntObject::sub(a, b);
-		}
-		else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-			auto* v1 = static_cast<VectorObject*>(a.ref.get());
-			auto* v2 = static_cast<VectorObject*>(b.ref.get());
+		} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+			auto *v1 = static_cast<VectorObject *>(a.ref.get());
+			auto *v2 = static_cast<VectorObject *>(b.ref.get());
 			if (v1->elements.size() != v2->elements.size())
 				throw std::runtime_error("Vector dimension mismatch");
 			std::vector<Value> res;
@@ -19253,46 +19284,39 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 						res.push_back(BigIntObject::sub(Value::BigInt(x.iVal), Value::BigInt(y.iVal)));
 					else
 						res.push_back(Value::Int(r));
-				}
-				else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+				} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
 					res.push_back(BigIntObject::sub(x, y));
-				}
-				else {
+				} else {
 					res.push_back(Value::Float(x.asFloat() - y.asFloat()));
 				}
 			}
 			return Value::Vector(res);
-		}
-		else if (a.isNumber() || b.isNumber()) {
+		} else if (a.isNumber() || b.isNumber()) {
 			return Value::Float(a.asFloat() - b.asFloat());
 		}
-	}
-	else if (op == TokenType::SLASH) {
+	} else if (op == TokenType::SLASH) {
 		if (a.type == ValueType::VECTOR) {
 			if (!b.isNumber())
 				throw std::runtime_error("Vector can only be divided by a number");
 			double s = b.asFloat();
 			if (s == 0.0)
 				throw std::runtime_error("Vector division by zero");
-			auto* v = static_cast<VectorObject*>(a.ref.get());
+			auto *v = static_cast<VectorObject *>(a.ref.get());
 			std::vector<Value> res;
 			res.reserve(v->elements.size());
-			for (const auto& elem : v->elements) {
+			for (const auto &elem : v->elements) {
 				res.push_back(Value::Float(elem.asFloat() / s));
 			}
 			return Value::Vector(res);
-		}
-		else if (b.type == ValueType::VECTOR) {
+		} else if (b.type == ValueType::VECTOR) {
 			throw std::runtime_error("Cannot divide by a vector");
-		}
-		else if (a.isNumber() && b.isNumber()) {
+		} else if (a.isNumber() && b.isNumber()) {
 			double db = b.asFloat();
 			if (db == 0.0)
 				throw std::runtime_error("Division by zero");
 			return Value::Float(a.asFloat() / db);
 		}
-	}
-	else if (op == TokenType::STAR) {
+	} else if (op == TokenType::STAR) {
 		if (a.type == ValueType::STRING && b.type == ValueType::INT) {
 			std::string res = "";
 			std::string base = a.asString();
@@ -19304,10 +19328,9 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 			for (long long i = 0; i < count; i++)
 				res += base;
 			return Value::String(res);
-		}
-		else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
-			auto* v1 = static_cast<VectorObject*>(a.ref.get());
-			auto* v2 = static_cast<VectorObject*>(b.ref.get());
+		} else if (a.type == ValueType::VECTOR && b.type == ValueType::VECTOR) {
+			auto *v1 = static_cast<VectorObject *>(a.ref.get());
+			auto *v2 = static_cast<VectorObject *>(b.ref.get());
 			if (v1->elements.size() != v2->elements.size())
 				throw std::runtime_error("Vector dimension mismatch");
 			Value dot = Value::Int(0);
@@ -19322,11 +19345,9 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 						prod = BigIntObject::mul(Value::BigInt(x.iVal), Value::BigInt(y.iVal));
 					else
 						prod = Value::Int(r);
-				}
-				else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
+				} else if (x.type == ValueType::BIGINT || y.type == ValueType::BIGINT) {
 					prod = BigIntObject::mul(x, y);
-				}
-				else {
+				} else {
 					prod = Value::Float(x.asFloat() * y.asFloat());
 				}
 				if (dot.type == ValueType::INT && prod.type == ValueType::INT) {
@@ -19336,22 +19357,19 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 						dot = BigIntObject::add(Value::BigInt(dot.iVal), Value::BigInt(prod.iVal));
 					else
 						dot = Value::Int(r);
-				}
-				else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) {
+				} else if (dot.type == ValueType::BIGINT || prod.type == ValueType::BIGINT) {
 					dot = BigIntObject::add(dot, prod);
-				}
-				else {
+				} else {
 					dot = Value::Float(dot.asFloat() + prod.asFloat());
 				}
 			}
 			return dot;
-		}
-		else if ((a.type == ValueType::VECTOR && b.isNumber()) || (a.isNumber() && b.type == ValueType::VECTOR)) {
-			VectorObject* vec = (a.type == ValueType::VECTOR) ? static_cast<VectorObject*>(a.ref.get()) : static_cast<VectorObject*>(b.ref.get());
+		} else if ((a.type == ValueType::VECTOR && b.isNumber()) || (a.isNumber() && b.type == ValueType::VECTOR)) {
+			VectorObject *vec = (a.type == ValueType::VECTOR) ? static_cast<VectorObject *>(a.ref.get()) : static_cast<VectorObject *>(b.ref.get());
 			Value scalar = (a.type == ValueType::VECTOR) ? b : a;
 			std::vector<Value> res;
 			res.reserve(vec->elements.size());
-			for (const auto& elem : vec->elements) {
+			for (const auto &elem : vec->elements) {
 				if (elem.type == ValueType::INT && scalar.type == ValueType::INT) {
 					long long r = elem.iVal * scalar.iVal;
 					bool ovf = (elem.iVal != 0 && r / elem.iVal != scalar.iVal);
@@ -19359,98 +19377,81 @@ inline Value EvaluateConstBinary(TokenType op, const Value& a, const Value& b) {
 						res.push_back(BigIntObject::mul(Value::BigInt(elem.iVal), Value::BigInt(scalar.iVal)));
 					else
 						res.push_back(Value::Int(r));
-				}
-				else if (elem.type == ValueType::BIGINT || scalar.type == ValueType::BIGINT) {
+				} else if (elem.type == ValueType::BIGINT || scalar.type == ValueType::BIGINT) {
 					res.push_back(BigIntObject::mul(elem, scalar));
-				}
-				else {
+				} else {
 					res.push_back(Value::Float(elem.asFloat() * scalar.asFloat()));
 				}
 			}
 			return Value::Vector(res);
-		}
-		else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+		} else if (a.type == ValueType::INT && b.type == ValueType::INT) {
 			long long res = a.iVal * b.iVal;
 			bool overflow = (a.iVal != 0 && res / a.iVal != b.iVal);
 			if (overflow)
 				return BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal));
 			else
 				return Value::Int(res);
-		}
-		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			return BigIntObject::mul(a, b);
-		}
-		else if (a.isNumber() && b.isNumber()) {
+		} else if (a.isNumber() && b.isNumber()) {
 			return Value::Float(a.asFloat() * b.asFloat());
 		}
-	}
-	else if (op == TokenType::FLOOR_DIV) {
+	} else if (op == TokenType::FLOOR_DIV) {
 		if (a.type == ValueType::VECTOR) {
 			if (!b.isNumber())
 				throw std::runtime_error("Vector can only be floor-divided by a number");
 			if (b.asFloat() == 0.0)
 				throw std::runtime_error("Vector floor division by zero");
-			auto* v = static_cast<VectorObject*>(a.ref.get());
+			auto *v = static_cast<VectorObject *>(a.ref.get());
 			std::vector<Value> res;
 			res.reserve(v->elements.size());
 			double db = b.asFloat();
-			for (const auto& elem : v->elements) {
+			for (const auto &elem : v->elements) {
 				if (elem.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 					res.push_back(BigIntObject::div(elem, b));
-				}
-				else {
+				} else {
 					res.push_back(Value::Int((long long)(elem.asFloat() / db)));
 				}
 			}
 			return Value::Vector(res);
-		}
-		else if (b.type == ValueType::VECTOR) {
+		} else if (b.type == ValueType::VECTOR) {
 			throw std::runtime_error("Cannot floor-divide by a vector");
-		}
-		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			if (b.asFloat() == 0.0)
 				throw std::runtime_error("Division by zero");
 			return BigIntObject::div(a, b);
-		}
-		else if (a.isNumber() && b.isNumber()) {
+		} else if (a.isNumber() && b.isNumber()) {
 			double db = b.asFloat();
 			if (db == 0.0)
 				throw std::runtime_error("Division by zero");
 			return Value::Int((long long)(a.asFloat() / db));
 		}
-	}
-	else if (op == TokenType::MOD) {
+	} else if (op == TokenType::MOD) {
 		if (a.type == ValueType::INT && b.type == ValueType::INT) {
 			if (b.iVal == 0)
 				throw std::runtime_error("Modulo by zero");
 			return Value::Int(a.iVal % b.iVal);
-		}
-		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
+		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			if (b.asFloat() == 0.0)
 				throw std::runtime_error("Modulo by zero");
 			return BigIntObject::mod(a, b);
-		}
-		else if (a.isNumber() && b.isNumber()) {
+		} else if (a.isNumber() && b.isNumber()) {
 			if (b.asFloat() == 0.0)
 				throw std::runtime_error("Modulo by zero");
 			return Value::Float(std::fmod(a.asFloat(), b.asFloat()));
 		}
-	}
-	else if (op == TokenType::POW) {
+	} else if (op == TokenType::POW) {
 		if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			return BigIntObject::pow(a, b);
-		}
-		else if (a.type == ValueType::INT && b.type == ValueType::INT) {
+		} else if (a.type == ValueType::INT && b.type == ValueType::INT) {
 			double resultLog = (double)b.iVal * std::log10(std::abs((double)a.iVal));
 			double maxLog = std::log10(LLONG_MAX);
 			if (resultLog >= maxLog) {
 				return BigIntObject::pow(a, b);
-			}
-			else {
+			} else {
 				return Value::Int(static_cast<long long>(std::pow(a.iVal, b.iVal)));
 			}
-		}
-		else if (a.isNumber() && b.isNumber()) {
+		} else if (a.isNumber() && b.isNumber()) {
 			return Value::Float(std::pow(a.asFloat(), b.asFloat()));
 		}
 	}
