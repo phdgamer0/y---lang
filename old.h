@@ -93,14 +93,14 @@
 #undef KEY_DOWN
 #undef KEY_BACKSPACE
 #undef KEY_END
-#include "qrcodegen.hpp"
+#include <qrcodegen.hpp>
 #include <nlohmann/json.hpp>
 #ifdef _WIN32
 #define IN
 #define CONST const
 #endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "httplib.h"
+#include <httplib.h>
 #ifdef _WIN32
 #undef IN
 #undef CONST
@@ -118,6 +118,7 @@
 #undef LIGHTGRAY
 #undef GRAY
 #undef WHITE
+#define REPLXX_STATIC
 #include <replxx.hxx>
 bool DEBUGGER_MODE_IS_ENABLED = false;
 namespace fs = std::filesystem;
