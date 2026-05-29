@@ -196,7 +196,7 @@ void runREPL() {
    int openParens = 0;
    int openBrackets = 0;
    while (true) {
-      std::string prompt = (codeBuffer.empty()) ? ">>> " : "... ";
+		std::string prompt = codeBuffer.empty() ? "\033[38;2;100;180;255m>>>\033[38;2;0m " : "\033[38;2;100;180;255m...\033[38;2;0m ";
       char const* c_line = rx.input(prompt);
       if (!c_line) break;
       std::string line(c_line);

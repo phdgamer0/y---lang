@@ -17965,6 +17965,14 @@ void Interpreter::registerStdLib() {
 		env->set("Http", modVal, false, false);
 	};
 	// ========= CASTING ==========
+	env->set("exit", Value::Native([this](const vector<Value> &args, int l, int c) {
+		if (args.size() > 1) {
+			throw ArgumentError("exit() takes 1 or 0 argumnet, (exit code)", l, c);
+		}
+		exit(args.empty() ? 0 : args[0].asInt());
+		return Value::None();
+	}),
+		false);
 	env->set("int", Value::Native([this](const vector<Value> &args, int l, int c) {
 		if (args.empty())
 			return Value::Int(0);
