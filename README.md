@@ -4,7 +4,7 @@
 
 ## Overview
 
-y-- is an **interpreted language** written in **modern C++**. It is currently at **v1.0** and designed as a **personal language project** with a long‑term roadmap toward a **LLVM** and eventually **JIT and AOT**.
+y-- is an **interpreted language** written in **modern C++**. It is currently at **v1.0** and designed as a **personal language project** tailored for maximum performance and explicit control. 
 
 ## 1.0 Introduction
 **y--** is a language built on a specific philosophy: **"Reach the limit of high-level abstraction, then dig deeper."** Unlike C++, which builds *up* from low-level roots, `y--` starts with the developer experience of a high-level scripting language (`y`) and provides the operators and memory controls to go lower (`--`) when performance is critical.
@@ -12,7 +12,8 @@ y-- is an **interpreted language** written in **modern C++**. It is currently at
 ### 1.1 Design Goals
 * **Explicit Authority:** The language does not "guess" your intent. If you want a deep copy, you ask for it (`$`). If you want a reference, you declare it (`@`).
 * **Clear Syntax:** A bracket-optional, whitespace-agnostic structure that prioritizes readability without enforcing indentation rules.
-* **Systems Ready:** Built with a custom C++ backend, featuring native bindings for **Raylib** and  soon **SDL2** concepts out of the box.
+* **Systems & Graphics Ready:** Built with a custom C++ backend, featuring native bindings for **Raylib** out of the box, with full support for **multithreading** and **GPU draws**.
+* **C++ FFI:** Seamless Foreign Function Interface support, allowing you to interface directly with C++ libraries and execution streams.
 
 ---
 
@@ -20,15 +21,16 @@ Primary target domains:
 
 * **Game development**
 * **Robotics and simulations**
+* **Terminal-based utilities**
 
 Execution is explicit and controlled. The language **requires a `main()` function** and does not execute code outside of it.
 
 ---
 
-> **Version:** 1.0 (Alpha)  
+> **Version:** 1.0 (Beta)  
 > **Extension:** `.ymm`  
 > **Paradigm:** Multi-paradigm (Imperative, Object-Oriented, Functional)  
-> **Architecture:** Bytecode VM (LLVM / Hybrid AOT-JIT planned)
+> **Architecture:** Bytecode VM
 ---
 
 ## Core Philosophy
@@ -44,9 +46,10 @@ Execution is explicit and controlled. The language **requires a `main()` functio
 
 * Code is parsed top‑to‑bottom
 * **Only declarations are allowed outside `main()`**
-
   * Functions
   * Variables
+  * Classes
+  * Preprocessor Commands
 * **Executable statements only run inside `main()`**
 
 ---
@@ -70,81 +73,71 @@ Execution is explicit and controlled. The language **requires a `main()` functio
 
 ### 2.2 Whitespace & Formatting
 * **Semicolons:** **Not required.** The parser automatically detects statement termination.
-* **Indentation:** **Optional.** Unlike Python, indentation is purely for visual clarity.
+* **Indentation:** **Optional.** Indentation is purely for visual clarity.
 * **Blocks:** * **Single-line:** Braces `{}` are optional.
-* **Multi-line:** Braces `{}` are **required**.
+  * **Multi-line:** Braces `{}` are **required**.
 
     ```javascript
     ~ Valid Single Line
     if x > 10: return true
 
-    ~Valid Multi-Line
+    ~ Valid Multi-Line
     if x > 10: {
         print("Greater")
         return true
     }
     ```
+
+### 2.3 Preprocessor Directives
+`y--` features a lightweight, zero-allocation preprocessor that executes before tokenization.
+
+* **Text Replacement Macros:** You can define strict text replacements using the `<<replace>>` syntax. 
+* **Syntax:**
+```
+<<replace>> "TARGET" with "REPLACEMENT"
+  ```
+* **Important:** The quotes `""` and the `with` keyword are strictly necessary for the tokenizer to lock onto the strings. Since these act as raw, blind text replacers before the tokens are built, use them with caution to avoid unintentionally mutating string literals.
+
 ### 2.4 Operators & Logic
 
-`y--` features a comprehensive suite of logical gates, including native support for complex operations often missing in other high-level languages.
+`y--` features a comprehensive suite of logical gates. The compiler supports **short-circuit evaluation** on all logical operators (except `xor` and `nxor`, which must evaluate both sides by definition).
 
-| Type | Operator | Description | Truth Table (A, B) |
-| --- | --- | --- | --- |
-| **AND** | `and` / `&&` | True if **both** are true. | T, T  T |
-| **OR** | `or` / ` |  | ` |
-| **NOT** | `not` / `!` | Inverts the value. | T  F |
-| **NAND** | `nand` | True if **at least one** is false. | T, T  F |
-| **NOR** | `nor` | True if **both** are false. | F, F  T |
-| **XOR** | `xor` | True if **exactly one** is true. | T, F  T |
-| **NXOR** | `nxor` | True if **both are equal** (XNOR). | T, T  T |
+| Operator | Description | Truth Table (A, B) -> Output |
+| --- | --- | --- |
+| `and` | True if **both** are true. | T,T -> **T** &#124; T,F -> **F** &#124; F,T -> **F** &#124; F,F -> **F** |
+| `or` | True if **at least one** is true. | T,T -> **T** &#124; T,F -> **T** &#124; F,T -> **T** &#124; F,F -> **F** |
+| `not` | Inverts the value (Unary). | T -> **F** &#124; F -> **T** |
+| `nand` | True if **at least one** is false. | T,T -> **F** &#124; T,F -> **T** &#124; F,T -> **T** &#124; F,F -> **T** |
+| `nor` | True if **both** are false. | T,T -> **F** &#124; T,F -> **F** &#124; F,T -> **F** &#124; F,F -> **T** |
+| `xor` | True if **exactly one** is true. | T,T -> **F** &#124; T,F -> **T** &#124; F,T -> **T** &#124; F,F -> **F** |
+| `nxor` | True if **both are equal** (XNOR). | T,T -> **T** &#124; T,F -> **F** &#124; F,T -> **F** &#124; F,F -> **T** |
 
 ---
 
 ### **3.0 Type System & Variables**
 
-`y--` utilizes a hybrid typing system that supports both dynamic typing (re-assignable types) and static type locking. The memory management model relies on automatic reference counting (via C++ shared pointers), ensuring efficient resource deallocation when variables go out of scope.
+`y--` utilizes a hybrid typing system that supports both dynamic typing (re-assignable types) and static type locking.
 
 #### **3.1 Variable Declaration & Mutability**
 
-Variables are declared using the `let` keyword. The language supports three distinct assignment behaviors regarding mutability and type safety.
+Variables are declared using the `let` keyword. `y--` supports multi-declarations and multi-assignments on a single line, provided values are separated. 
+
+* *Multi-assign example:* `let x, y, z = 1, 2, 3`
 
 | Syntax | Description | Type Behavior |
 | --- | --- | --- |
 | `let x` | **Declaration only.** Variable initializes to `NoType`. | **Unbound.** Adapts to the type of the first assignment. |
-| `let x = 10` | **Dynamic Assignment.** | **Mutable.** The variable `x` can be reassigned to a value of a *different* type later (e.g., `x = "string"` is valid). |
-| `let x := 10` | **Type-Locked Assignment.** | **Type-Constrained.** The variable `x` is locked to type `int`. Reassigning it to a different type throws a `ConstError`. |
-| `let const x = 10` | **Constant Declaration.** | **Immutable.** The value of `x` cannot be changed after initialization. |
-
-**The `NoType` State**
-
-* Variables declared without an assignment (e.g., `let z`) exist in a state of `NoType`.
-* This is a transient state; it is strictly for initialization logic and cannot be explicitly assigned to a variable.
-* Upon the first valid assignment, `NoType` is erased and replaced by the value's type.
+| `let x = 10` | **Dynamic Assignment.** | **Mutable.** The variable `x` can be reassigned to a value of a *different* type later. |
+| `let x := 10` | **Type-Locked Assignment.** | **Type-Constrained.** The variable `x` is locked to type `int`. Reassigning to a different type throws a `ConstError`. |
+| `let const x = 10` | **Constant Declaration.** | **Immutable.** The compiler heavily optimizes constants, performing automatic **constant folding and propagation** at compile time. |
 
 #### **3.2 Primitive Data Types**
 
-`y--` provides a robust set of built-in primitives with automatic casting and promotion.
-
-* **Integer (`int`):** Supports arbitrary precision. Standard integers automatically promote to `BigInt` if the value exceeds .
-* *Initializer:* `int()` (Defaults to 0). Accepts numeric strings or floats.
-
-
+* **Integer (`int`):** Supports arbitrary precision. Automatically promotes to `BigInt` if bounds are exceeded.
 * **Float (`float`):** Double-precision floating-point numbers.
-* *Initializer:* `float()` (Defaults to 0.0).
-
-
-* **String (`string`):** specific sequences of characters enclosed in single (`'`) or double (`"`) quotes.
-* *Initializer:* `string()` (Converts arguments to string representation).
-
-
+* **String (`string`):** Character sequences enclosed in single (`'`) or double (`"`) quotes.
 * **Boolean (`bool`):** Represents truthy/falsy values.
-* *Initializer:* `bool()` (Defaults to `false`). Evaluates the truthiness of the argument.
-
-
 * **NoneType (`None`):** Represents the absence of value.
-* *Initializer:* `None()` (Always returns `None`).
-
-
 
 #### **3.3 Composite Data Structures**
 
@@ -153,93 +146,40 @@ Variables are declared using the `let` keyword. The language supports three dist
 | **List** | `[1, 2]` | Ordered, mutable sequence. | `list(args...)` |
 | **Tuple** | `(1, 2)` | **Immutable**, ordered sequence. Freezes all contents upon creation. | `tuple(args...)` |
 | **Set** | `{1, 2}` | Unordered collection of unique elements. Random access supported. | `set(args...)` |
-| **Range** | `0...10...1` | Arithmetic progression generator. Smart step deduction (1 or -1) if omitted. | `range(start, end, step)` |
-| **Vector** | `<x, y, z>` | N-dimensional mathematical vector (Int/Float only). *Requires `Vector` library import.* | `vector(args...)` |
+| **Dictionary**| `{k: v}` | Key-value pairs where keys are immutable (frozen). | `dict(args...)` |
+| **Range** | `0...10...1` | Arithmetic progression generator. Smart step deduction (1 or -1). | `range(start, end, step)` |
+| **Vector** | `<x, y, z>` | N-dimensional mathematical vector (Int/Float only). *Requires Vector module.*| `vector(args...)` |
 
-**Dictionary (`dict`)**
-Key-value pairs where keys are immutable (frozen).
+**Dictionary Unpacking Helper (`pair`)**
+* **Construction:** `dict(k1: v1, k2: v2)` is standard. 
+* **Note on `pair()`:** The `pair()` object is a private intermediate structure used for unpacking. If you explicitly pass a `pair()` object into a dictionary constructor, you **must only pass one**.
 
-* **Syntax:** `{}`
-* **Construction:**
-1. `dict(k1: v1, k2: v2)`: Direct keyword argument style.
-2. `dict(pair(k, v), ...)`: Using the internal `pair()` unpacking helper.
+#### **3.4 Advanced Collection Features**
 
-
-* **Note:** The `pair()` object is a private intermediate structure used exclusively for unpacking into a dictionary.
-
-### 3.3 Advanced Collection Features
-
-`y--` supports Pythonic slicing and powerful comprehensions for concise data manipulation.
-
-#### **Slicing**
-
-Sequences (Lists, Strings, Tuples, Vectors) support slicing syntax to extract subsets.
-
-* **Syntax:** `container[start : end : step]`
-* **Behavior:**
-* `list[1:4]` - Elements from index 1 up to (but not including) 4.
-* `list[::2]` - Every second element.
-* `list[::-1]` - Reverses the container.
-
-
-
-#### **Comprehensions**
-
-Construct new collections by iterating over existing ones in a single expressive line.
-
-* **List Comprehension:**
-```javascript
-let squares = [x * x for x in range(10)]
-
-```
-
-
-* **Set Comprehension:**
-```javascript
-let evens = {x for x in numbers if x % 2 == 0}
-
-```
-
-
-* **Dictionary Comprehension:**
-```javascript
-let map = {k: v for k, v in other_dict}
-
-```
+* **Slicing:** `container[start : end : step]`
+* **Comprehensions:**
+    ```javascript
+    let squares = [x * x for x in range(10)]
+    let map = {k: v for k, v in other_dict}
+    ```
 
 #### **3.5 Scoping & Lifecycle**
 
-* **Lexical Scoping:** `y--` employs standard lexical scoping rules. Inner scopes (functions, blocks) inherit access to variables defined in outer/global scopes.
-* **Global Access:** Variables defined at the top level are accessible globally.
-* **Memory Management:** Variables are managed via **Automatic Reference Counting (ARC)**. When a scope (function or block) exits, local variables are automatically deallocated.
+* **Lexical Scoping:** `y--` employs strict lexical scoping. Inner scopes (functions, conditionals, loops) securely inherit access to variables defined in outer/global scopes, while variables declared *inside* a block remain entirely isolated from the outside.
+* **Global Access:** Variables defined at the top level of the file are globally accessible.
+* **Memory Management:** Driven by **Automatic Reference Counting (ARC)** via C++ shared pointers. 
+* **Lifecycle:** When execution exits a block scope (like the end of a function or an `if` statement), all local variables within that block have their reference counts decremented and are instantly deallocated from memory, ensuring zero memory leaks during heavy operations.
 
 ---
 
 ### **4.0 Control Flow**
 
-`y--` distinguishes itself with a state-aware control flow system. Conditional logic supports both traditional branching and advanced, re-evaluating state selection.
-
 #### **4.1 Conditionals**
-
-Standard branching uses a colon-delimited syntax. Curly braces `{}` are optional for single-line statements but required for multi-line blocks.
-
-* **Syntax:**
 ```javascript
 if condition: { ... }
 elif condition: { ... }
 else: { ... }
-
 ```
-
-
-* **Ternary Operator:**
-```python
-result = value_a if condition else value_b
-
-```
-
-
-
 #### **4.2 Loops & Iteration**
 
 Loops in `y--` support both C-style counter manipulation and modern iterator patterns.
@@ -285,12 +225,12 @@ the switch **re-evaluates the switch value** and restarts the matching process. 
 * `default do:` Fallback execution.
 
 
-* **Optimization Strategy:**
+**Optimization Strategy:**
 The compiler selects the backend structure based on case density:
-* **Dense Integers:** Jump Table ()
-* **Sparse Integers:** Red-Black Tree ()
-* **Strings:** Hash Map ( avg)
-* **Mixed/Complex:** Linear Search ()
+* **Dense Integers:** Jump Table O(1)
+* **Sparse Integers:** Red-Black Tree O(logn)
+* **Strings:** Hash Map avg O(1)
+* **Mixed/Complex:** Linear Search O(n)
 
 
 
@@ -320,69 +260,53 @@ finally do: { ... }  ~ ALWAYS executes
 `y--` treats functions as first-class citizens. They support advanced parameter handling (deep copies, references, type locking), automatic memoization, and a unique default-return system.
 
 #### **5.1 Function Definition**
-
-Functions are declared using the `define function` syntax. The language supports both standard and **cached** (memoized) functions.
-
-* **Syntax:**
+Functions are declared using the `define function` syntax. 
 ```typescript
 define [cached] function name(params...) -> DefaultReturn: { ... }
 
 ```
 
-**The `cached` Keyword**
-
-* When `cached` is applied, the interpreter automatically stores the results of function calls in a hash map (C++ `unordered_map`).
-* Subsequent calls with the same arguments retrieve the result in  time, optimizing recursive algorithms (e.g., Fibonacci) to linear time without manual caching logic.
+**The `cached` Keyword:** When `cached` is applied, the interpreter automatically stores the results of function calls in a hash map. Subsequent calls with the exact same arguments retrieve the result in O(1) time, optimizing recursive algorithms without manual caching logic.
 
 #### **5.2 Parameter Semantics**
 
-`y--` offers precise control over how arguments are passed into the function scope using prefix modifiers.
+`y--` offers precise control over how arguments are passed into the function scope using prefix modifiers and inline assignments.
 
 | Symbol / Keyword | Semantics | Description |
 | --- | --- | --- |
 | `a` (Standard) | **Shallow Copy** | The default behavior. Copies primitive values; copies references for containers. |
 | `const b` | **Immutable** | The argument cannot be modified within the function scope. |
 | `@c` | **Reference** | Pass-by-reference. Changes to `c` inside the function affect the original variable. |
-| `$d` | **Deep Copy** | "Recursive Expansive Copy." Clones the object and all nested structures entirely. Expensive but safe. |
+| `$d` | **Deep Copy** | "Recursive Expansive Copy." Clones the object and all nested structures entirely. |
 | `e:int()` | **Type Locked** | Enforces type safety. Passing a non-integer raises a `ConstError`. |
-| `f:string("val")` | **Default Value** | Type-locked to string. If `f` is omitted during the call, it initializes to `"val"`. |
+| `f:string("val")` | **Type Locked Default** | Type-locked to string. If omitted during the call, initializes to `"val"`. |
+| `g = 123` | **Untyped Default** | Initializes to the value if omitted, but remains dynamic and unbound to a specific type. |
 | `*args` | **Variadic Tuple** | Collects excess positional arguments into a `tuple`. |
-| `**kwargs` | **Variadic Dict** | Collects excess keyword arguments into a paired object and finally into a `dict`. |
+| `**kwargs` | **Variadic Dict** | Collects excess keyword arguments into a `dict`. |
 
 #### **5.3 Return Values & Defaults (`->`)**
 
-The arrow syntax `->` in `y--` serves a dual purpose: it specifies the **Return Type** and the **Default Return Value**.
+The arrow syntax `->` serves a dual purpose: it specifies the **Return Type** and the **Default Return Value**. If a function execution ends without a `return` statement, the value defined after `->` is returned automatically. Explicitly returning a value of a mismatched type will raise a `TypeError`.
 
-* **Behavior:** If a function execution ends without a `return` statement, or encounters an empty `return`, the value defined after `->` is returned automatically.
-* **Examples:**
-* `-> int()`: Returns `0` (default int) if no return is specified.
-* `-> string("error")`: Returns `"error"` if no return is specified.
-* `(No arrow)`: Returns `NoType`.
+#### **5.4 Calling Convention & Overloading**
 
-
-* **Constraint:** If `->` is present, explicitly returning a value of a mismatched type will raise a `TypeError`.
-
-#### **5.4 Calling Convention**
-
-* **The `omit` Keyword:** Used to skip specific arguments in a function call, forcing them to use their default values.
-* *Example:* `foo(10, omit, 30)` (Skips the 2nd argument).
+* **Named Arguments:** When calling **user-defined functions**, parameters can be assigned explicitly by name in any order (e.g., `my_func(y=10, x=5)`).
+* **The `omit` Keyword:** Used to skip specific arguments in a function call, forcing them to use their default values (e.g., `foo(10, omit, 30)`).
+* **Overloading Resolution:** `y--` supports robust function overloading. When multiple functions share the same name, the compiler resolves the best overload using this strict priority order:
+1. **Exact Type Match:** The argument matches the parameter's locked type exactly (e.g., passing an `int` to an `int`).
+2. **Castable Type Match:** The argument can be safely cast to the parameter's type (e.g., passing an `int` to a `float`).
+3. **Type Unlocked (Any) Match:** The parameter is fully dynamic (e.g., `let a`).
 
 
-* **Overloading:** `y--` supports value-based overloading. The runtime determines the specific function implementation to execute based on the pattern of values passed.
 
 #### **5.5 Lambdas (Anonymous Functions)**
 
-Lambdas are syntactically similar to standard functions but must be assigned to a variable or passed directly.
+Lambdas are syntactically similar to standard functions but must be assigned to a variable or passed directly. They also support the `cached` keyword.
 
-* **Syntax:**
 ```typescript
-let is_ten = define lambda function(x) -> bool(): { x === 10 }
+let is_ten = define lambda function(x) -> bool(): { return x === 10 }
 
 ```
-
-
-* **Caching:** Lambdas also support the `cached` keyword (`define cached lambda function...`).
-
 ---
 
 ### **6.0 Object-Oriented Programming (Classes)**
@@ -391,9 +315,8 @@ Classes in `y--` are the fundamental building blocks of the language ("God Objec
 
 #### **6.1 Class Structure & Encapsulation**
 
-Classes are defined using `define class`. The language enforces a **Strict Access Policy**: every class definition *must* explicitly declare three sections: `#public`, `#private`, and `#protected`.
+Classes are defined using `define class`. The language enforces a **Strict Access Policy**: every class definition *must* explicitly declare three sections: `#public`, `#private`, and `#protected`. Omitting any of these triggers a compilation error.
 
-* **Syntax:**
 ```javascript
 define class Animal: {
     #public:
@@ -406,19 +329,16 @@ define class Animal: {
 
 ```
 
+#### **6.2 Methods & Implicit Context (`self` vs `obj`)**
 
-* **Constraint:** Omitting any of these three keywords triggers a compilation error, ensuring developers consciously decide on visibility.
+`y--` fully supports both **instance methods** and **class/static methods**. Unlike Python, `y--` does not require explicit `self` arguments in method definitions. Context is injected implicitly into every scope.
 
-#### **6.2 Implicit Context (`self` vs `obj`)**
-
-Unlike Python, `y--` does not require explicit `self` arguments in method definitions. Context is injected implicitly into every scope.
-
-* **`self` (Instance Context):** Refers to the specific instance created.
+* **`self` (Instance Context):** Refers to the specific instance created. Used for instance methods and standard object properties.
 * *Usage:* `let self.name = "Jake"`
 
 
-* **`obj` (Class Context):** Refers to the Class Object itself (Static/Shared state).
-* *Usage:* `let obj.count = 110` (Shared across all instances).
+* **`obj` (Class Context):** Refers to the Class Object itself (Static/Shared state). Shared across all instances.
+* *Usage:* `let obj.count = 110`
 
 
 
@@ -427,24 +347,25 @@ Unlike Python, `y--` does not require explicit `self` arguments in method defini
 * **Syntax:** `define class Child inherits(Mom, Dad): { ... }`
 * **Resolution:** `y--` supports **Multiple Inheritance**. The Method Resolution Order (MRO) is calculated using the **C3 Linearization** algorithm (standard in Python/Dylan) to solve the "Diamond Problem" deterministically.
 
+
 #### **6.4 Magic Methods (Dunder Methods)**
 
-Objects interact with operators and built-in functions via predefined "Magic Methods."
+Objects interact with operators and built-in functions via predefined "Magic Methods." These are categorized by their functionality below:
 
-**Lifecycle & Introspection**
+**1. Lifecycle, Identity & Representation**
 | Method | Description |
 | :--- | :--- |
-| `__construct__` | Constructor. Creates and returns the instance. |
-| `__destruct__` | Destructor. Handles cleanup before memory release. |
-| `__copy__` / `__clone__` | Handles shallow copy vs. deep copy logic. |
-| `__ref__` | Creates an alias/reference to the instance. |
-| `__inspect__` | Debugging hook for nested object printing. |
-| `__mro__` | Returns the Method Resolution Order list. |
-| `__display__` | Called by `print()`. |
+| `__construct__` | Called on object creation (Constructor). |
+| `__destruct__` | Called on cleanup (Destructor). |
+| `__copy__` | Performs a shallow copy. |
+| `__clone__` | Performs a deep copy. |
+| `__ref__` | Creates a reference copy. |
+| `__mro__` | Returns the Method Resolution Order. |
+| `__display__` | User-friendly string representation (Display). |
+| `__inspect__` | Programmer-focused raw representation (Debug). |
 
-**Arithmetic Operators**
-*Supported for both standard (`a + b`) and reverse (`b + a`) operations.*
-| Operator | Normal Method | Reverse Method | Assignment (`+=`) |
+**2. Arithmetic Operators**
+| Operator | Normal Method | Reverse Method | In-Place Assignment |
 | :--- | :--- | :--- | :--- |
 | `+` | `__plus__` | `__r_plus__` | `__plus_eq__` |
 | `-` | `__minus__` | `__r_minus__` | `__minus_eq__` |
@@ -453,102 +374,110 @@ Objects interact with operators and built-in functions via predefined "Magic Met
 | `//` | `__int_divide__` | `__r_int_divide__` | `__int_divide_eq__` |
 | `**` | `__power__` | `__r_power__` | `__power_eq__` |
 | `%` | `__modulo__` | `__r_modulo__` | `__modulo_eq__` |
-| Unary | `__positive__`, `__negative__`, `__increment__` (`++`), `__decrement__` (`--`) | | |
 
-**Comparison & Logic**
-| Operator | Method |
-| :--- | :--- |
-| `==` / `!=` | `__equals__` / `__differs__` |
-| `===` / `!==` | `__identical__` / `__distinct__` (Strict type/ref check) |
-| `<` / `<=` | `__less__` / `__less_eq__` |
-| `>` / `>=` | `__greater__` / `__greater_eq__` |
-
-**Bitwise Operators**
-*Full suite including NAND/NOR/NXOR.*
-| Op | Method | Reverse | Assignment |
+**3. Logical & Bitwise Operators**
+| Operator | Normal Method | Reverse Method | In-Place Assignment |
 | :--- | :--- | :--- | :--- |
-| `&` | `__bit_and__` | `__r_bit_and__` | `__and_equals__` |
-| `\|` | `__bit_or__` | `__r_bit_or__` | `__or_equals__` |
-| `^` | `__bit_xor__` | `__r_bit_xor__` | `__xor_equals__` |
-| `~` | `__invert__` | N/A | N/A |
-| `nand` | `__bit_nand__` | `__r_bit_nand__` | N/A |
+| `and` / `&` | `__and__` | `__r_and__` | `__and_equals__` |
+| `or` / `\|` | `__or__` | `__r_or__` | `__or_equals__` |
+| `xor` / `^` | `__xor__` | `__r_xor__` | `__xor_equals__` |
+| `nand` | `__nand__` | `__r_nand__` | *N/A* |
+| `nor` | `__nor__` | `__r_nor__` | *N/A* |
+| `nxor` | `__nxor__` | `__r_nxor__` | *N/A* |
 
-**Container & Access Emulation**
-| Syntax | Method |
+**4. Unary & State Modifiers**
+| Syntax | Method | Description |
+| :--- | :--- | :--- |
+| `+x` | `__positive__` | Unary positive |
+| `-x` | `__negative__` | Unary negative |
+| `x++` | `__increment__` | Increment |
+| `x--` | `__decrement__` | Decrement |
+| `!!x` | `__invert__` | Bitwise NOT |
+
+**5. Comparison**
+| Operator | Method | Description |
+| :--- | :--- | :--- |
+| `==` | `__equals__` | Equality |
+| `!=` | `__differs__` | Inequality |
+| `===` | `__identical__` | Strict equality |
+| `!==` | `__distinct__` | Strict inequality |
+| `<` | `__less__` | Less than |
+| `<=` | `__less_eq__` | Less than or equal |
+| `>` | `__greater__` | Greater than |
+| `>=` | `__greater_eq__` | Greater than or equal |
+
+**6. Container, Access & Iteration**
+| Syntax / Action | Method | Description |
+| :--- | :--- | :--- |
+| `length(obj)` | `__count__` | Size of the container |
+| `obj[key]` | `__at__` | Get item at key |
+| `obj[key] = val` | `__put__` | Set item at key |
+| `obj()` | `__call__` | Call object like a function |
+| `x in obj` | `__has__` | Check if item is in obj |
+| `x not in obj` | `__lacks__` | Check if item is not in obj |
+| Missing attribute | `__missing__` / `__not__missing__` | Handles missing attributes/items |
+| `obj.attr = val` | `__assign__` | Called when setting a property |
+| `iter(obj)` | `__traverse__` | Returns the iterator object |
+| `next(obj)` | `__advance__` | Moves to the next item |
+
+**7. Type Casting**
+| Caster | Method | Caster | Method |
+| :--- | :--- | :--- | :--- |
+| `int(obj)` | `__to_int__` | `set(obj)` | `__to_set__` |
+| `float(obj)` | `__to_float__` | `dict(obj)` | `__to_dict__` |
+| `string(obj)`| `__to_string__` | `tuple(obj)` | `__to_tuple__` |
+| `bool(obj)` | `__to_bool__` | `vector(obj)`| `__to_vector__` |
+| `list(obj)` | `__to_list__` | `range(obj)` | `__to_range__` |
+
+**8. Class Info & Reflection**
+| Category | Associated Methods |
 | :--- | :--- |
-| `obj[key]` | `__at__` (Get) |
-| `obj[key] = val` | `__put__` (Set) |
-| `x in obj` | `__has__` |
-| `x not in obj` | `__missing__` |
-| `obj.attr = val` | `__assign__` |
-| `length(obj)` | `__count__` |
-| `iter(obj)` | `__traverse__` |
-| `next(obj)` | `__advance__` |
-
-**Type Casting**
-| Caster | Method |
-| :--- | :--- |
-| `int(obj)` | `__to_int__` |
-| `string(obj)` | `__to_string__` |
-| `bool(obj)` | `__to_bool__` |
-| `list(obj)` | `__to_list__` |
-| `dict(obj)` | `__to_dict__` |
-| `vector(obj)` | `__to_vector__` |
-
+| **Variables** | `__var_count__`, `__var_names__`, `__var_values__`, `__var_pairs__`, `__var_reverse_pairs__` |
+| **Functions** | `__function_count__`, `__function_names__` |
+| **All Members** | `__all_count__`, `__all_names__` |
 ---
+
+
 
 ### **7.0 Modules & The Standard Library**
 
-`y--` uses a runtime-resolved import system. It includes a powerful standard library with built-in bindings for graphics and system operations.
+`y--` uses a runtime-resolved import system. To prevent global scope pollution, importing a module assigns it strictly to its own namespace (e.g., `Math.sin()`). You can bypass this and dump everything into the global scope by using `import * from Module`.
 
 #### **7.1 Import Syntax**
 
-Modules are imported using the `import` keyword. Paths are string literals for local files, or bare words for Standard Library headers.
-
-* **Full Import:** Loads the entire module namespace.
 ```javascript
-import Math
-import "my_module.ymm"
+import Math                     ~ Imports the Math namespace
+import func1, func2 from Math   ~ Imports specific functions globally
+import * from Math              ~ Dumps all Math functions globally
+import "my_module.ymm"          ~ Imports a local file
 
 ```
-
-
-* **Partial Import:** Loads specific symbols into the current scope.
-```javascript
-import func1, func2 from Math
-import func1, func2 from "my_module.ymm"
-
-```
-
-
 
 #### **7.2 Dependency Resolution (The "Blind Function" Rule)**
 
-`y--` does not perform static linking or automatic dependency resolution inside imported files.
+`y--` does not perform automatic dependency resolution inside imported files. If `funcA` relies on `funcB` inside the same module, you **must** import both.
 
-* **Constraint:** If you partially import a function `funcA`, and `funcA` relies on `funcB` inside the same module, you **must** import both.
-* **Failure Case:** Importing only `funcA` will cause a `RuntimeError` when it attempts to call the missing `funcB`.
 ```javascript
-// Correct usage for dependent functions
+~ Correct usage for dependent functions
 import parentFunc, dependentChild from "logic.ymm"
 
 ```
 
-
-
 #### **7.3 Standard Library**
-
-The following modules are built into the interpreter:
 
 | Module | Description |
 | --- | --- |
 | **Math** | Advanced mathematical functions and constants. |
-| **Vector** | N-dimensional vector operations (requires `vector()` constructor). |
-| **Raylib** | Native bindings for the Raylib graphics library. |
+| **Vector** | N-dimensional vector operations. |
+| **Raylib** | Native bindings for 2D/3D hardware-accelerated graphics. |
+| **Ncurses** | Terminal UI graphics handling (Linux targets only). |
+| **QRgen** | Native QR code generation. |
+| **Json** | Fast JSON parsing, serialization, and deserialization. |
+| **Http** | Native web requests and network communication. |
 | **Random** | Pseudo-random number generation. |
 | **Time** | Clock access, delays, and delta-time calculations. |
 | **System** | Interpreter status and garbage collection controls. |
-| **Os** | Operating System interaction (Environment variables, Shell commands). |
+| **Os** | Operating System interaction (Env vars, Shell commands). |
 | **FileStream** | Read/Write access to the file system. |
 
 ---
@@ -556,8 +485,10 @@ The following modules are built into the interpreter:
 ### **8.0 Tooling & Ecosystem**
 
 * **File Extension:** Source files use the `.ymm` extension.
-* **IDE Support:** A Visual Studio Code extension (syntax highlighting, snippets) is currently in development.
-* **Runtime:** The interpreter relies on late binding; declarations are not checked until execution reaches them, removing the need for `extern` headers.
+* **Interactive REPL:** A fully functional REPL shell is available alongside the main executable for live testing.
+* **IDE Support:** A Visual Studio Code extension providing syntax highlighting and snippets is fully available.
+* **Runtime:** The interpreter relies on late binding; declarations are not checked until execution reaches them.
+* **C++ FFI:** `y--` supports Foreign Function Interfaces, allowing it to seamlessly tap into native C++ libraries, multi-threaded execution streams, and direct GPU drawing operations.
 
 ---
 
@@ -566,60 +497,59 @@ The following modules are built into the interpreter:
 * [x] Core Interpreter & Memory Management
 * [x] Standard Library (IO, Math, Vector)
 * [x] Raylib Integration
-* [ ] VS Code Extension (Syntax Highlighting)
+* [x] VS Code Extension (Syntax Highlighting)
 * [ ] Package Manager
-* [ ] LLVM JIT
 
 ---
 
-
 ## 10.0 Installation & Usage
 
-### 10.1 Prerequisites
+`y--` provides pre-compiled, standalone binaries. You do not need to install C++ compilers, link Raylib, or manage dependencies to start writing code.
 
-* **C++ Compiler:** GCC/Clang/MSVC supporting C++17 or later.
-* **Raylib:** Must be installed and correctly linked to your compiler.
-* **Dependencies:** Ensure `pystring.h` and `old.h` are present in the root source folder.
+### 10.1 Download the Binaries
+1. Navigate to the `y--` GitHub repository.
+2. Open the `build` directory.
+3. Download the pre-compiled executable for your specific operating system (e.g., `y_lang.exe` for Windows, or the `y_lang` binary for Linux).
 
-### 10.2 Setup Guide
+### 10.2 Adding to Global Path (Recommended)
+To easily run the language from any folder in your terminal, you should add the binary to your system's global path.
 
-1. **Clone the Repository:**
+**For Windows:**
+1. Move the `y_lang_win64.exe` file to a permanent folder (e.g., `C:\Program Files\y_lang\`).
+2. Open the Windows Start menu, type **"env"**, and select **"Edit the system environment variables"**.
+3. Click the **"Environment Variables"** button at the bottom.
+4. Under "System variables", find the `Path` variable, select it, and click **Edit**.
+5. Click **New** and paste the folder path where you placed the `.exe` (e.g., `C:\Program Files\y_lang\`).
+6. Click **OK** on all windows. Restart your terminal for the changes to take effect.
+
+**For Linux:**
+1. Open your terminal.
+2. Move the downloaded binary to your user binaries folder and grant it execution permissions:
 ```bash
-git clone https://github.com/phdgamer0/y--lang.git
-cd y--
-
+   sudo mv /path/to/downloaded/y_lang_linux /usr/local/bin/
+   sudo chmod +x /usr/local/bin/y_lang_linux
 ```
 
+### 10.3 Running the Interpreter
 
-2. **Configure the Entry Point:**
-* Open `yrun.cpp` in your text editor.
-* Locate the source path string variable.
-* Change the path to point to your target `.ymm` file.
-```cpp
-// Example inside yrun.cpp
-std::string path = "path/to/your/project/main.ymm";
+**Executing a Script (VM Mode):**
+To run a `y--` program, call the binary and pass the **absolute path** to your `.ymm` file as the argument.
 
-```
-
-3. **Compile & Link:**
-Compile `yrun.cpp` ensuring Raylib is linked.
 ```bash
-# Example (g++):
-g++ yrun.cpp -o y_lang -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+y_lang /absolute/path/to/your/script.ymm
 
 ```
 
-4. **Run the Interpreter:**
-Execute the binary. You will be prompted to select an execution mode.
+*(Note: Windows users using the command prompt or PowerShell can use standard Windows paths like `y_lang C:\Projects\script.ymm`)*
+
+**Interactive REPL Mode:**
+If you launch the binary without providing any file path arguments, it will automatically boot into the interactive REPL shell for live coding and testing.
+
 ```bash
-./y_lang
+y_lang
 
 ```
 
-### 10.3 Execution Modes
+### 10.4 Example Programs
 
-When prompted, **ALWAYS select Option 1**.
-
-* **[0] Tree Walker:** *Deprecated/Unsupported.* Do not use.
-* **[1] Virtual Machine (VM):** The standard, optimized runtime for `y--`. Use this for all development.
-* **[2] Debugger:** *Experimental.* Extremely slow; currently limited to AST and OpCode printing and basic inspection.
+If you want to see what `y--` is capable of, navigate to the `example programs` folder in the GitHub repository. It contains ready-to-run `.ymm` scripts showcasing core syntax, algorithms, and native Raylib graphics implementations!
