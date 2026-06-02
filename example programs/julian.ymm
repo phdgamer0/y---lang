@@ -1,0 +1,199 @@
+`
+  ========================================================================
+                         y-- Example: Julian Set (C++ FFI)
+  ========================================================================
+  This script demonstrates one of the most powerful features of y--: 
+  The Foreign Function Interface (FFI) via 'cppCompile'.
+  
+  Since calculating 480 million fractal iterations frame-by-frame in a 
+  high-level VM would be slow, y-- allows you to write raw C++ code as a 
+  string, pass your y-- variables into it via a dictionary, and execute 
+  it dynamically at native speed!
+`
+
+import * from Raylib
+import * from Math
+import Vector
+
+~ The 'F' suffix explicitly declares these numeric literals as Floats.
+let const W = 800
+let const H = 600
+let const FPS = 60
+let const NAME = "Julian Set"
+let const MAX_ITERATION = 1000
+let const C_REAL = -0.8F
+let const C_IMAGINARY = 0.156F
+let const K = 100 // 6
+
+~ TUPLE CREATION: Enclosing values in parentheses creates an immutable Tuple. 
+let const COLOR_MAP = (
+   Color(0XFF, 0XD5, 0X4F, 0XFF),
+   Color(0XFF, 0X8C, 0X00, 0XFF),
+   Color(0XE6, 0X3E, 0X00, 0XFF),
+   Color(0X93, 0X00, 0X77, 0XFF),
+   Color(0X3A, 0X00, 0X88, 0XFF),
+   Color(0X0A, 0X00, 0X1A, 0XFF)
+)
+
+let zoom = 2.0F
+let offset_x = 0.0F
+let offset_y = 0.0F
+let view_width = 4.0 / zoom
+let view_height = 3.0 / zoom
+let min_x = offset_x - (view_width / 2.0)
+let max_x = offset_x + (view_width / 2.0)
+let min_y = offset_y - (view_height / 2.0)
+let max_y = offset_y + (view_height / 2.0)
+
+`
+  TYPE-LOCKED FUNCTION: 
+  This function strictly requires float() arguments and guarantees a float() return.
+  Passing an int() here without casting it first will throw a ConstError.
+`
+define function map_range(current_num:float(), current_range_start:float(), current_range_end:float(), goal_range_start:float(), goal_range_end:float()) -> float():{
+   return (current_num - current_range_start) * (goal_range_end - goal_range_start) / (current_range_end - current_range_start) + goal_range_start
+}
+
+define function choose_the_best_color(num:int()):{
+   ~ FLOOR DIVISION: The '//' operator performs integer division, discarding the remainder.
+   if num // K >=  5: return COLOR_MAP[-1]
+   
+   let lcolor = COLOR_MAP[num // K]
+   let rcolor = COLOR_MAP[num // K + 1]
+   let t = (num % K) / K
+   
+   ~ EXPLICIT CASTING: int() is used to cast the float math back to integer RGB values.
+   let new_r = int(lcolor.r * (1 - t) + rcolor.r * t)
+   let new_g = int(lcolor.g * (1 - t) + rcolor.g * t)
+   let new_b = int(lcolor.b * (1 - t) + rcolor.b * t)
+   
+   return Color(new_r, new_g, new_b, 255)
+}
+
+define function main():{
+   InitWindow(W, H, NAME)
+   SetTargetFPS(FPS)
+   BeginDrawing()
+   ClearBackground(BLACK)
+   
+   `
+     THE C++ PAYLOAD:
+     This is a raw multi-line string containing valid C++ code. 
+     Notice how we inject our y-- constants (like MAX_ITERATION) into 
+     the string directly using concatenation!
+   `
+   let code = "
+   #include <raylib.h>
+   #include <array>
+   #include <chrono>
+   
+   constexpr int C_MAX_ITER = " + string(MAX_ITERATION) + ";
+   constexpr int C_K = " + string(K) + "; 
+   
+   constexpr std::array<Color, 6> COLOR_MAP{
+      Color{0xFF, 0xD5, 0x4F, 0xFF}, Color{0xFF, 0x8C, 0x00, 0xFF},
+      Color{0xE6, 0x3E, 0x00, 0xFF}, Color{0x93, 0x00, 0x77, 0xFF},
+      Color{0x3A, 0x00, 0x88, 0xFF}, Color{0x0A, 0x00, 0x1A, 0xFF}
+   };
+   
+   constexpr auto precomputed_palette = [&]() {
+      std::array<Color, C_MAX_ITER + 1> palette{};
+      for (int i = 0; i <= C_MAX_ITER; i++) {
+         if (i / C_K >= 5) {
+            palette[i] = COLOR_MAP[5];
+         } 
+         else {
+            Color lcolor = COLOR_MAP[i / C_K];
+            Color rcolor = COLOR_MAP[i / C_K + 1];
+            float t = (i % C_K) / (float)C_K;
+            unsigned char new_r = (unsigned char)(lcolor.r * (1.0f - t) + rcolor.r * t);
+            unsigned char new_g = (unsigned char)(lcolor.g * (1.0f - t) + rcolor.g * t);
+            unsigned char new_b = (unsigned char)(lcolor.b * (1.0f - t) + rcolor.b * t);
+            palette[i] = Color{new_r, new_g, new_b, 0xFF};
+         }
+      }
+      return palette;
+   }();
+   
+   float dx = (max_x - min_x) / (float)W;
+   float dy = (max_y - min_y) / (float)H;
+   std::vector<Color> pixel_buffer(W * H);
+   auto start_time = std::chrono::high_resolution_clock::now();
+   
+   // 2. MULTI-THREADED MATH (Writes safely to RAM)
+   #pragma omp parallel for schedule(dynamic)
+   for (int pixel_y = 0; pixel_y < H; pixel_y++) {
+      float mapped_y = min_y + pixel_y * dy;
+      for (int pixel_x = 0; pixel_x < W; pixel_x++) {
+         float z_real = min_x + pixel_x * dx;
+         float z_imag = mapped_y;
+         float zr2 = z_real * z_real;
+         float zi2 = z_imag * z_imag;
+         int iteration = 0;
+         while (iteration < C_MAX_ITER && (zr2 + zi2 <= 4.0f)) {
+            z_imag = (2.0f * z_real * z_imag) + C_IMAGINARY;
+            z_real = zr2 - zi2 + C_REAL;
+            zr2 = z_real * z_real;
+            zi2 = z_imag * z_imag;
+            iteration++;
+         }
+         // Save the color into the thread-safe flat array instead of drawing!
+         pixel_buffer[pixel_y * W + pixel_x] = precomputed_palette[iteration];
+      }
+   }
+   
+   // 3. SINGLE-THREADED DRAWING (Safely talks to the GPU)
+   for (int pixel_y = 0; pixel_y < H; pixel_y++) {
+      for (int pixel_x = 0; pixel_x < W; pixel_x++) {
+         DrawPixel(pixel_x, pixel_y, pixel_buffer[pixel_y * W + pixel_x]);
+      }
+   }
+   
+   auto end_time = std::chrono::high_resolution_clock::now();
+   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+   TraceLog(LOG_INFO, \"PURE C++ EXECUTION TIME: %d ms\", (int)duration.count());
+   return 0;
+   "
+   
+   ~ THE C++ ARGUMENT BINDING:
+   ~ This dictionary maps the C++ variable names to our active y-- variables.
+   let args = {
+      "W" : W,
+      "H" : H,
+      "C_REAL" : C_REAL,
+      "C_IMAGINARY" : C_IMAGINARY,
+      "min_x" : min_x,
+      "max_x" : max_x,
+      "min_y" : min_y,
+      "max_y" : max_y
+   }
+   
+   ~ 'None' is the explicit representation of an absent value.
+   let retVal = None
+   
+   ~ THE FFI EXECUTION:
+   ~ This compiles the string using the local C++ compiler with -O3 optimizations,
+   ~ executes it seamlessly, and returns control to the y-- VM!
+   ~ We are leaving almost 480 million computations to the optimized backend.
+   cppCompile(code, retVal, args) 
+   
+   EndDrawing()
+  
+   ~ Back in y--, we capture the screen output the C++ code just drew.
+   let img = LoadImageFromScreen()
+   let txt = LoadTextureFromImage(img)
+   
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      ClearBackground(COLOR_MAP[0])
+      
+      ~ Render the static texture computed by our native C++ payload
+      DrawTextureV(txt, <0,0>, WHITE)     
+      
+      EndDrawing()
+   }
+   
+   UnloadImage(img)
+   UnloadTexture(txt)
+   CloseWindow()
+}

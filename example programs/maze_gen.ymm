@@ -1,0 +1,268 @@
+`
+  ========================================================================
+                         y-- Example: Maze Generator
+  ========================================================================
+  This script demonstrates Object-Oriented Programming (OOP) for grid
+  generation, standard C-style loops alongside iterators, reference passing, 
+  and the Randomized Depth-First Search (DFS) algorithm to carve a maze.
+`
+
+import * from Raylib
+import * from Math
+import * from Random
+import Vector
+
+~ CONSTANTS: Immutable declarations optimized heavily at compile time.
+let const W = 800
+let const H = 800
+let const FPS = 60
+let const NAME = "Maze Gen"
+
+~ NATIVE VECTORS: <X, Y> directly constructs a 2D math vector object.
+let const MIDDLE = <W // 2, H // 2> 
+let const DEFAULT_GRIDBOX_LENGTH = 30
+let const W_GRID = 25
+let const H_GRID = 25
+
+~ CLASSES: Strict encapsulation is required in y--
+define class GridBox: {
+   #public:
+      ~ 'obj' CONTEXT: Binds to the class itself (static properties).
+      let const obj.walls = tuple("left right up down".split(" "))
+      let const obj.len = <DEFAULT_GRIDBOX_LENGTH, DEFAULT_GRIDBOX_LENGTH>
+      
+      ~ MAGIC METHOD: __construct__ is the initializer.
+      ~ Type-locked parameter: pos:vector()
+      define function __construct__(pos:vector(), lnib, rnib, unib, dnib):{
+         ~ 'self' CONTEXT: Explicit instance binding without needing to pass 'self' as an argument.
+         let const self.pos = pos
+         
+         ~ TYPE-LOCKING (:=): These variables are strictly locked to 'dict' and 'bool'.
+         ~ dict(pair(...)) allows building dictionaries from two parallel lists.
+         let self.nibs := dict(pair(obj.walls, [lnib, rnib, unib, dnib]))
+         let self.brokenWalls := dict(pair(obj.walls, [false] * 4))
+         let self.is_visited := false
+      }
+      
+      ~ MAGIC METHOD: __display__ dictates what prints when you call print(gridbox)
+      define function __display__():{
+         ~ f-strings embed variables directly using {}
+         return f"pos: {self.pos}\nnibs: {self.nibs}\nbroken walls: {self.brokenWalls}"
+      }
+      
+      define function set_as_visited():{
+         self.is_visited = true
+      }
+      
+      define function is_path():{
+         ~ LOGICAL 'is in': y-- uses readable English for containment checks.
+         return true is in self.brokenWalls.values()
+      }
+      
+   #private:
+      ~ The compiler enforces that visibility blocks must exist, even if empty.
+      
+   #protected:
+      
+}
+
+~ ARROW SYNTAX (->): Specifies the default return type (here, a list).
+define function Generate_Grid(width:int(), height:int()) -> list():{
+   ~ Creates a 2D list filled with empty lists
+   let result_list = [[]] * width
+   let start_pos = <(W - DEFAULT_GRIDBOX_LENGTH * width) // 2, (H - DEFAULT_GRIDBOX_LENGTH * height) // 2>
+   
+   ~ C-STYLE LOOPS: Standard initialization, condition, and increment syntax.
+   for let i = 0 if i < width then i++ do:{
+      for let j = 0 if j < height then j++ do:{
+         result_list[i].append(GridBox(start_pos + <j, i> * DEFAULT_GRIDBOX_LENGTH, None, None, None, None))
+      }
+   }
+   
+   ~ SETTING NEIGHBORS (NIBS)
+   ~ Multi-assignment cleanly initializes four variables to None.
+   let l, r, u, d = None, None, None, None
+   
+   for let i = 0 if i < width then i++ do:{
+      for let j = 0 if j < height then j++ do:{
+         
+         ~ IDENTITY CHECK 'is': Strict identity/equality check
+         if i is 0:{
+            u = None
+            d = result_list[i + 1][j]
+            if j is 0:{
+               l = None
+               r = result_list[i][j + 1]
+            }
+            elif j is height - 1:{
+               l = result_list[i][j - 1]
+               r = None
+            }
+            else:{
+               l = result_list[i][j - 1]
+               r = result_list[i][j + 1]
+            }
+         }
+         elif i is width - 1:{
+            u = result_list[i - 1][j]
+            d = None
+            if j is 0:{
+               l = None
+               r = result_list[i][j + 1]
+            }
+            elif j is height - 1:{
+               l = result_list[i][j - 1]
+               r = None
+            }
+            else:{
+               l = result_list[i][j - 1]
+               r = result_list[i][j + 1]
+            }
+         }
+         else:{
+            u = result_list[i - 1][j]
+            d = result_list[i + 1][j]
+            if j is 0:{
+               l = None
+               r = result_list[i][j + 1]
+            }
+            elif j is height - 1:{
+               l = result_list[i][j - 1]
+               r = None
+            }
+            else:{
+               l = result_list[i][j - 1]
+               r = result_list[i][j + 1]
+            }
+         }
+         
+         ~ Assigning the found neighbors back to the grid box dictionary
+         result_list[i][j].nibs["left"] = l
+         result_list[i][j].nibs["right"] = r
+         result_list[i][j].nibs["up"] = u
+         result_list[i][j].nibs["down"] = d
+      }
+   }
+   return result_list    
+}
+
+let res_list = Generate_Grid(W_GRID, H_GRID)
+
+~ TYPE-LOCKED DEFAULTS: path_color:object(BLACK) defaults to Raylib's BLACK object if omitted.
+define function display_grid(lis:list(), path_color:object(BLACK), wall_color:object(WHITE)):{
+   
+   ~ ITERATOR LOOPS: Traverse containers directly
+   for i in lis do:{
+      for j in i do:{
+         
+         ~ DICTIONARY UNPACKING: Automatically splits keys and values (k, v)
+         for k,v in j.brokenWalls do:{
+            if not v:{
+               
+               ~ RE-EVALUATING SWITCH: 'then do:' means continue evaluating cases if no break is hit.
+               ~ 'do:' means this is the final case evaluated before default.
+               switch k: {
+                  case "up" then do: {
+                     DrawLineV(j.pos, j.pos + <DEFAULT_GRIDBOX_LENGTH, 0>, wall_color)
+                     break
+                  }
+                  case "down" then do:{
+                     DrawLineV(j.pos + <0, DEFAULT_GRIDBOX_LENGTH>, j.pos + <DEFAULT_GRIDBOX_LENGTH, DEFAULT_GRIDBOX_LENGTH>, wall_color)
+                     break
+                  }
+                  case "left" then do:{
+                     DrawLineV(j.pos, j.pos + <0, DEFAULT_GRIDBOX_LENGTH>, wall_color)
+                     break
+                  }
+                  case "right" do:{
+                     DrawLineV(j.pos + <DEFAULT_GRIDBOX_LENGTH, 0>, j.pos + <DEFAULT_GRIDBOX_LENGTH, DEFAULT_GRIDBOX_LENGTH>, wall_color)
+                     break
+                  }
+                  default do: {
+                     break
+                  }
+               }
+            }
+         }
+      }
+   }
+}
+
+`
+  PASS-BY-REFERENCE (@):
+  By prefixing 'lis' with '@', we pass the actual maze grid in memory, not a copy.
+  Modifying the grid here modifies the original 'res_list' globally.
+`
+define function Randomized_DFS(@lis:list()):{
+   let opposites = {"left" : "right", "up" : "down", "right" : "left", "down" : "up"}
+   
+   ~ SETS: Unordered collections of unique elements, ideal for fast 'visited' state checks.
+   let visited := set()
+   
+   ~ SLICING/INDEXING: Python-style negative indexing seamlessly grabs the last element.
+   let start = lis[-1][0]
+   visited.add(start)
+   start.set_as_visited()
+   
+   let stack = [start]
+   let directions = GridBox.walls
+   
+   ~ TRUTHINESS: Containers like lists evaluate to 'true' natively as long as they aren't empty.
+   while stack do:{
+      let curr_cell = stack.pop()
+      if curr_cell is not in visited:{
+         visited.add(curr_cell)
+         curr_cell.set_as_visited()
+      }
+      
+      let valid = {}
+      for k, v in curr_cell.nibs do:{
+         if v is not None and not v.is_visited:{
+            valid[k] = v
+         }
+      }
+      
+      if valid:{
+         stack.append(curr_cell)
+         let choice = RandChoice(valid.keys())
+         curr_cell.brokenWalls[choice] = true
+         curr_cell.nibs[choice].brokenWalls[opposites[choice]] = true
+         curr_cell.nibs[choice].set_as_visited()
+         visited.add(curr_cell.nibs[choice])
+         stack.append(curr_cell.nibs[choice])
+      }
+   }
+}
+
+`
+  ENTRY POINT:
+  Execution strictly begins in main().
+`
+define function main():{
+   ~ Generating the maze path
+   Randomized_DFS(res_list)
+   
+   InitWindow(W, H, NAME)
+   SetTargetFPS(FPS)
+   BeginDrawing()
+   ClearBackground(BLACK)
+   
+   ~ Drawing the maze ONCE
+   display_grid(res_list)
+   EndDrawing()
+   
+   ~ Capturing the drawn screen into a Texture so we don't have to re-compute 
+   ~ and redraw the entire maze logic every single frame!
+   let txt = LoadTextureFromImage(LoadImageFromScreen())
+   
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      ClearBackground(BLACK)
+      DrawTextureV(txt, <0 , 0>, WHITE)
+      DrawFPS(10, 10)
+      EndDrawing()
+   }
+   
+   UnloadTexture(txt)
+   CloseWindow()
+}

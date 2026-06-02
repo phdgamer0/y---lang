@@ -1,0 +1,165 @@
+
+`
+  ========================================================================
+                         y-- Example: Huffman Tree
+  ========================================================================
+  This script demonstrates advanced Data Structures and Algorithms in y--.
+  It highlights Operator Overloading (Magic Methods) used for automated 
+  Heap sorting, explicit inline visibility modifiers, and pass-by-reference 
+  recursion to build a Huffman Encoding tree.
+`
+
+define class Node: {
+   #public:
+      
+   #private:
+      define function __construct__(data = None, left = None, right = None):{
+         ~ INLINE VISIBILITY: Even though we are inside a #private block, 
+         ~ declaring 'let public' explicitly overrides the block's visibility 
+         ~ for these specific instance variables, making them accessible outside!
+         let public self.data = data
+         let public self.left = left
+         let public self.right = right
+      }
+      
+      ~ MAGIC METHOD (__less__): 
+      ~ By defining how to compare two nodes with '<', the built-in 
+      ~ MinHeap methods can automatically sort these custom objects!
+      ~ 'other:object()' ensures we only compare against valid objects.
+      define function __less__(other:object()):{
+         return self.data < other.data
+      }
+      
+      ~ MAGIC METHOD (__display__ & __inspect__):
+      ~ Controls what prints to the console. f-strings natively cast self.data.
+      define function __display__():{
+         return f'{self.data}'
+      }
+      define function __inspect__():{
+         return self.__display__()
+      }
+      
+      ~ MAGIC METHOD (__plus__):
+      ~ This defines what happens when we do 'node1 + node2'.
+      define function __plus__(other:object()):{
+         ~ 'obj' CONTEXT: 'obj' refers to the Class itself (Node). 
+         ~ By calling obj(), we are acting as a factory and instantiating 
+         ~ a brand new Node directly from this method!
+         return obj((self.data[0] + other.data[0], self.data[1] + other.data[1]))
+      }
+   #protected:
+      
+}
+
+define class HuffmanTree: {
+   #public:
+      define function __construct__(root = None):{
+         let self.root = root
+      }
+      
+      ~ UNTYPED DEFAULTS: 'lis = None' sets a default value while keeping 
+      ~ the parameter type fully dynamic.
+      define function PreOrderTraverse(start, lis = None):{
+         if lis is None: lis = []
+         if start is None: return lis
+         lis.append(start.data)
+         
+         ~ PASS-BY-REFERENCE RECURSION (@):
+         ~ By prefixing 'lis' with '@', we pass the exact memory address of 
+         ~ the list down the recursive tree. Every branch appends to the 
+         ~ same list instead of creating expensive copies!
+         self.PreOrderTraverse(start.left, @lis)
+         self.PreOrderTraverse(start.right, @lis)
+         return lis
+      }
+      
+      define function InOrderTraverse(start, lis = None):{
+         if lis is None: lis = []
+         if start is None: return lis
+         self.InOrderTraverse(start.left, @lis)
+         lis.append(start.data)
+         self.InOrderTraverse(start.right, @lis)
+         return lis
+      }
+      
+      define function PostOrderTraverse(start, lis = None):{
+         if lis is None: lis = []
+         if start is None: return lis
+         self.PostOrderTraverse(start.left, @lis)
+         self.PostOrderTraverse(start.right, @lis)
+         lis.append(start.data)
+         return lis
+      }
+      
+      ~ ARROW SYNTAX: Promises that this function will return a dict().
+      define function GenerateCodes(node = None, path = "", res = None) -> dict():{
+         if res is None: res = dict()
+         if node is None: node = self.root
+         if node is None: return code_dict
+         
+         ~ LEAF NODE CHECK
+         if node.left is None and node.right is None:{
+            res[node.data[1]] = path
+            return
+         }
+         
+         ~ String concatenation (path + "0") creates a new string for each branch,
+         ~ while '@res' safely passes the same dictionary across all branches.
+         if node.left is not None: self.GenerateCodes(node.left, path + "0", @res)
+         if node.right is not None: self.GenerateCodes(node.right, path + "1", @res)
+         
+         return res
+      }
+   #private:
+      
+   #protected:
+      
+}
+
+define function huffmanize(data:dict()) -> object():{
+   let lis = []
+   
+   ~ ITERATOR UNPACKING: Loops over the dictionary, separating keys and values.
+   for k, v in data do:{
+      ~ y-- lists have native, highly optimized Heap operations built right in!
+      ~ Notice we are pushing a Tuple `(v, k)` into the Node.
+      lis.MinHeapPush(Node((v, k)))
+   }
+   
+   ~ The while loop dynamically evaluates the length of the list.
+   while length(lis) > 1 do:{
+      let smallest = lis.MinHeapPop()
+      let small = lis.MinHeapPop()
+      
+      ~ OPERATOR OVERLOADING IN ACTION:
+      ~ This visually clean addition secretly calls the __plus__ magic method 
+      ~ we defined earlier, spitting out a brand new Combined Node!
+      let Combined_node = small + smallest
+      
+      Combined_node.left = smallest
+      Combined_node.right = small
+      
+      lis.MinHeapPush(Combined_node)
+   }
+   
+   return HuffmanTree(lis.MinHeapPop())
+}
+
+`
+  ENTRY POINT:
+  Execution must reside in main().
+`
+define function main():{
+   ~ Standard Dictionary declaration mapping chars to integer frequencies
+   let frequencies = {
+      "A": 5, 
+      "B": 9, 
+      "C": 12, 
+      "D": 13, 
+      "E": 16, 
+      "F": 45
+   }
+   
+   let ht = huffmanize(frequencies)
+   print(ht.GenerateCodes())
+}

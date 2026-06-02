@@ -1,0 +1,266 @@
+`
+  ========================================================================
+                         y-- Example: RGB Guesser
+  ========================================================================
+  This script demonstrates UI creation, mouse interaction, String manipulation, 
+  Static Lambdas bound to Class objects (obj), and implicit object reference 
+  passing in y--.
+`
+
+~ IMPORTS: Mixing Namespace imports and Partial imports.
+~ 'import Raylib' requires prefixing (Raylib.InitWindow). 
+~ 'import RandChoice from Random' allows calling RandChoice() directly.
+import Raylib 
+import Math 
+import Vector  
+import RandChoice from Random 
+
+~ CONSTANTS:
+let const W = 800
+let const H = 800
+let const NAME = "Color guesser"
+let const FPS = 60
+let const ALPHA = 255
+
+~ RANGE GENERATOR: '...' creates a native Range object (0 up to, but not including, 256).
+let const RGB_RANGE = 0...256
+
+let const W_MID = <0, H> // 2
+let const SEG = 20
+
+~ This global color object will be passed by reference to the sliders.
+let BackgroundColor = Raylib.Color(0, 0, 0, 255)
+
+define function main():{
+   Raylib.InitWindow(W, H, NAME)
+   Raylib.SetTargetFPS(FPS)
+   let ARIAL = Raylib.LoadFont('example programs/src/ARIAL.TTF')
+   let GeneratorObject = ColorGen(ARIAL)
+   
+   ~ PASS BY REFERENCE (Implicit):
+   ~ Because 'BackgroundColor' is a Raylib.Color object, passing it into the 
+   ~ Slider constructor implicitly passes a reference. When the slider moves, 
+   ~ it modifies this global background color directly!
+   let R_slider = Slider(<W - 170, 10>, <10, 300>, ARIAL, channel_name = 'r', colorObj = BackgroundColor)
+   let G_slider = Slider(<W - 100, 10>, <10, 300>, ARIAL, channel_name = 'g', colorObj = BackgroundColor)
+   let B_slider = Slider(<W - 30, 10>, <10, 300>, ARIAL, channel_name = 'b', colorObj = BackgroundColor)
+   
+   let score, frame_counter = 0, 0
+   
+   while not Raylib.WindowShouldClose() do:{
+      Raylib.BeginDrawing()
+      Raylib.ClearBackground(BackgroundColor)
+      
+      ~ STRING TO ASCII: 'I'.ascii() converts the string to its integer keycode.
+      GeneratorObject.display(Raylib.IsKeyDown('I'.ascii()))
+      
+      R_slider.display()
+      G_slider.display()
+      B_slider.display()
+ 
+      ~ 257 is the Raylib keycode for ENTER
+      if Raylib.IsKeyPressed(257):{
+         score = Score_Calculator(GeneratorObject.color, BackgroundColor)
+         BackgroundColor.r = 0
+         BackgroundColor.g = 0
+         BackgroundColor.b = 0
+         R_slider.reset()
+         G_slider.reset()
+         B_slider.reset()
+         frame_counter++
+      }
+      
+      if frame_counter > 0 and frame_counter < 3 * FPS:{
+         GeneratorObject.display(true)
+         
+         ~ STRING MANIPULATION: .rjust(3, '0') pads the string with zeroes on the left!
+         let str = f"SCORE : {string(score).rjust(3, '0')}%"
+         let ln = Raylib.MeasureTextEx(ARIAL, str, 20, 1)
+         Raylib.DrawTextEx(ARIAL, str, <W // 2 - ln[0], H // 4> + ln // 2, 20, 1, Raylib.WHITE)
+         
+         frame_counter++
+         if frame_counter is 3 * FPS: GeneratorObject.reset()
+      }
+      else: {
+         frame_counter = 0
+      }
+
+      Raylib.EndDrawing()
+   }
+   Raylib.UnloadFont(ARIAL)
+   Raylib.CloseWindow()
+}
+
+define class ColorGen: {
+   #public:
+      define function __construct__(font:object()):{
+         let self.color = obj.GENERATE()
+         
+         ~ INLINE VISIBILITY: Forces these instance variables to be #private 
+         ~ even though we are currently inside the #public block.
+         let private self.font = font
+         let private self.colorInfo = f"R : {string(self.color.r).rjust(3, '0')}\nG : {string(self.color.g).rjust(3, '0')}\nB : {string(self.color.b).rjust(3, '0')}"
+         let private self.colorInfoLength = Raylib.MeasureTextEx(self.font, self.colorInfo, 25, 1)
+      }
+      
+      define function display(show_details:bool(false)):{
+         Raylib.DrawRectangleV(W_MID, <W, H // 2>, self.color)
+         if show_details: {
+            Raylib.DrawRectangleV(<W // 2 - self.colorInfoLength[0] // 2, H // 2>, self.colorInfoLength, Raylib.BLACK)
+            Raylib.DrawTextEx(self.font, self.colorInfo, <W // 2 - self.colorInfoLength[0] // 2, H // 2>, 25, 1, Raylib.WHITE)}
+      }
+      
+      define function reset():{
+         self.color = obj.GENERATE()
+         self.colorInfo = f"R : {string(self.color.r).rjust(3, '0')}\nG : {string(self.color.g).rjust(3, '0')}\nB : {string(self.color.b).rjust(3, '0')}"
+         self.colorInfoLength = Raylib.MeasureTextEx(self.font, self.colorInfo, 25, 1)
+      }
+      
+   #private:
+      `
+        STATIC LAMBDA METHOD:
+        Attached to the 'obj' context, this lambda acts as a static factory 
+        method for the class. Notice the type-locked defaults:
+        alpha:int(ALPHA) and rgb:range(RGB_RANGE).
+      `
+      let obj.GENERATE = define lambda function(alpha:int(ALPHA), rgb:range(RGB_RANGE)) -> object():{
+         ~ RandChoice works natively on Range objects!
+         return Raylib.Color(RandChoice(rgb), RandChoice(rgb), RandChoice(rgb), alpha)
+      }
+   #protected:
+      
+}
+
+define class Slider: { 
+   ~ defines a vetical slider with a small display above and a channel name blow it to show the current value
+   #public:
+      define function __construct__(pos:vector(), size_vector:vector(), font:object(), font_size:int(16), font_spacing:int(1), channel_name:string(''), colorObj:object(BackgroundColor), color:object(Raylib.WHITE)):{
+         ~~~~~~~~~~~ slider bar ~~~~~~~~~~~
+         let private self.pos = pos
+         let private self.size_vector = size_vector
+         let private self.font = font
+         let private self.font_size = font_size
+         let private self.font_spacing = font_spacing
+         let private self.channel_name = channel_name.upper()
+         let private self.color = color
+         
+         ~ IMMUTABLE PROPERTIES: 'let private const' ensures these rectangles 
+         ~ cannot be reassigned once initialized.
+         let private const self.slider_bar = Raylib.Rectangle(self.pos[0], self.pos[1], self.size_vector[0], self.size_vector[1])
+         let private const self.slider_bar_outline = Raylib.Rectangle(self.pos[0] - 1, self.pos[1] - 1, self.size_vector[0] + 2, self.size_vector[1] + 2)
+         let private self.colorObj = colorObj
+         
+         ~~~~~~~~~~~ slider rect ~~~~~~~~~~~
+         let private self.slider_rect = Raylib.Rectangle(self.pos[0] - self.size_vector[0], self.pos[1] + self.size_vector[1] - self.size_vector[0] // 2, self.size_vector[0] * 3, self.size_vector[0])
+         let private self.slider_rect_outline = Raylib.Rectangle(self.pos[0] - self.size_vector[0]- 1, self.pos[1] + self.size_vector[1] - self.size_vector[0] // 2 - 1, self.size_vector[0] * 3 + 2, self.size_vector[0] + 2)
+      }
+      
+      define function display():{
+         ~~~~~~~~~~~ static vertical line ~~~~~~~~~~~
+         Raylib.DrawRectangleRounded(self.slider_bar_outline, 1.0F, SEG, Raylib.BLACK)
+         Raylib.DrawRectangleRounded(self.slider_bar, 1.0F, SEG, self.color)
+         
+         ~~~~~~~~~~~ move logic ~~~~~~~~~~~~
+         self.check__and__update__rect()
+         
+         ~~~~~~~~~~~ drawing the moveavble rect ~~~~~~~
+         Raylib.DrawRectangleRec(self.slider_rect_outline, Raylib.BLACK)
+         Raylib.DrawRectangleRec(self.slider_rect, self.color)
+       
+         ~~~~~~~~~~~ channel details ~~~~~~~~~~~
+         let str = ''
+         
+         ~ SWITCH ON STRINGS: y-- supports hashing strings for fast switch cases.
+         switch (self.channel_name.lower(false)): {
+            case 'r' then do: {
+               str = f'{self.channel_name} : {string(self.colorObj.r).rjust(3, "0")}' break
+            }
+            case 'g' then do: {
+               str = f'{self.channel_name} : {string(self.colorObj.g).rjust(3, "0")}' break
+            }
+            case 'b' do: {
+               str = f'{self.channel_name} : {string(self.colorObj.b).rjust(3, "0")}' break
+            }
+            default do:{
+               break
+            }
+         }
+         
+         let strlen = Raylib.MeasureTextEx(self.font, str, self.font_size, self.font_spacing)
+         Raylib.DrawRectangleV(self.pos + <-20, self.size_vector[1] + strlen[1]>, strlen, Raylib.BLACK)
+         Raylib.DrawTextEx(self.font, str, self.pos + <-20, self.size_vector[1] + strlen[1]> ,self.font_size, self.font_spacing, Raylib.WHITE)
+      }
+      
+      define function reset():{
+         self.slider_rect = Raylib.Rectangle(self.pos[0] - self.size_vector[0], self.pos[1] + self.size_vector[1] - self.size_vector[0] // 2, self.size_vector[0] * 3, self.size_vector[0])
+         self.slider_rect_outline = Raylib.Rectangle(self.pos[0] - self.size_vector[0]- 1, self.pos[1] + self.size_vector[1] - self.size_vector[0] // 2 - 1, self.size_vector[0] * 3 + 2, self.size_vector[0] + 2)
+      }
+      
+   #private:
+         define function check__and__update__rect():{
+            let mouse_pos = Raylib.GetMousePosition()
+            if Raylib.IsMouseButtonPressed(0): {
+               let is_x_in = mouse_pos[0] >= self.slider_rect_outline.x and mouse_pos[0] <= self.slider_rect_outline.x + self.slider_rect_outline.width
+               let is_y_in = mouse_pos[1] >= self.slider_rect_outline.y and mouse_pos[1] <= self.slider_rect_outline.y + self.slider_rect_outline.height
+               
+               if is_x_in and is_y_in: {
+                  self.is_dragging = true
+                  self.drag_offset[1] = mouse_pos[1] - self.slider_rect.y
+               }
+            }
+            
+            if self.is_dragging and Raylib.IsMouseButtonDown(0): {
+               let clamped_result = 0
+               if mouse_pos[1] - self.drag_offset[1] < self.pos[1] - self.slider_rect.height // 2: clamped_result = self.pos[1] - self.slider_rect.height // 2
+               elif mouse_pos[1] - self.drag_offset[1] > self.pos[1] + self.size_vector[1] - self.slider_rect.height // 2: clamped_result = self.pos[1] + self.size_vector[1] - self.slider_rect.height // 2
+               else: clamped_result = mouse_pos[1] - self.drag_offset[1]
+               
+               self.slider_rect.y = clamped_result
+               self.slider_rect_outline.y = self.slider_rect.y - 1
+            }
+ 
+            if Raylib.IsMouseButtonReleased(0): {
+               self.is_dragging = false
+            }
+            
+            switch (self.channel_name.lower(false)): {
+               case 'r' then do: {
+                  ~ EXPLICIT CASTING: map_range returns a float, we must explicitly cast to int().
+                  self.colorObj.r = int(Math.MapRange(self.slider_rect.y, self.pos[1] - self.slider_rect.height // 2, self.pos[1] + self.size_vector[1] - self.slider_rect.height // 2, 255, 0))
+                  break
+               }
+               case 'g' then do: {
+                  self.colorObj.g = int(Math.MapRange(self.slider_rect.y, self.pos[1] - self.slider_rect.height // 2, self.pos[1] + self.size_vector[1] - self.slider_rect.height // 2, 255, 0))
+                  break
+               }
+               case 'b' do: {
+                  self.colorObj.b = int(Math.MapRange(self.slider_rect.y, self.pos[1] - self.slider_rect.height // 2, self.pos[1] + self.size_vector[1] - self.slider_rect.height // 2, 255, 0))
+                  break
+               }
+               default do:{
+                  break
+               }
+            }
+         }
+         let self.drag_offset = <0, 0>
+         let self.is_dragging = false
+   #protected:
+      
+}
+
+define function Score_Calculator(Real_color:object(), Guessed_color:object())->int():{
+   `
+     LOCAL HELPER LAMBDA:
+     You can define tiny helper functions natively inside other functions 
+     to keep your code clean and mathematical without polluting the global scope.
+   `
+   let err = define lambda function(real:int(), guess:int()) -> int():{
+      return int((float(Math.Abs(real - guess)) / 255.0) * 100.0)
+   }
+   
+   let err_r = err(Real_color.r, Guessed_color.r)
+   let err_g = err(Real_color.g, Guessed_color.g)
+   let err_b = err(Real_color.b, Guessed_color.b)
+   
+   return 100 - ((err_r + err_g + err_b) // 3)
+}

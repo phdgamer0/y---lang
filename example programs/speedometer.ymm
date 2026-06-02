@@ -1,0 +1,185 @@
+`
+  ========================================================================
+                         y-- Example: Speedometer
+  ========================================================================
+  This script demonstrates 2D rendering, trigonometric vector math, 
+  complex C-style loops with multiple variables, lambda functions with 
+  type-locked defaults, and texture caching for high-performance drawing!
+`
+
+import * from Math
+import * from Raylib
+
+~ CONSTANTS: Fully optimized at compile time.
+let const CIRCLE_RADIUS = 300
+let const WIN_HEIGHT = 800
+let const WIN_WIDTH = 800
+
+~ MUTABLE VARIABLES: Declared with 'let', these can change during runtime.
+let THICKNESS = 2
+let car_speed = 0
+let our_speed = 0
+let step = 0.0001
+let SPEED_STEP = 1
+
+define function Draw_Speed_Meter(outer_color, inside_color, line_colors, number_colors): {
+	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS + 3, 150, 390, 400, outer_color)
+	DrawCircleSector(<WIN_WIDTH/2, WIN_HEIGHT/2 >, CIRCLE_RADIUS, 150, 390, 400, inside_color)
+	Draw_Speed_Lines(line_colors)
+}
+
+define function Draw_Speed_Lines(line_colors): {
+    `
+      COMPLEX C-STYLE LOOP:
+      y-- allows multiple variables to be initialized and incremented in a single 
+      loop statement using comma separation. Here, 'i' tracks the angle in radians, 
+      while 'j' tracks the tick index!
+    `
+	for let i, j = 7 * PI / 6, 0 if i >= -PI / 6 then i -= PI / 18, j++ do: {
+	  
+      ~ NATIVE VECTOR MATH: Constructing a vector on the fly with <x, y>
+      let outer = <400 + 300 * Cos(i), 400 - 300 * Sin(i)>
+      
+      ~ NATIVE BOOLEAN CONVERSION: 0 is falsy, non-zero is truthy.
+      if not(j % 2): {
+         ~ Vector addition/subtraction and indexing (outer[0], outer[1])
+         DrawLineEx(outer, <outer[0] - 30 * Cos(i), outer[1] + 30 * Sin(i) >, THICKNESS, line_colors)
+         
+         ~ SWITCH STATEMENT: Using 'then do:' continues evaluation, but here 
+         ~ we explicitly 'break' in each case.
+         switch (j):{
+            case 0 then do: {
+               DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 60 * Sin(i), 20, WHITE)
+               break
+            }
+            case 2 then do: {
+               DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 90 * Sin(i), 20, WHITE)
+               break
+            }
+            case 4 then do: {
+               DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 10 * Sin(i), 20, WHITE)
+               break
+            }
+            case 6 then do: {
+               DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 30 * Sin(i), 20, WHITE)
+               break
+            }
+            case 8 then do: {
+               DrawText(f'{j*10}', outer[0] - 40 * Cos(i), outer[1] + 35 * Sin(i), 20, WHITE)
+               break
+            }
+            case 10 then do: {
+               DrawText(f'{j*10}', outer[0] - 10 * Cos(i), outer[1] + 40 * Sin(i), 20, WHITE)
+               break
+            }
+            case 12 then do: {
+               DrawText(f'{j*10}', outer[0] - 10, outer[1] + 40 * Sin(i), 20, WHITE)
+               break
+            }
+            case 14 then do: {
+               DrawText(f'{j*10}', outer[0] - 80 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
+               break
+            }
+            case 16 then do: {
+               DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 40 * Sin(i), 20, RED)
+               break
+            }
+            case 18 then do: {
+               DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 37 * Sin(i), 20, RED)
+               break
+            }
+            case 20 then do: {
+               DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 10 * Sin(i), 20, RED)
+               break
+            }
+            case 22 then do: {
+               DrawText(f'{j*10}', outer[0] - 70 * Cos(i), outer[1] + 70 * Sin(i), 20, RED)
+               break
+            }
+            case 24 do: {
+               DrawText(f'{j*10}', outer[0] - 75 * Cos(i), outer[1] + 60 * Sin(i), 20, RED)
+               break
+            }
+            default do: {
+               break
+            }
+         }
+      }
+      else: DrawLineEx(outer, <outer[0] - 20 * Cos(i), outer[1] + 20 * Sin(i) >, THICKNESS / 2, line_colors)
+	}
+}
+
+define function Draw_speed_line(step): {
+	if car_speed < our_speed: {
+	   DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2 >, <400 + 250 * Cos(7 * PI / 6 - PI * our_speed / 180), 400 - 250 * Sin(7 * PI / 6 - PI * our_speed / 180) >, THICKNESS, RED)
+      ~ Calling the lambda function
+      our_speed -= lam(step)
+   }
+   elif car_speed > our_speed: {
+      DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2 >, <400 + 250 * Cos(7 * PI / 6 - PI * our_speed / 180), 400 - 250 * Sin(7 * PI / 6 - PI * our_speed / 180) >, THICKNESS, RED)
+      our_speed += lam(step)
+   }
+	else: DrawLineEx(<WIN_WIDTH/2, WIN_HEIGHT/2 >, <400 + 250 * Cos(7 * PI / 6 - PI * car_speed / 180), 400 - 250 * Sin(7 * PI / 6 - PI * car_speed / 180) >, THICKNESS, RED)
+}
+
+`
+  LAMBDA FUNCTIONS (Anonymous Functions):
+  Here we define a lambda and assign it to the variable 'lam'. 
+  - k: float(0.05) -> Sets a default value of 0.05 AND type-locks it to float.
+  - -> float() -> Enforces that this lambda must return a float.
+`
+let lam = define lambda function(k: float(0.05)) -> float(): {
+	return Abs(car_speed - our_speed) * k
+}
+
+define function show_details(): {
+    ~ F-strings evaluate variables inline
+	DrawText(f"{car_speed} Km/h", WIN_WIDTH/2-40, WIN_HEIGHT/2 - 125, 20, WHITE)
+}
+
+define function main(): {
+	InitWindow(WIN_WIDTH, WIN_HEIGHT, "speedometer")
+	SetTargetFPS(60)
+	
+	`
+	  TEXTURE CACHING OPTIMIZATION:
+	  Drawing the static background (the speed dial and lines) every single frame 
+	  is expensive. Instead, we draw it ONCE, capture the screen into an image, 
+	  and load it as a Texture. Inside the while loop, we just draw that single 
+	  texture, saving massive amounts of CPU/GPU overhead!
+	`
+    BeginDrawing()
+	ClearBackground(BLACK)
+	Draw_Speed_Meter(SKYBLUE, BLACK, WHITE, RED)
+    EndDrawing()
+   
+    let txt = LoadTextureFromImage(LoadImageFromScreen())
+   
+	while not WindowShouldClose() do: {
+		BeginDrawing()
+		ClearBackground(BLACK)
+		
+		~ Draw the cached static background texture
+        DrawTextureV(txt, <0, 0>, WHITE)
+      
+        ~ STRING.ASCII() CASTING:
+        ~ .ascii() instantly converts a string character to its integer code representation,
+        ~ which Raylib uses for key detection.
+        if car_speed < 240 and(IsKeyPressed("W".ascii()) or IsKeyDown("W".ascii())): {
+           car_speed += SPEED_STEP
+        }
+        elif car_speed > 0 and(IsKeyPressed("S".ascii()) or IsKeyDown("S".ascii())): {
+           car_speed -= SPEED_STEP
+        }
+      
+        show_details()
+        Draw_speed_line(0.05)
+        DrawFPS(10, 10)
+        
+      EndDrawing()
+   }
+   
+   ~ Always unload Raylib textures to prevent memory leaks!
+   UnloadTexture(txt)
+   CloseWindow()
+}

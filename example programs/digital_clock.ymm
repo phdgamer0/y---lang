@@ -1,0 +1,335 @@
+`
+  ========================================================================
+                         y-- Example: Digital Clock
+  ========================================================================
+  This script demonstrates Object-Oriented Programming (OOP) in y--, 
+  showcasing strict access modifiers, implicit class/instance contexts 
+  (obj vs self), magic methods, pass-by-reference, and the unique 
+  re-evaluating switch statement!
+`
+
+import * from Raylib
+import * from Math
+import Time
+import Vector
+
+~ CONSTANTS: Using 'let const' creates immutable variables. 
+~ The y-- compiler automatically optimizes these using constant folding.
+let const W = 1000
+let const H = 600
+let const FPS = 60
+let const SEGMENT_TRI_LEN = 20
+let const SEGMENT_REC_LEN = 60
+let const SEGMENT_CIRCLE_RADIUS = 15
+let const SIN60 = Sin(PI/3.0)
+let const COS60 = Cos(PI/3.0)
+
+~ CLASSES: Every class in y-- is a "God Object" and strictly enforces encapsulation.
+define class Segment: {
+   ~ STRICT ACCESS POLICY: You MUST declare #public, #private, and #protected blocks.
+   ~ Omitting any of them will trigger a compilation error.
+   #public:
+      ~ 'obj' CONTEXT: Variables bound to 'obj' belong to the Class itself (static).
+      ~ They are shared across all instances of the Segment class.
+      let const obj.VERT = 0
+      let const obj.HOR = 1
+      let const obj.DDOT = 2
+
+      ~ MAGIC METHODS: __construct__ is the built-in initializer (constructor).
+      ~ PARAMETERS:
+      ~ - pos:vector() -> Type-locked to the vector type.
+      ~ - OffColor:object(GRAY) -> Has a default value of GRAY if omitted.
+      define function __construct__(pos:vector(), mode:int(), OffColor:object(GRAY), LitColor:object(RED)):{
+         ~ LOGICAL GATES & ERROR HANDLING: y-- uses explicit wording for checks.
+         if mode is not in [obj.VERT, obj.HOR, obj.DDOT]: throw ValueError, "mode should be either Segement.VERT, Segment.HOR or Segement.DDOT"
+         
+         ~ 'self' CONTEXT: Binds variables to this specific instance. 
+         ~ Notice we don't need to pass 'self' as an argument; it is injected implicitly!
+         self.mode = mode
+         self.pos = pos
+         let self.OffColor = OffColor
+         let self.LitColor = LitColor
+         return self
+      }
+
+      define function lit():{
+         self.isLit = true ~self.mode !== obj.DDOT
+      }
+
+      define function unlit():{
+         self.isLit = false
+      }
+
+      define function display():{
+         ~ TERNARY OPERATOR: Clean, inline conditional logic.
+         let color = self.LitColor if self.isLit else self.OffColor
+         
+         ~ RE-EVALUATING SWITCH: If a case uses 'then do:' and doesn't break, 
+         ~ the switch value is re-evaluated, allowing complex state-machine logic.
+         switch (self.mode): {
+            case 0 then do: {
+               ~ MULTI-ASSIGNMENT: y-- allows clean unpacking into multiple variables.
+               ~ Note the native Vector math: self.pos + <-COS60, SIN60> * SEGMENT_TRI_LEN
+               let top, left, right = self.pos, (self.pos + <-COS60, SIN60> * SEGMENT_TRI_LEN), (self.pos + <COS60, SIN60> * SEGMENT_TRI_LEN)
+               DrawTriangle(top, left, right, color)
+               
+               ~ middle rectangle
+               DrawRectangleV(left, <SEGMENT_TRI_LEN, SEGMENT_REC_LEN>, color)
+               
+               ~ bottom triangle
+               let top_left, top_right, bottom =  (left + <0, SEGMENT_REC_LEN>), (right + <0, SEGMENT_REC_LEN>), (top + <0, (SEGMENT_REC_LEN + 2 * SEGMENT_TRI_LEN * SIN60)>)
+               DrawTriangle(top_left, bottom, top_right, color)
+               break
+            }
+            case 1 then do:{
+               ~ left triangle
+               let left, top, bottom = self.pos, (self.pos +  <SIN60, -COS60> * SEGMENT_TRI_LEN), (self.pos + <SIN60, COS60> * SEGMENT_TRI_LEN)
+               DrawTriangle(top, left, bottom, color)
+               
+               ~ middle rectangle
+               DrawRectangleV(top, <SEGMENT_REC_LEN, SEGMENT_TRI_LEN>, color)
+               
+               ~ right triangle
+               DrawTriangle(top + <SEGMENT_REC_LEN, 0>, bottom + <SEGMENT_REC_LEN, 0>, left + <SEGMENT_REC_LEN + 2 * SEGMENT_TRI_LEN * SIN60, 0>, color)
+               break
+            }
+            case 2 do:{
+               ~ upper circle
+               DrawCircleV(self.pos + <25 , 50 + SEGMENT_CIRCLE_RADIUS>, SEGMENT_CIRCLE_RADIUS, color)
+               ~ lower circle
+               DrawCircleV(self.pos + <25 , 75 + 4 * SEGMENT_CIRCLE_RADIUS>, SEGMENT_CIRCLE_RADIUS, color)
+               break
+            }
+            default do: {
+               break
+            }
+         }
+      }
+   #private:
+      let self.mode
+   #protected:
+      ~ TYPE-LOCKING ASSIGNMENT: using ':=' locks these variables strictly to bool and vector.
+      ~ Any attempt to assign a different type later will throw a ConstError.
+      let self.isLit := bool()
+      let self.pos := vector()
+}
+
+define class Multiplexer: {
+   #public:
+      define function __construct__(pos:vector(), seperation:int(25), OffColor:object(GRAY), LitColor:object(RED)):{
+         ```
+         ~     E
+         ~    ___
+         ~ A |   | B 
+         ~   |___|
+         ~ C | F | D
+         ~   |___|
+         ~     G
+         ```
+         ~ DICTIONARY CREATION: Keys are frozen, values contain our Segment objects.
+         let self.segments1 = {
+            "A": Segment(pos, Segment.VERT, OffColor, LitColor),
+            "B": Segment(pos + <obj.LEN, 0>, Segment.VERT, OffColor, LitColor),
+            "C": Segment(pos + <0, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "D": Segment(pos + <obj.LEN, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "E": Segment(pos + <2, -2>, Segment.HOR, OffColor, LitColor),
+            "F": Segment(pos + <2, obj.LEN - 2>, Segment.HOR, OffColor, LitColor),
+            "G": Segment(pos + <1, obj.LEN - 1> * 2, Segment.HOR, OffColor, LitColor)
+         }
+         let self.segments2 = {
+            "A": Segment(pos + <obj.PAD + obj.LEN , 0>, Segment.VERT, OffColor, LitColor),
+            "B": Segment(pos + <obj.PAD + obj.LEN , 0> + <obj.LEN, 0>, Segment.VERT, OffColor, LitColor),
+            "C": Segment(pos + <obj.PAD + obj.LEN , 0> + <0, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "D": Segment(pos + <obj.PAD + obj.LEN , 0> + <obj.LEN, obj.LEN>, Segment.VERT, OffColor, LitColor),
+            "E": Segment(pos + <obj.PAD + obj.LEN , 0> + <2, -2>, Segment.HOR, OffColor, LitColor),
+            "F": Segment(pos + <obj.PAD + obj.LEN , 0> + <2, obj.LEN - 2>, Segment.HOR, OffColor, LitColor),
+            "G": Segment(pos + <obj.PAD + obj.LEN , 0> + <1, obj.LEN - 1> * 2, Segment.HOR, OffColor, LitColor)
+         }
+      }
+      define function display(number):{
+         if number > 99 or number < 0: throw ValueError, "cannot display negative or 2+ digit numbers"
+         
+         ~ MULTI-ASSIGNMENT WITH MATH: 
+         ~ // is integer division (floor division), % is modulo
+         let msb, lsb = number // 10, number % 10
+         
+         self.__litter__(self.segments1, msb)
+         self.__litter__(self.segments2, lsb)
+         
+         ~ ITERATOR LOOP: y-- cleanly unpacks dictionary keys and values.
+         for k,v in self.segments1 do:{
+            v.display()
+         }
+         for k,v in self.segments2 do:{
+            v.display()
+         }
+      }
+   #private:
+      let obj.LEN = 100
+      let obj.PAD = 50
+   #protected:
+      ~ PARAMETER MODIFIER: The '@' symbol means pass-by-reference!
+      ~ The function modifies the original 'seg' dictionary in memory, not a copy.
+      define function __litter__(@seg:dict(), num:int()):{
+         switch (num): {
+            case 0 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].lit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].unlit()
+               seg["G"].lit()
+               break
+            }
+            case 1 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].unlit()
+               seg["F"].unlit()
+               seg["G"].unlit()
+               break
+            }
+            case 2 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].lit()
+               seg["D"].unlit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 3 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 4 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].unlit()
+               seg["F"].lit()
+               seg["G"].unlit()
+               break
+            }
+            case 5 then do: {
+               seg["A"].lit()
+               seg["B"].unlit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 6 then do: {
+               seg["A"].lit()
+               seg["B"].unlit()
+               seg["C"].lit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 7 then do: {
+               seg["A"].unlit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].unlit()
+               seg["G"].unlit()
+               break
+            }
+            case 8 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].lit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            case 9 then do: {
+               seg["A"].lit()
+               seg["B"].lit()
+               seg["C"].unlit()
+               seg["D"].lit()
+               seg["E"].lit()
+               seg["F"].lit()
+               seg["G"].lit()
+               break
+            }
+            default do: {
+               break
+            }
+         }
+      }
+}
+
+`
+  THE MAIN FUNCTION
+  Executable code (loops, logic, drawing) must reside within main().
+  Code outside main() is strictly for declarations (classes, functions, vars).
+`
+define function main():{
+   let C = Color(100,100,100,40)
+   
+   ~ THE 'omit' KEYWORD: 
+   ~ The Multiplexer constructor takes (pos, separation, OffColor, LitColor).
+   ~ By using 'omit', we skip the 'separation' argument, forcing it to use 
+   ~ its default value (25) while still allowing us to pass the 'OffColor' argument (C).
+   let hourM = Multiplexer(<20,200>, omit, C)
+   let minuteM = Multiplexer(<375,200>, omit, C)
+   let secM = Multiplexer(<730,200>, omit, C)
+   
+   ~ 'Segment.DDOT' accesses the static 'obj' variable we defined in the Segment class.
+   let sep1 = Segment(<300, 200>, Segment.DDOT, C)
+   let sep2 = Segment(<655, 200>, Segment.DDOT, C)
+   
+   InitWindow(W, H, "Digital Clock")
+   SetTargetFPS(FPS)
+   let lis_ddot = 0
+   let on = false
+   
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      let time = Time.Local(Time.Now())
+      ClearBackground(BLACK)
+      DrawFPS(10, 10)
+      
+      hourM.display(time["hour"])
+      minuteM.display(time["min"])
+      secM.display(time["sec"])
+      
+      if lis_ddot < FPS : {
+         lis_ddot++
+      }
+      else:{
+         ~ LOGICAL NOT: Easily toggle booleans
+         on = not on
+         lis_ddot = 0
+      }
+      
+      ~ INLINE TERNARY CONDITION: Standard if-else shortened to one line
+      sep2.lit() if on else sep2.unlit() 
+      
+      sep1.display()
+      sep2.display()
+      
+      EndDrawing()
+   }
+   CloseWindow()
+}

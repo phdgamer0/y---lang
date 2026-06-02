@@ -1,0 +1,92 @@
+`
+  ========================================================================
+                         y-- Example: Pi Chart
+  ========================================================================
+  This script demonstrates powerful functional programming features in y--:
+  Tuple and List Comprehensions, advanced parameter modifiers (const and @),
+  static class properties (obj), and native mathematical operators.
+`
+
+import Raylib
+import Math
+import RandChoice from Random
+import Vector
+
+let const W = 800
+let const H = 800
+let const FPS = 60
+let const NAME = "CHART"
+
+define class PiChart: {
+   #public:
+      `
+        PARAMETER MODIFIERS:
+        - const: Ensures the variable cannot be modified inside the function.
+        - :vector(): Type-locks the argument.
+        - @: Passes the 'data' list by reference, avoiding an expensive copy.
+      `
+      define function __construct__(const pos:vector(), const radius:int(), @data:list()):{
+         let const self.pos = pos
+         let const self.radius = radius
+         let self.data = @data
+         
+         ~ TUPLE COMPREHENSION: Generates a frozen, immutable sequence of random Raylib 
+         ~ Colors on the fly! Using parentheses () builds a tuple, while [] builds a list.
+         let private self.COLOR_TABLE = (Raylib.Color(RandChoice(0...256), RandChoice(0...256), RandChoice(0...256), 255) for i in self.data)
+         
+         let private self.weighted_data = self.__calculate__wieght__()
+      }
+      
+      define function display():{
+         ~ MULTI-ASSIGNMENT: Extracting X and Y coordinates cleanly in one line.
+         let x, y = Raylib.GetMouseX(), Raylib.GetMouseY()
+         
+         ~ NATIVE POWER OPERATOR (**): Calculates exponents directly for clean math!
+         let is_inside_circle = (x - self.pos[0]) ** 2 + (y - self.pos[1]) ** 2 <= self.radius ** 2 
+         
+         let ang = 0
+         for v in self.weighted_data do:{
+            ~ 'obj' CONTEXT: Accessing the static MAX_TRIANGLE_SEGMENT class variable
+            Raylib.DrawCircleSector(self.pos, self.radius, ang, ang + v[0], obj.MAX_TRIANGLE_SEGMENT, v[1])
+            ang += v[0]
+         }
+      }
+      
+   #private:
+      ~ ARROW SYNTAX: Enforces that this method must return a list().
+      define function __calculate__wieght__() -> list():{
+         let s = self.data.sum()
+         
+         ~ LIST COMPREHENSION: Generates a new list mapping mathematical weights to colors.
+         ~ Notice we explicitly pass self.data by reference (@self.data) to the length function for speed!
+         return [(Math.MapRange(self.data[i] / s, 0F, 1F, 0F, 360F), self.COLOR_TABLE[i]) for i in range(length(@self.data))]
+      }
+      
+      ~ STATIC CLASS PROPERTY: Bound to the class 'obj', this value is shared 
+      ~ globally across all PiChart instances to save memory.
+      let obj.MAX_TRIANGLE_SEGMENT = 100
+      
+   #protected:
+      
+}
+
+define function main():{
+   `
+     DYNAMIC INSTANTIATION: 
+     We build the PiChart using a List Comprehension directly in the constructor arguments!
+     [RandChoice(10...100) for i in range(10)] generates a list of 10 random integers.
+   `
+   let pChart = PiChart(<W, H> // 2, 300, [RandChoice(10...100) for i in range(10)])
+   
+   Raylib.InitWindow(W, H, NAME)
+   Raylib.SetTargetFPS(FPS)
+   
+   while not Raylib.WindowShouldClose() do:{
+      Raylib.BeginDrawing()
+      Raylib.ClearBackground(Raylib.BLACK)
+      
+      pChart.display()
+      
+      Raylib.EndDrawing()
+   } 
+}

@@ -1,0 +1,125 @@
+`
+  ========================================================================
+                         y-- Example: Terminal Wordle
+  ========================================================================
+  This script demonstrates File I/O, Set mathematics, Deep Copying ($), 
+  String manipulation (like multiplication), and building a terminal-based 
+  UI in y--.
+`
+
+~ PARTIAL IMPORTS: Instead of importing entire modules, we selectively grab 
+~ only the specific functions/classes we need to keep the global scope clean.
+import SafeOpen from FileStream
+import RandChoice from Random
+import Console from Os
+import Color from System
+
+~ TYPE-LOCKING (:=): 'all_guesses' is strictly locked to the list() type.
+let all_guesses := list()
+
+~ IMMUTABLE SET: 'let const' makes this set permanent and optimized. 
+~ The .chars() method cleanly splits the string into individual characters.
+let const all_words = set("abcdefghijklmnopqrstuvwxyz".chars())
+
+~ PARAMETER DEFAULTS & LOCKS: 
+~ place_holder:string(' ') locks the parameter to a string and sets its default to ' '
+define function Draw_chances(max_chances:int(), Word:string(), place_holder:string(' ')):{
+	let columns := 5
+	
+	~ MULTI-DECLARATION: Declaring multiple variables at once (initializes to NoType).
+	let top_edge, mid_edge, bot_edge
+	
+	~ STRING MATH: Multiplying a string by an integer inherently repeats it!
+	top_edge = '╔' + ('═══╦' * (columns - 1)) + '═══╗'
+	mid_edge = '╠' + ('═══╬' * (columns - 1)) + '═══╣'
+	bot_edge = '╚' + ('═══╩' * (columns - 1)) + '═══╝'
+	
+	let row_content_filled = '║'
+	print(top_edge)
+	
+	for i in range(max_chances) do:{
+	    ~ RANGE OPERATOR: The '..' operator generates an inline sequence between bounds.
+		for j in i*columns..(i+1)*columns do:{
+			let ch = all_guesses.get(j, place_holder)
+			
+			~ READABLE LOGIC ('is not in'): Extremely clean membership checking.
+			if ch is not in Word: ch = Color(ch, "white")
+			
+			~ STRICT EQUALITY (===): Ensures both value and type are identical.
+			elif ch === Word[j%columns]: ch = Color(ch, "green")
+			else: ch = Color(ch, "yellow")
+			
+			~ F-STRINGS: Variables inside curly braces {} are evaluated directly into the string.
+			row_content_filled += f" {ch} ║"
+		}
+		print(row_content_filled)
+		if i < max_chances - 1: print(mid_edge)
+		row_content_filled = '║'
+	}
+	print(bot_edge)
+}
+
+define function main():{
+    ~ FILE I/O: SafeOpen wraps file streams securely.
+	let File = SafeOpen('example programs/src/valid-wordle-words.txt')
+	
+	~ MULTI-ASSIGNMENT: Assigning multiple variables of different types in a single, clean line.
+	let words, inp, gameOver, word, chances = [], "", true, "", 6
+	
+	if File.IsOpen(): words = File.ReadLines()
+	File.Close() ~ Always close file streams when done!
+	
+	while true do:{
+		if gameOver:{
+			gameOver = false
+			word = words[RandChoice(0...length(words))]
+			chances = 6
+			all_guesses.clear()
+		}
+		
+		~ NATIVE OS CALLS: Clearing the terminal screen.
+		Console("clear")
+		Draw_chances(6, word)
+		
+		`
+		  DEEP COPY ($) & SET MATH: 
+		  We use '$all_guesses' to pass a deep copy (clone) of the list into the set() 
+		  constructor so we don't accidentally mutate the original list. 
+		  Then we use .difference() for hyper-fast set subtraction!
+		`
+		print(f"unused letters: {all_words.difference(set($all_guesses))}")
+		
+		~ INPUT CASTING: The second argument of input() forces the user's input to be cast to a string.
+		inp = input(f"chances: {chances}\nenter the 5 letter word to play or q to exit: ", string()).lower()
+		
+		~ Complex logical chains use explicit english operators (and, or, not)
+		while inp !== "q" and (length(inp) !== 5 or not inp.isalpha() or inp is not in words) do:{
+			Console("clear")
+			Draw_chances(6, word)
+			print(f"unused letters: {all_words.difference(set($all_guesses))}")
+			print("Wrong input try again")
+			inp = input(f"chances: {chances}\nenter the 5 letter word to play or q to exit: ", string()).lower()
+			
+			~ CONTROL FLOW: 'continue' skips to the next iteration of the while loop.
+			continue
+		}
+		
+		if inp === 'q': break
+		all_guesses.extend(inp.chars())
+		chances--
+		
+		Console("clear")
+		Draw_chances(6, word)
+		
+		if inp === word:{
+			print(f"{Color('YOU WON!', 'green')} the word was {word}")
+			gameOver = true
+		}
+		elif chances === 0:{
+			print(f"{Color('YOU LOST!', 'red')} the word was {word}")
+			gameOver = true
+		}
+		
+		if gameOver: input("Press Enter to play again...", string())
+	}
+}

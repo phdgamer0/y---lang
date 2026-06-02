@@ -1,3 +1,15 @@
+`
+  ========================================================================
+                         y-- Example: 3D Ray Caster
+  ========================================================================
+  This script is a masterclass in y-- capabilities. It demonstrates:
+  - Complex Vector math and the DDA (Digital Differential Analyzer) algorithm.
+  - Native 3D-esque rendering using Raylib.
+  - Advanced Class Architecture: Static members, inline visibility overrides, 
+    and Class-level Lambda functions.
+  - Graph Pathfinding (BFS) computed statically once for all enemies!
+`
+
 import * from Raylib
 import * from Math
 import RandChoice from Random
@@ -7,9 +19,15 @@ let const W = 800
 let const H = 800
 let const FPS = 60
 let const NAME = "Ray Casting"
+
+~ The 'F' suffix strictly enforces these numeric literals as Floats at compile-time.
 let const DEFAULT_PLAYER_FOV = 60.0F
 let const MAP_W = 20
 let const MAP_H = 20
+
+~ TUPLES: Using parentheses creates an immutable sequence. 
+~ Because this is a nested tuple bound with 'let const', the entire map is 
+~ strictly frozen in memory and deeply optimized by the compiler.
 let const MAP = (
    (true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true),
    (true, false, false, false, false, false,  true, false, false, false, false, false,  true, false, false, false, false, false, false,  true),
@@ -32,6 +50,7 @@ let const MAP = (
    (true, false, false, false,  true,  true,  true,  true,  true, false, false, false, false, false, false, false, false, false, false,  true),
    (true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true)
 )
+
 let const MAP_BLOCK_LENGTH = 35
 let const MAP_START = vector((W - MAP_W * MAP_BLOCK_LENGTH) // 2, (H - MAP_H * MAP_BLOCK_LENGTH) // 2)
 let const RAD = PI / 180F
@@ -53,32 +72,40 @@ define class Player:{
          let self.fov = fov
          let self.render_distance = render_distance
          let self.len = len
+         
+         ~ INLINE VISIBILITY OVERRIDE: 
+         ~ Even though we are in the #public block, declaring 'let private' 
+         ~ forces this specific property to remain hidden from the outside!
          let private self.drag_offset = <0, 0>
       }
+      
       define function display_2D(color:object(GREEN)):{
          self.AngToDir()
          let center = self.pos + <self.len // 2, self.len // 2>
          let true_center_ang = self.start_ang + 90.0F
          let starting_ray_angle = true_center_ang - (self.fov / 2.0F)
+         
          for let i = 0 if i < self.fov then i++ do:{
             let current_ray_ang = starting_ray_angle + i
             let ray_dir = <Cos(current_ray_ang * RAD), -Sin(current_ray_ang * RAD)>
-            ~let ray_end = center + ray_dir * self.render_distance
             let ray_end = center + ray_dir * DDA(center, ray_dir, self.render_distance)[0]
             DrawLineV(center, ray_end, RED)
          }
          DrawRectangleV(self.pos, <self.len, self.len>, color)
       }
+      
       define function update_cam_2D():{
          let delta = GetMouseDelta()
          self.start_ang -= delta[0] * 40 * X 
       }
+      
       define function update_pos_2D():{
          self.AngToDir()
          let dt = GetFrameTime()
          let speed = K * dt
          let dx = 0.0F
          let dy = 0.0F
+         
          if IsKeyPressed('W'.ascii()) or IsKeyDown('W'.ascii()):{
             dx += self.direction[0] * speed
             dy += self.direction[1] * speed
@@ -95,29 +122,36 @@ define class Player:{
             dx -= self.direction[1] * speed
             dy += self.direction[0] * speed
          }
+         
          let target_x = self.pos[0] + dx
          let check_x = target_x + self.len if dx > 0 else target_x
          let map_x = (check_x - MAP_START[0]) // MAP_BLOCK_LENGTH
          let top_y = (self.pos[1] - MAP_START[1]) // MAP_BLOCK_LENGTH
          let bottom_y = (self.pos[1] + self.len - 0.1F - MAP_START[1]) // MAP_BLOCK_LENGTH
+         
          if not MAP[top_y][map_x] and not MAP[bottom_y][map_x]:{
             self.pos[0] = target_x
          }
+         
          let target_y = self.pos[1] + dy
          let check_y = target_y + self.len if dy > 0 else target_y
          let map_y = (check_y - MAP_START[1]) // MAP_BLOCK_LENGTH
          let left_x = (self.pos[0] - MAP_START[0]) // MAP_BLOCK_LENGTH
          let right_x = (self.pos[0] + self.len - 0.1F - MAP_START[0]) // MAP_BLOCK_LENGTH
+         
          if not MAP[map_y][left_x] and not MAP[map_y][right_x]:{
             self.pos[1] = target_y
          }
       }
+      
       define function display_ray_cast(wall_texture:object(), sky:object(), ground:object(), enemy:object()):{
          self.AngToDir()
          let center = self.pos + <self.len // 2, self.len // 2>
          let true_center_ang = self.start_ang + 90.0F
          let starting_ray_angle = true_center_ang - (self.fov / 2.0F)
          let strip_width = W / self.fov
+         
+         ~ Parallax Background rendering
          let ground_parallax = 0.5F
          let sky_parallax = 0.05F
          let ground_offset_x = self.pos[0] * ground_parallax
@@ -126,13 +160,17 @@ define class Player:{
          let sky_pos_offset_y = self.pos[1] * sky_parallax
          let sky_turn_offset_x = self.start_ang * (W / 360.0F) 
          let sky_offset_x = sky_turn_offset_x + sky_pos_offset_x
+         
          let sky_src_rec = Rectangle(sky_offset_x, sky_pos_offset_y, W, H // 2)
          let ground_src_rec = Rectangle(ground_offset_x, ground_offset_y, W, H // 2)
          let sky_dest_rec = Rectangle(0, 0, W, H // 2)
          let ground_dest_rec = Rectangle(0, H // 2, W, H // 2)
          DrawTexturePro(sky, sky_src_rec, sky_dest_rec, <0, 0>, 0.0F, WHITE)
          DrawTexturePro(ground, ground_src_rec, ground_dest_rec, <0, 0>, 0.0F, Color(150, 150, 150, 255))
+         
          let z_buffer = []
+         
+         ~ C-Style loop allowing floating point increments (i += 0.2)
          for let i = 0 if i < self.fov then i += 0.2 do:{ ~ ray casting the wall
             let current_ray_ang = starting_ray_angle + i
             let ray_dir = <Cos(current_ray_ang * RAD), -Sin(current_ray_ang * RAD)>
@@ -140,54 +178,70 @@ define class Player:{
             let scale = dda[0]
             z_buffer.append(scale)
             let hit_vert = dda[1]
+
             if scale <= self.render_distance:{ ~ hit a wall
+               ~ Fish-eye correction
                let corrected_dist = scale * Cos((current_ray_ang - true_center_ang) * RAD)
                if corrected_dist < 0.0001: corrected_dist = 0.0001
+               
                let wall_height = (MAP_BLOCK_LENGTH * 500.0F) / corrected_dist
                let draw_x = (self.fov - 1.0F - i) * strip_width
                let draw_y = (H / 2.0F) - (wall_height / 2.0F)
+               
+               ~ Distance shading
                let intensity = (1.0F - (scale / self.render_distance))
                if intensity < 0.0F: intensity = 0.0F
                let c = Color(120 * intensity, 120 * intensity, 255 * intensity, 255)
+               
                let Rect = Rectangle(draw_x, draw_y, strip_width + 1.0F, wall_height)
                let txt_height = map_range(wall_height, 0, 800, 0, 640)
                let excat_coord = center + ray_dir * scale
+               
                let percentage = None
                percentage = ((excat_coord[1] if hit_vert else excat_coord[0]) % MAP_BLOCK_LENGTH) / MAP_BLOCK_LENGTH
                let sourceRec = Rectangle(percentage * 640, 0 , 1.0F, 640)
                DrawTexturePro(wall_texture, sourceRec, Rect, <0, 0>, 0.0F, c)
             }            
          }
+         
+         ~ Enemy Sprite rendering
          let dx = enemy.pos[0] - center[0]
          let dy = enemy.pos[1] - center[1]
          let dist = Sqrt(dx * dx + dy * dy)
+         
          if dist < self.render_distance:{
             let enemy_ang = Atan2(-dy, dx) * (180.0F / PI)
             let rel_ang = enemy_ang - true_center_ang
             while rel_ang < -180.0F do:{ rel_ang += 360.0F }
             while rel_ang > 180.0F do:{ rel_ang -= 360.0F }
+            
             if Abs(rel_ang) < (self.fov / 2.0F) + 15.0F:{
                let screen_x = (0.5F - (rel_ang / self.fov)) * W
                let sprite_size = (MAP_BLOCK_LENGTH * 500.0F) / dist
                let draw_y = (H / 2.0F) - (sprite_size / 2.0F)
                let draw_x = screen_x - (sprite_size / 2.0F)
+               
                let strip_index = Floor(screen_x / (W / (self.fov / 0.2F)))
+               
+               ~ Z-Buffer check to ensure the enemy isn't drawn through walls
                if strip_index >= 0 and strip_index < length(z_buffer):{
                   if dist < z_buffer[strip_index]:{
                      let dest_rec = Rectangle(draw_x, draw_y, sprite_size, sprite_size)
-                     let src_rec = Rectangle(0, 0, 640 // 3, 640 // 3)
+                     let src_rec = Rectangle(0, 0, 899, 900)
                      DrawTexturePro(enemy.texture, src_rec, dest_rec, <0, 0>, 0.0F, WHITE)
                   }
                }
             }
          }
       }
+      
    #private:
       define function AngToDir():{
          self.direction = <Cos((90 + self.start_ang) * RAD), -Sin((90 + self.start_ang) * RAD)>
       }
    #protected:
 }
+
 define class Enemy:{
    #public:
       define function __construct__(pos:vector(), speed:int(), texture:object(), map:tuple(), len:int(15)):{
@@ -198,23 +252,40 @@ define class Enemy:{
          let self.pos = pos + <1, 1> * (MAP_BLOCK_LENGTH - self.len) // 2
          let self.speed = speed
          let self.texture = texture
+         
+         `
+           STATIC CONTEXT (obj): 
+           Instead of calculating the maze paths dynamically every frame, we compute 
+           the entire node graph exactly ONCE when the class is defined, and bind it 
+           to 'obj.PATH_TABLE'. Every Enemy instance shares this exact same table, 
+           saving immense CPU cycles!
+         `
          let obj.PATH_TABLE = obj.__generate_path_table__(obj.TupleToGraph(map))
       }
+      
       define function display_2D(color:object(RED)):{
          DrawRectangleV(self.pos, <self.len, self.len>, color)
       }
+      
       define function MoveToPlayer(playerPos:vector()):{
          if not RELEASE_THE_ENEMY: return None
+         
          let player_block_pos = obj.pos_calculator(playerPos)
          let enemy_block_pos = obj.pos_calculator(self.pos)
+         
+         ~ STRICT IDENTITY (===): Checks exact value and type equality.
          if player_block_pos === enemy_block_pos: {
             GAME_OVER = true
             return
          }
+         
          let center_position_x = MAP_START[0] + enemy_block_pos[0] * MAP_BLOCK_LENGTH + (MAP_BLOCK_LENGTH - self.len) // 2
          let center_position_y = MAP_START[1] + enemy_block_pos[1] * MAP_BLOCK_LENGTH + (MAP_BLOCK_LENGTH - self.len) // 2
          let dt = GetFrameTime() 
+         
          let next_block = obj.PATH_TABLE[tuple(enemy_block_pos, player_block_pos)]
+         
+         ~ STRICT INEQUALITY (!==)
          if next_block[0] !== enemy_block_pos[0]:{
             self.pos[0] += Sgn(next_block[0] - enemy_block_pos[0]) * self.speed * dt
             if self.pos[1] !== center_position_y:{
@@ -234,6 +305,7 @@ define class Enemy:{
             }
          }
       }
+      
    #private:
       define function TupleToGraph(map:tuple()) -> dict():{
          let graph = {}
@@ -251,10 +323,18 @@ define class Enemy:{
          }
          return graph
       }
+      
+      `
+        STATIC CLASS LAMBDA:
+        We define a lambda function directly attached to the Class object (obj).
+        This acts as a fast, inline static method for coordinate translation.
+      `
       let obj.pos_calculator = define lambda function(pos:vector(), map_start:vector(MAP_START), map_block_length:int(MAP_BLOCK_LENGTH)) -> tuple:{
          let relative_pos = pos - map_start
          return tuple(relative_pos[0] // map_block_length, relative_pos[1] // map_block_length)
       }
+      
+      ~ BFS Algorithm to generate all shortest paths upfront.
       define function __generate_path_table__(graph:dict()) -> dict():{
          let result = {}
          for start_node in graph.keys() do:{
@@ -286,19 +366,29 @@ define class Enemy:{
          return result
       }
    #protected:
-      
 }
+
+~ Digital Differential Analyzer (DDA) Algorithm for fast raycasting grids
 define function DDA(Begin:vector(), Dir:vector(), RenderDistance:float()) -> list():{
    let rounded_Begin = <(-MAP_START[0] + Begin[0]) // MAP_BLOCK_LENGTH, (-MAP_START[1] + Begin[1]) // MAP_BLOCK_LENGTH> 
+   
+   ~ 'nor' LOGIC GATE: The y-- compiler natively understands complex gates. 
+   ~ Returns true only if BOTH values are exactly 0.0F.
    if Dir[0] nor Dir[1]: return [RenderDistance, false]
+   
    let delta_x = Abs(1.0F / Dir[0]) if Dir[0] is not 0.0F else 999999.0F
    let delta_y = Abs(1.0F / Dir[1]) if Dir[1] is not 0.0F else 999999.0F
+   
+   ~ MULTI-ASSIGNMENT: Assigns both step variables cleanly in one line.
    let step_x, step_y = Sgn(Dir[0]), Sgn(Dir[1])
+   
    let grid_pos_x = (Begin[0] - MAP_START[0]) / MAP_BLOCK_LENGTH
    let grid_pos_y = (Begin[1] - MAP_START[1]) / MAP_BLOCK_LENGTH
    let side_x, side_y
    let hit_vertical = true
    let x, y = rounded_Begin[0], rounded_Begin[1]
+   
+   ~ 'is' IDENTITY CHECK: Explicit comparison.
    if step_x is 1:{
       side_x = (rounded_Begin[0] + 1.0F - grid_pos_x) * delta_x
    }
@@ -317,7 +407,9 @@ define function DDA(Begin:vector(), Dir:vector(), RenderDistance:float()) -> lis
    else:{
       side_y = 999999.0F
    }
+   
    let max_grid_dist = RenderDistance / MAP_BLOCK_LENGTH
+   
    while x >= 0 and x < MAP_W and y >= 0 and y < MAP_H and not MAP[y][x] do:{
       if side_x < side_y:{
          side_x += delta_x
@@ -335,6 +427,7 @@ define function DDA(Begin:vector(), Dir:vector(), RenderDistance:float()) -> lis
    let final_dist = (side_x - delta_x) * MAP_BLOCK_LENGTH if hit_vertical else (side_y - delta_y) * MAP_BLOCK_LENGTH
    return [final_dist, hit_vertical] if final_dist < RenderDistance else [RenderDistance, hit_vertical]
 }
+
 define function render_map() -> object():{
    BeginDrawing()
    for let width = 0 if width < MAP_W then width++ do:{
@@ -343,6 +436,7 @@ define function render_map() -> object():{
       }
    }
    EndDrawing()
+   
    let img = LoadImageFromScreen()
    let txt = LoadTextureFromImage(img)
    UnloadImage(img)
@@ -351,6 +445,7 @@ define function render_map() -> object():{
    EndDrawing()
    return txt
 }
+
 define function render_ground_sky() -> list():{
    let r = 4
    BeginDrawing()
@@ -362,25 +457,30 @@ define function render_ground_sky() -> list():{
       DrawCircleV(<RandChoice(r...W), RandChoice(r...H)>, r, GRAY)
    }
    EndDrawing()
+   
    let img1 = LoadImageFromScreen()
    let img2 = LoadImageFromScreen()
    let sky_txt = LoadTextureFromImage(img1)
    ImageFlipVertical(img2)
    ImageFlipHorizontal(img2)
-   
    ImageBlurGaussian(img2, 3)
    ImageColorBrightness(img2, -100)
    let ground_txt = LoadTextureFromImage(img2)
    UnloadImage(img1)
    UnloadImage(img2)
+
    BeginDrawing()
    ClearBackground(BLACK)
    EndDrawing()
+   
+   ~ Returns a standard list container.
    return [sky_txt, ground_txt]
 }
+
 define function map_range(current_num:float(), current_range_start:float(), current_range_end:float(), goal_range_start:float(), goal_range_end:float()) -> float():{
    return (current_num - current_range_start) * (goal_range_end - goal_range_start) / (current_range_end - current_range_start) + goal_range_start
 }
+
 define function TransitionToDeathScreen(death_screen:object(), font:object(), text_len:vector(), frame:int(0)):{
    let alpha = map_range(frame, 0, 3 * FPS, 0, 255)
    let src = Rectangle(0, 0, 1920, 1080)
@@ -388,31 +488,43 @@ define function TransitionToDeathScreen(death_screen:object(), font:object(), te
    DrawTexturePro(death_screen, src, dest, <0, 0>, 0.0F, Color(255, 255, 255, alpha))
    DrawTextEx(font, "Press ENTER to restart...",  <W // 2, H // 2> - text_len // 2 + <0, 60>, 20, 1, Color(255, 255, 255, alpha))
 }
+
 define function main():{
    InitWindow(W, H, NAME)
    SetTargetFPS(FPS)
    BeginDrawing()
    ClearBackground(BLACK)
+   
    let txture = render_map()
    let sky_ground_texture_array = render_ground_sky()
+   
+   ~ REFERENCE PASSING (@): 
+   ~ Extracting the sky and ground textures directly by reference to avoid 
+   ~ copying heavy Raylib texture objects in memory.
    let sky = @sky_ground_texture_array[0]
    let ground = @sky_ground_texture_array[1]
-   let wall_texture = LoadTexture('example programs/src/pixwall.png')
-   let enemy_txture = LoadTexture("example programs/src/images.png")
-   let death_screen_texture = LoadTexture('example programs/src/death_screen.png')
-   let arial_font = LoadFont('example programs/src/ARIAL.TTF')
+   
+   let wall_texture = LoadTexture('src/pixwall.png')
+   let enemy_txture = LoadTexture("src/images.png")
+   let death_screen_texture = LoadTexture('src/death_screen.png')
+   let arial_font = LoadFont('src/ARIAL.TTF')
+   
    let Loading_length = MeasureTextEx(arial_font, "LOADING...", 20, 1)
    let game_over_length = MeasureTextEx(arial_font, "Press ENTER to restart...", 20, 1)
    DrawTextEx(arial_font, "LOADING...", <W // 2, H // 2> - Loading_length // 2, 20, 1, WHITE)
    EndDrawing()
-   ~<11, 6> will be the default spawn for the enemy but i set it to <1, 1> - same as the player to test printing it faster
+   
+   ~ Instantiating the objects
    let enemy = Enemy(MAP_START + <11, 6> * MAP_BLOCK_LENGTH, K * 5 // 6, enemy_txture, MAP)
    let player = Player(MAP_START + <1, 1> * MAP_BLOCK_LENGTH, DEFAULT_PLAYER_FOV, 150)
+   
    SetMousePosition(0, H // 2)
    let death_frame_count = 0
+   
    while not WindowShouldClose() do:{
       BeginDrawing()
       ClearBackground(BLACK)
+      
       if SWITCH_TO_RAY_CAST:{
          player.display_ray_cast(wall_texture, sky, ground, enemy)
       }
@@ -421,9 +533,12 @@ define function main():{
          player.display_2D()
          enemy.display_2D()
       }
+      
       if RELEASE_THE_ENEMY:
          enemy.MoveToPlayer(player.pos)
+         
       if not GAME_OVER:{
+         ~ STRING TO INT CASTING: `.ascii()` converts a string character to its integer code natively.
          if IsKeyPressed("M".ascii()): SWITCH_TO_RAY_CAST = not SWITCH_TO_RAY_CAST
          if IsKeyPressed("R".ascii()): RELEASE_THE_ENEMY = not RELEASE_THE_ENEMY
          player.update_pos_2D()
@@ -439,6 +554,8 @@ define function main():{
             death_frame_count = 3 * FPS
             TransitionToDeathScreen(death_screen_texture, arial_font, game_over_length, death_frame_count)
          }
+         
+         ~ 257 is the Raylib keycode for ENTER
          if IsKeyPressed(257):{
             player.pos = MAP_START + <1, 1> * MAP_BLOCK_LENGTH
             enemy.pos = MAP_START + <11, 6> * MAP_BLOCK_LENGTH
@@ -449,9 +566,11 @@ define function main():{
             player.start_ang = 90.0F
          }
       }
+      
       DrawFPS(10, 10)
       EndDrawing()
    }
+   
    UnloadFont(arial_font)
    UnloadTexture(death_screen_texture)
    UnloadTexture(wall_texture)

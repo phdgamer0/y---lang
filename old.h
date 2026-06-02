@@ -93,14 +93,22 @@
 #undef KEY_DOWN
 #undef KEY_BACKSPACE
 #undef KEY_END
+#ifdef _WIN32
 #include <qrcodegen.hpp>
+#else
+#include "qrcodegen.hpp"
+#endif
 #include <nlohmann/json.hpp>
 #ifdef _WIN32
 #define IN
 #define CONST const
 #endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
+#ifdef _WIN32
 #include <httplib.h>
+#else
+#include "httplib.h"
+#endif
 #ifdef _WIN32
 #undef IN
 #undef CONST
@@ -326,7 +334,7 @@ inline TokenType keywordType(const string &w) {
 		return TokenType::PROTECTED;
 	return TokenType::IDENTIFIER;
 }
-inline vector<Token> tokenize(const string &code) {
+inline vector<Token> tokenize(const string &code, std::unordered_map<std::string, std::string>& macros) {
 	vector<Token> tokens;
 	size_t i = 0;
 	int line = 1;
@@ -365,13 +373,58 @@ inline vector<Token> tokenize(const string &code) {
 			}
 			continue;
 		}
+		if (c == '<' && i + 11 <= code.size() && code.compare(i, 11, "<<replace>>") == 0) {
+			i += 11;
+			col += 11;
+			auto skipSpace = [&]() {
+				while (i < code.size() && isspace(code[i])) {
+					if (code[i] == '\n') {
+						line++;
+						col = 1;
+					} else {
+						col++;
+					}
+					i++;
+				}
+			};
+			skipSpace();
+			if (i < code.size() && code[i] == '"') {
+				i++;
+				col++;
+				string target = "";
+				while (i < code.size() && code[i] != '"') {
+					target += code[i++];
+					col++;
+				}
+				i++;
+				col++;
+				skipSpace();
+				if (i + 4 < code.size() && code.compare(i, 4, "with") == 0) {
+					i += 4;
+					col += 4;
+					skipSpace();
+					if (i < code.size() && code[i] == '"') {
+						i++;
+						col++;
+						string replacement = "";
+						while (i < code.size() && code[i] != '"') {
+							replacement += code[i++];
+							col++;
+						}
+						i++;
+						col++;
+						macros[target] = replacement;
+						continue;
+					}
+				}
+			}
+		}
 		if (isspace(c)) {
 			i++;
 			col++;
 			continue;
 		}
-		if ((c == 'f' || c == 'F') && i + 1 < code.size() &&
-			 (code[i + 1] == '"' || code[i + 1] == '\'')) {
+		if ((c == 'f' || c == 'F') && i + 1 < code.size() && (code[i + 1] == '"' || code[i + 1] == '\'')) {
 			char quote = code[i + 1];
 			int startCol = col;
 			i += 2;
@@ -424,7 +477,20 @@ inline vector<Token> tokenize(const string &code) {
 				word += code[i++];
 				col++;
 			}
-			tokens.push_back({keywordType(word), word, line, startCol});
+			if (auto it = macros.find(word); it != macros.end()) {
+				vector<Token> expandedTokens = tokenize(it->second, macros);
+				if (!expandedTokens.empty() && expandedTokens.back().type == TokenType::END) {
+					expandedTokens.pop_back();
+				}
+				for (auto &t : expandedTokens) {
+					t.line = line;
+					t.col = startCol;
+				}
+				tokens.insert(tokens.end(), expandedTokens.begin(), expandedTokens.end());
+			}
+			else {
+				tokens.push_back({keywordType(word), word, line, startCol});
+			}
 			continue;
 		}
 		if (isdigit(c)) {
@@ -480,7 +546,6 @@ inline vector<Token> tokenize(const string &code) {
 					num += ".0";
 				}
 			}
-
 			tokens.push_back({TokenType::NUMBER, num, line, startCol});
 			continue;
 		}
@@ -644,6 +709,10 @@ inline vector<Token> tokenize(const string &code) {
 	int endLine = (col == 1 && line > 1) ? line - 1 : line;
 	tokens.push_back({TokenType::END, "", line, col});
 	return tokens;
+}
+inline vector<Token> tokenize(const string &code) {
+   std::unordered_map<std::string, std::string> macros;
+   return tokenize(code, macros);
 }
 // -------------------- ERROR SYSTEM --------------------
 struct LangError : public std::exception {
@@ -4746,11 +4815,11 @@ enum class Magic_Methods : uint8_t {
 	__count__, // (was __len__)    Size of container
 	__at__,	  // (was __get__)    val = obj[key]
 	__put__,	  // (was __set__)    obj[key] = val
-	__call__,
+	__call__, // () operator to call like a function
 	__has__, // (was __contains__) if x is in obj
-	__lacks__,
-	__missing__,
-	__not__missing__, // (was __getattr__) if x is not in obj
+	__lacks__,  // if x is not in obj
+	__missing__, // if obj is not in x
+	__not__missing__, // (was __getattr__) if obj is not in x
 	__assign__,			// (was __setattr__) Called when setting a property
 
 	/*

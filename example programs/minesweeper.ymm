@@ -1,0 +1,387 @@
+`
+  ========================================================================
+                         y-- Example: Minesweeper
+  ========================================================================
+  This script demonstrates Class structures with explicit visibility 
+  modifiers (#public, #private, #protected), Tuple immutability,
+  recursive grid generation, and fast rendering algorithms using Raylib.
+`
+
+import * from Raylib
+import Vector
+import RandChoice from Random
+
+~ CONSTANTS: Fully evaluated and locked in at compile time for maximum performance.
+let const W = 800
+let const H = 600
+let const NAME = "minesweeper".upper()
+let const FPS = 60
+let const GRID_W = 10
+let const GRID_H = 8
+let const MINE_COUNT = 10
+let const BLOCK_SIZE = 60
+let const V_BLOCK_SIZE = <60, 60>
+
+let gameOver = false
+
+~ RETURN TYPE LOCKING: '-> const tuple()' enforces that this function must 
+~ return an immutable tuple container.
+define function generate_mine(exception_pos:vector()) -> const tuple():{
+   let all_pos = set()
+   
+   for let x = 0 if x < GRID_W then x++ do:{
+      for let y = 0 if y < GRID_H then y++ do:{
+         all_pos.add(<x,y>)
+      }   
+   }
+   
+   ~ The first click should never be a mine!
+   all_pos.discard(exception_pos)
+   
+   let mines = []
+   for i in range(10) do:{
+      let coord = RandChoice(all_pos)
+      mines.append(coord)
+      all_pos.discard(coord)
+   }
+   
+   return tuple(mines)
+}
+
+define class Block: {
+   #public:
+      ~ TYPE-LOCKED PARAMETERS & DEFAULTS
+      define function __construct__(pos:vector(), isMine:bool(), isFlagged:bool(), isRevealed:bool(), number:int(0), len:int(BLOCK_SIZE)):{
+         let self.pos = pos
+         let self.rec = Rectangle(pos[0] + 1, pos[1] + 1, len - 2, len - 2)
+         let self.isMine = isMine
+         let self.isRevealed = isRevealed
+         let self.isFlagged = isFlagged
+         
+         ~ TERNARY ASSIGNMENT: Clean logic for assigning properties.
+         let self.num = -1 if isMine else number
+         
+         let self.len = len
+      }
+   #private:
+      
+   #protected:
+      
+}
+
+define class Grid:{
+   #public:
+      define function __construct__(pos:vector(), mine_texture:object(), flag_texture:object(), font:object(), grid_color:object(WHITE), block_color:object(BLUE), base_color:object(GRAY)):{
+         let self.pos = pos
+         
+         ~ STRICT TYPE-LOCK: self.mine_list can only ever be a tuple.
+         let self.mine_list := tuple()
+         let self.mine_texture = mine_texture
+         let self.flag_texture = flag_texture
+         let self.font = font
+         let self.grid_color = grid_color
+         let self.base_color = base_color
+         let self.block_color = block_color
+         let self.flag_amount = MINE_COUNT
+         
+         ~ INLINE PRIVATE/CONST: Variables declared here inside a #public method 
+         ~ can still be locked and hidden using 'let private const'.
+         let const private self.len = BLOCK_SIZE
+         let private self.got_first_click = false
+         
+         ~ Initialize a 2D list
+         let self.grid_list = [[]] * GRID_W
+         for i in 0..GRID_W do:{
+            for j in 0..GRID_H do:{
+               self.grid_list[i].append(Block(pos + <i,j> * (self.len), false, false, false))
+            }
+         }
+         
+         let self.remaining_blocks = GRID_W * GRID_H
+         let self.win_screen = false
+         let self.lose_screen = false
+         let self.first_click = false
+      }
+      
+      define function get_first_click() -> object():{
+         if self.first_click: {return}
+         let Mpos = GetMousePosition()
+         let current_coord = (Mpos - self.pos) // self.len
+         
+         if current_coord[0] >= 0 and current_coord[0] < GRID_W and current_coord[1] >= 0 and current_coord[1] < GRID_H: {
+            ~ 0 is the Raylib identifier for Left Mouse Button
+            if IsMouseButtonPressed(0):{
+               self.mines = generate_mine(current_coord)
+               self.update_blocks()
+               self.chained_reveal(current_coord)
+               self.first_click = true
+            }
+         }
+         self.display()
+      }
+      
+      define function display():{
+         DrawRectangleV(self.pos, <GRID_W, GRID_H> * (BLOCK_SIZE), self.grid_color)
+         
+         ~ ITERATOR LOOPS: Traverse the 2D grid seamlessly.
+         for rows in self.grid_list do:{
+            for cols in rows do:{
+               self.draw_details(cols)
+            }
+         }
+         for rows in self.grid_list do:{
+            for cols in rows do:{
+               self.draw_block_dynamically(cols)
+            }
+         }
+         
+         if self.win_screen:{
+            self.draw_win_screen()
+         }
+         elif self.lose_screen:{
+            self.draw_lose_screen()
+         }
+         else:{
+            self.check_for_flag_or_reveal()
+         }
+      }
+      
+   #private:
+      define function RESET():{
+         self.mine_list = tuple()
+         self.flag_amount = MINE_COUNT
+         self.got_first_click = false
+         self.grid_list = [[]] * GRID_W
+         
+         for i in 0..GRID_W do:{
+            for j in 0..GRID_H do:{
+               self.grid_list[i].append(Block(self.pos + <i,j> * (self.len), false, false, false))
+            }
+         }
+         
+         self.remaining_blocks = GRID_W * GRID_H
+         self.win_screen = false
+         self.lose_screen = false
+         self.first_click = false
+      }
+      
+      define function trigger_win_screen():{
+         for mines in self.mine_list do:{
+            let block = self.grid_list[mines[0]][mines[1]]
+            block.isRevealed = true if not block.isFlagged else block.isRevealed
+         }
+         self.win_screen = true
+      }
+      
+      define function trigger_lose_screen():{
+         for rows in self.grid_list do:{
+            for cols in rows do:{
+               if cols.isFlagged and not cols.isMine:{
+                  cols.isFlagged = false
+               }
+               elif cols.isMine and not cols.isFlagged:{
+                  cols.isRevealed = true
+               }
+            }
+         }
+         self.lose_screen = true
+      }
+      
+      define function draw_win_screen():{
+         let txt1 = f'{"YOU WON!"}'
+         let txt2 = f'{"PRESS ENTER TO PLAY AGAIN"}'
+         let txt1M = MeasureTextEx(self.font, txt1, 25, 1)
+         let txt2M = MeasureTextEx(self.font, txt2, 25, 1)
+         
+         let text_size1 = (<W, H> - txt1M - <0, txt2M[1]>) // 2
+         let text_size2 = (<W, H> - txt2M + <0, txt1M[1]>) // 2
+         
+         DrawRectangleV(<0, H - 100> // 2, <W, 100>, Color(0, 0, 0, 160))
+         DrawTextEx(self.font, txt1, text_size1, 25, 1, WHITE)
+         DrawTextEx(self.font, txt2, text_size2, 25, 1, WHITE)
+         
+         ~ 257 is the Raylib keycode for ENTER
+         if IsKeyPressed(257):{
+            self.RESET()
+            return
+         }
+      }
+      
+      define function draw_lose_screen():{
+         let txt1 = f'{"YOU LOST!"}'
+         let txt2 = f'{"PRESS ENTER TO PLAY AGAIN"}'
+         let txt1M = MeasureTextEx(self.font, txt1, 25, 1)
+         let txt2M = MeasureTextEx(self.font, txt2, 25, 1)
+         
+         let text_size1 = (<W, H> - txt1M - <0, txt2M[1]>) // 2
+         let text_size2 = (<W, H> - txt2M + <0, txt1M[1]>) // 2
+         
+         DrawRectangleV(<0, H - 100> // 2, <W, 100>, Color(0, 0, 0, 160))
+         DrawTextEx(self.font, txt1, text_size1, 25, 1, WHITE)
+         DrawTextEx(self.font, txt2, text_size2, 25, 1, WHITE)
+         
+         if IsKeyPressed(257):{
+            self.RESET()
+            return
+         }
+      }
+      
+      define function update_blocks():{
+         for mine_positions in self.mines do:{ 
+            self.grid_list[mine_positions[0]][mine_positions[1]].isMine = true
+            self.grid_list[mine_positions[0]][mine_positions[1]].num = -1
+         }
+         for mine_positions in self.mines do:{
+            for let x = -1 if x <= 1 then x++ do:{
+               let target_x = mine_positions[0] + x
+               if target_x < 0 or target_x >= GRID_W: continue
+               
+               for let y = -1 if y <= 1 then y++ do:{
+                  if x == 0 and y == 0: continue
+                  let target_y = mine_positions[1] + y
+                  if target_y < 0 or target_y >= GRID_H: continue
+                  
+                  if not self.grid_list[target_x][target_y].isMine: {
+                     self.grid_list[target_x][target_y].num++
+                  }
+               }
+            }
+         }
+      }
+      
+      define function check_for_flag_or_reveal():{
+         if IsKeyPressed(257):{
+            self.RESET()
+            return
+         }
+         
+         if self.remaining_blocks <= MINE_COUNT:{
+            self.trigger_win_screen()
+            print('YOU WON!')
+         }
+         
+         let Mpos = GetMousePosition()
+         let current_coord = (Mpos - self.pos) // (self.len)
+         
+         if current_coord[0] >= 0 and current_coord[0] < GRID_W and current_coord[1] >= 0 and current_coord[1] < GRID_H: {
+            let block = self.grid_list[current_coord[0]][current_coord[1]]
+            
+            ~ Left Click
+            if IsMouseButtonPressed(0):{
+               if block.isFlagged: {return}
+               elif block.isMine: {
+                  self.trigger_lose_screen()
+                  print("YOU LOST!")
+               } 
+               else: self.chained_reveal(current_coord) 
+            }
+            ~ Right Click
+            elif IsMouseButtonPressed(1) and not block.isRevealed:{
+               if self.flag_amount > 0 and not block.isFlagged:{
+                  block.isFlagged = true
+                  self.flag_amount--
+               }
+               elif self.flag_amount < MINE_COUNT and block.isFlagged:{
+                  block.isFlagged = false
+                  self.flag_amount++
+               }
+            }
+         }
+      }
+      
+      define function chained_reveal(coord:vector()):{
+         if coord[0] < 0 or coord[0] >= GRID_W: {return}
+         if coord[1] < 0 or coord[1] >= GRID_H: {return}
+         
+         let block = self.grid_list[coord[0]][coord[1]]
+         if block.isRevealed or block.isMine or block.isFlagged: {return}
+         
+         block.isRevealed = true
+         self.remaining_blocks--
+         
+         if block.num > 0: {return} 
+         for let i = -1 if i <= 1 then i++ do:{
+            for let j = -1 if j <= 1 then j++ do:{
+               if i == 0 and j == 0: continue ~ SKIP OURSELVES!
+               self.chained_reveal(coord + <i, j>)
+            }
+         }
+      }
+      
+      define function draw_details(block:object()):{
+         DrawRectangleRec(block.rec, self.base_color)
+         
+         if block.isMine:{
+            let src = Rectangle(0, 0, self.mine_texture.width, self.mine_texture.height)
+            DrawTexturePro(self.mine_texture, src, block.rec, <0, 0>, 0.0, WHITE)
+         }
+         elif block.num > -1:{
+            let txt = f'{block.num}'
+            let text_size = MeasureTextEx(self.font, txt, 20, 1)
+            let vec = block.pos + (<self.len, self.len> - text_size) // 2
+            
+            ~ 'obj' refers to the Grid class static context to access NUM_COLOR.
+            DrawTextEx(self.font, txt, vec, 20, 1, obj.NUM_COLOR[block.num])
+         }
+      }
+      
+      define function draw_block_dynamically(block:object()):{
+         if not block.isRevealed: DrawRectangleRec(block.rec, self.block_color)
+         
+         if block.isFlagged:{
+            let src = Rectangle(0, 0, self.flag_texture.width, self.flag_texture.height)
+            DrawTexturePro(self.flag_texture, src, block.rec, <0, 0>, 0.0, WHITE)
+         }
+      }
+      
+   #protected:
+      ~ PROTECTED STATIC IMMUTABLE: Bound to 'obj' and unchangeable. 
+      ~ Contains the specific colors for each number in Minesweeper.
+      let const obj.NUM_COLOR = (
+         Color(0x00, 0x00, 0x00, 0x00), ~ zero
+         Color(0x00, 0x00, 0xFF, 0xFF), ~ one
+         Color(0x00, 0xFF, 0x00, 0xFF), ~ two
+         Color(0xFF, 0x00, 0x00, 0xFF), ~ three
+         Color(0x00, 0x00, 0x87, 0xFF), ~ four
+         Color(0x9B, 0x2C, 0x00, 0xFF), ~ five
+         Color(0x00, 0xFF, 0xFF, 0xFF), ~ six
+         Color(0x00, 0x00, 0x00, 0xFF), ~ seven
+         Color(0x80, 0x80, 0x80, 0xFF)  ~ eight
+      )
+}
+
+define function main():{
+   InitWindow(W, H, NAME)
+   SetTargetFPS(FPS)
+   
+   let mine_texture = LoadTexture('example programs/src/minesweeper_mine.png')
+   let flag_texture = LoadTexture('example programs/src/minesweeper_flag.png')
+   let font  = LoadFont('example programs/src/ARIAL.TTF')
+   let base
+   
+   let grid = Grid(<(W - (BLOCK_SIZE) * (GRID_W)), (H - (BLOCK_SIZE) * (GRID_H))> // 2, mine_texture, flag_texture, font)
+   
+   while not WindowShouldClose() do:{
+      BeginDrawing()
+      ClearBackground(BLACK)
+      
+      if not grid.first_click:{
+         grid.get_first_click()
+      }
+      elif not gameOver:{
+         grid.display()
+      }
+      else: break
+      
+      EndDrawing()
+   }
+   
+   UnloadFont(font)
+   UnloadTexture(flag_texture)
+   UnloadTexture(mine_texture)
+   
+   ~ TYPE CHECKING: typeof() allows for explicit runtime type checks.
+   if typeof(base) === "instance": UnloadTexture(base)
+   
+   CloseWindow()
+}
