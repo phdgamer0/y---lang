@@ -24,6 +24,10 @@ let const MAX_ITERATION = 1000
 let const C_REAL = -0.8F
 let const C_IMAGINARY = 0.156F
 let const K = 100 // 6
+let const PATH = "Absolute/Path/To/value_for_cpp_compile.h"
+~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+~ Make sure to have the value_for_cpp_compile.h included inside the builds folder
+~ Simply pass the absolute path for it so the FFI Can Find it. 
 
 ~ TUPLE CREATION: Enclosing values in parentheses creates an immutable Tuple. 
 let const COLOR_MAP = (
@@ -175,7 +179,8 @@ define function main():{
    ~ This compiles the string using the local C++ compiler with -O3 optimizations,
    ~ executes it seamlessly, and returns control to the y-- VM!
    ~ We are leaving almost 480 million computations to the optimized backend.
-   cppCompile(code, retVal, args) 
+   cppCompile(code, retVal, args, PATH)
+   ~ Dont forget to pass the Path to the function as well! 
    
    EndDrawing()
   

@@ -18822,7 +18822,7 @@ void Interpreter::registerStdLib() {
 		false);
 	env->set("cppCompile", Value::Native([this](const vector<Value> &args, int l, int c) {
 		if (args.size() < 3 || args[0].type != ValueType::STRING || args[2].type != ValueType::DICT) {
-			throw TypeError("cppCompile expects (String code, Value return_type, Dict args)", l, c);
+			throw TypeError("cppCompile expects (String code, Value return_type, Dict args, String path_to_cpp_compile)", l, c);
 		}
 		std::string raw_user_code = args[0].asString();
 		std::string includes = "";
@@ -18891,7 +18891,7 @@ void Interpreter::registerStdLib() {
 		} else {
 			// --- NOT CACHED: MUST COMPILE ---
 			std::stringstream cpp;
-			cpp << "#include \"value_for_cpp_compile.h\"\n";
+			cpp << "#include <"<< args[3].asString() <<">\n";
 			cpp << "#include <string>\n";
 			cpp << "#include <type_traits>\n\n";
 			cpp << includes << "\n";
