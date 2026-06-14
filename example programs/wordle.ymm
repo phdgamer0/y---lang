@@ -12,7 +12,7 @@
 import SafeOpen from FileStream
 import RandChoice from Random
 import Console from Os
-import Color from System
+import Color, Platform from System
 
 ~ TYPE-LOCKING (:=): 'all_guesses' is strictly locked to the list() type.
 let all_guesses := list()
@@ -20,6 +20,9 @@ let all_guesses := list()
 ~ IMMUTABLE SET: 'let const' makes this set permanent and optimized. 
 ~ The .chars() method cleanly splits the string into individual characters.
 let const all_words = set("abcdefghijklmnopqrstuvwxyz".chars())
+
+~ Choose the correct command based on the Operating system.
+let const CLEAR_COMMAND = "clear" if Platform() === "linux" else "cls"
 
 ~ PARAMETER DEFAULTS & LOCKS: 
 ~ place_holder:string(' ') locks the parameter to a string and sets its default to ' '
@@ -78,7 +81,7 @@ define function main():{
 		}
 		
 		~ NATIVE OS CALLS: Clearing the terminal screen.
-		Console("clear")
+		Console(CLEAR_COMMAND)
 		Draw_chances(6, word)
 		
 		`
@@ -94,7 +97,7 @@ define function main():{
 		
 		~ Complex logical chains use explicit english operators (and, or, not)
 		while inp !== "q" and (length(inp) !== 5 or not inp.isalpha() or inp is not in words) do:{
-			Console("clear")
+			Console(CLEAR_COMMAND)
 			Draw_chances(6, word)
 			print(f"unused letters: {all_words.difference(set($all_guesses))}")
 			print("Wrong input try again")
@@ -108,7 +111,7 @@ define function main():{
 		all_guesses.extend(inp.chars())
 		chances--
 		
-		Console("clear")
+		Console(CLEAR_COMMAND)
 		Draw_chances(6, word)
 		
 		if inp === word:{

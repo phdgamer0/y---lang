@@ -438,6 +438,7 @@ define class Grid: {
       let self.cleanable_cols = []
 }
 define function main():{
+   SetConfigFlags(8192)
    let block = Block(<(W - BLOCK_LEN * 5) // 2, 3 * H // 4 - 2 * BLOCK_LEN>)
    let grid = Grid(<(W - GRID_LEN * GRID_NUM) // 2, 20>)
    InitWindow(W, H, "Block Blast")

@@ -93,22 +93,14 @@
 #undef KEY_DOWN
 #undef KEY_BACKSPACE
 #undef KEY_END
-#ifdef _WIN32
-#include <qrcodegen.hpp>
-#else
 #include "qrcodegen.hpp"
-#endif
 #include <nlohmann/json.hpp>
 #ifdef _WIN32
 #define IN
 #define CONST const
 #endif
 #define CPPHTTPLIB_OPENSSL_SUPPORT
-#ifdef _WIN32
-#include <httplib.h>
-#else
 #include "httplib.h"
-#endif
 #ifdef _WIN32
 #undef IN
 #undef CONST
@@ -4510,6 +4502,8 @@ static void setAdd(std::unordered_set<Value, ValueHash, ValueEqual> &elems, cons
 }
 void enableColors() {
 #ifdef _WIN32
+	SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
 	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
 	DWORD dwMode = 0;
 	if (GetConsoleMode(hOut, &dwMode)) {
@@ -16486,6 +16480,7 @@ void Interpreter::registerStdLib() {
 		static auto colorClass = std::make_shared<ClassObject>("Color");
 		static auto imageClass = std::make_shared<ClassObject>("Image");
 		static auto textureClass = std::make_shared<ClassObject>("Texture2D");
+		static auto renderClass = std::make_shared<ClassObject>("RenderTexture");
 		static auto fontClass = std::make_shared<ClassObject>("Font");
 		static auto soundClass = std::make_shared<ClassObject>("Sound");
 		static auto musicClass = std::make_shared<ClassObject>("Music");
@@ -16553,6 +16548,29 @@ void Interpreter::registerStdLib() {
 			tex.mipmaps = (int)inst->fields["mipmaps"].asInt();
 			tex.format = (int)inst->fields["format"].asInt();
 			return tex;
+		};
+		auto ValueToRenderTexture = [&](Value v, int l, int c) -> RenderTexture2D {
+			// Type Safety Check
+			if (v.type != ValueType::INSTANCE)
+				throw TypeError("Expected RenderTexture instance", l, c);
+			auto inst = static_cast<InstanceObject *>(v.ref.get());
+			if (inst->klass->name != "RenderTexture")
+				throw TypeError("Expected RenderTexture instance", l, c);
+			RenderTexture2D target;
+			target.id = (unsigned int)inst->fields["id"].asInt();
+			target.texture = ValueToTexture(inst->fields["texture"], l, c);
+			target.depth = ValueToTexture(inst->fields["depth"], l, c);
+			return target;
+		};
+		auto RenderTextureToValue = [&](const RenderTexture2D &target) -> Value {
+			auto inst = std::make_shared<InstanceObject>(renderClass.get());
+			inst->fields["id"] = Value::Int(target.id);
+			inst->fields["texture"] = TextureToValue(target.texture);
+			inst->fields["depth"] = TextureToValue(target.depth);
+			Value v;
+			v.type = ValueType::INSTANCE;
+			v.ref = inst;
+			return v;
 		};
 		auto MakeColor = [&](int r, int g, int b, int a) -> Value {
 			auto inst = std::make_shared<InstanceObject>(colorClass.get());
@@ -16812,6 +16830,53 @@ void Interpreter::registerStdLib() {
 		});
 		define("EndDrawing", [=](const vector<Value> &args, int l, int c) {
 			EndDrawing();
+			return Value::None();
+		});
+		define("SetConfigFlags", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 1) 
+				throw ArgumentError("SetConfigFlags(flags)", l, c);
+			unsigned int flags = (unsigned int)args[0].asInt();
+			SetConfigFlags(flags);
+			return Value::None();
+		});
+		define("GetWindowScaleV", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 0) 
+				throw ArgumentError("GetWindowScaleV()", l, c);
+			Vector2 scale = GetWindowScaleDPI();
+			return Vector2ToValue(scale); 
+		});
+		define("GetWindowScaleF", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 0) 
+				throw ArgumentError("GetWindowScaleF()", l, c);
+			Vector2 scale = GetWindowScaleDPI();
+			return Value::Float((double)scale.x); 
+		});
+		define("LoadRenderTexture", [&](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 2) 
+				throw ArgumentError("LoadRenderTexture(width, height)", l, c);
+			int width = (int)args[0].asInt();
+			int height = (int)args[1].asInt();
+			RenderTexture2D target = LoadRenderTexture(width, height);
+			return RenderTextureToValue(target);
+		});
+		define("BeginTextureMode", [&](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 1) 
+				throw ArgumentError("BeginTextureMode(target)", l, c);
+			RenderTexture2D target = ValueToRenderTexture(args[0], l, c);
+			BeginTextureMode(target);
+			return Value::None();
+		});
+		define("EndTextureMode", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 0) 
+				throw ArgumentError("EndTextureMode()", l, c);
+			EndTextureMode();
+			return Value::None();
+		});
+		define("UnloadRenderTexture", [&](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 1) 
+				throw ArgumentError("UnloadRenderTexture(target)", l, c);
+			RenderTexture2D target = ValueToRenderTexture(args[0], l, c);
+			UnloadRenderTexture(target);
 			return Value::None();
 		});
 		define("ClearBackground", [=](const vector<Value> &args, int l, int c) {
@@ -19005,30 +19070,45 @@ void Interpreter::registerStdLib() {
 			debug_flag = " -DVM_DEBUG_MODE ";
 #endif
 #ifdef _WIN32
-			std::string cpp_file = "y_macro_" + hash_str + ".cpp";
-			std::string lib_file = "y_macro_" + hash_str + ".dll";
-			std::string cmd = "g++ -std=c++17 -shared -O3 -fopenmp " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " 2>&1";
+            char exePathStr[MAX_PATH];
+            GetModuleFileNameA(NULL, exePathStr, MAX_PATH);
+            std::filesystem::path exePath(exePathStr);
+            std::string exeDir = exePath.parent_path().string();
+            std::string cpp_file = current_dir + "\\y_macro_" + hash_str + ".cpp";
+            std::string lib_file = current_dir + "\\y_macro_" + hash_str + ".dll";
+            std::string implib_file = exeDir + "\\y_lang.a";
+            std::string cmd = "g++ -std=c++17 -shared -O3 -fopenmp " + debug_flag + 
+                              "-I\"" + current_dir + "\" " + 
+                              "-I/c/raylib-src/raylib-5.5/src " + 
+                              "\"" + cpp_file + "\" -o \"" + lib_file + "\" " + 
+                              "\"" + implib_file + "\" " + 
+                              "-Wl,--allow-multiple-definition 2>&1";
 #else
-			std::string cpp_file = "/tmp/y_macro_" + hash_str + ".cpp";
-			std::string lib_file = "/tmp/y_macro_" + hash_str + ".so";
-			std::string cmd = "g++ -std=c++17 -shared -fPIC -O3 -fopenmp " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " -lraylib 2>&1";
+            std::string cpp_file = "/tmp/y_macro_" + hash_str + ".cpp";
+            std::string lib_file = "/tmp/y_macro_" + hash_str + ".so";
+            std::string cmd = "g++ -std=c++17 -shared -fPIC -O3 -fopenmp " + debug_flag + "-I\"" + current_dir + "\" " + cpp_file + " -o " + lib_file + " -lraylib 2>&1";
 #endif
-			std::ofstream out(cpp_file);
-			out << cpp.str();
-			out.flush();
-			out.close();
-			if (system(cmd.c_str()) != 0)
-				throw RuntimeError("C++ FFI Compilation failed!", l, c);
+            std::ofstream out(cpp_file);
+            out << cpp.str();
+            out.flush();
+            out.close();
+            if (system(cmd.c_str()) != 0)
+                throw RuntimeError("C++ FFI Compilation failed!", l, c);
 #ifdef _WIN32
-			HINSTANCE handle = LoadLibraryA(lib_file.c_str());
-			if (!handle)
-				throw RuntimeError("Failed to load DLL", l, c);
-			exec_func = (MacroFunc)GetProcAddress(handle, "y_macro_exec");
+            SetDllDirectoryA(exeDir.c_str());
+            HINSTANCE handle = LoadLibraryA(lib_file.c_str());
+            SetDllDirectoryA(NULL); // Reset immediately for security
+            
+            if (!handle) {
+                DWORD err = GetLastError();
+                throw RuntimeError("Failed to load DLL. Windows Error Code: " + std::to_string(err), l, c);
+            }
+            exec_func = (MacroFunc)GetProcAddress(handle, "y_macro_exec");
 #else
-			void *handle = dlopen(lib_file.c_str(), RTLD_NOW);
-			if (!handle)
-				throw RuntimeError(std::string("Failed to load SO: ") + dlerror(), l, c);
-			exec_func = (MacroFunc)dlsym(handle, "y_macro_exec");
+            void *handle = dlopen(lib_file.c_str(), RTLD_NOW);
+            if (!handle)
+                throw RuntimeError(std::string("Failed to load SO: ") + dlerror(), l, c);
+            exec_func = (MacroFunc)dlsym(handle, "y_macro_exec");
 #endif
 			if (!exec_func)
 				throw RuntimeError("Failed to find execution hook", l, c);

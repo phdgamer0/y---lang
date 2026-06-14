@@ -351,6 +351,7 @@ define class Grid:{
 }
 
 define function main():{
+   SetConfigFlags(8192)
    InitWindow(W, H, NAME)
    SetTargetFPS(FPS)
    

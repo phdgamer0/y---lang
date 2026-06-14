@@ -239,26 +239,31 @@ define function Randomized_DFS(@lis:list()):{
   Execution strictly begins in main().
 `
 define function main():{
+   SetConfigFlags(8192)
    ~ Generating the maze path
    Randomized_DFS(res_list)
    
    InitWindow(W, H, NAME)
    SetTargetFPS(FPS)
-   BeginDrawing()
-   ClearBackground(BLACK)
-   
-   ~ Drawing the maze ONCE
-   display_grid(res_list)
-   EndDrawing()
+   for flush in range(2) do:{   
+      BeginDrawing()
+      ClearBackground(BLACK)
+      
+      ~ Drawing the maze ONCE
+      display_grid(res_list)
+      EndDrawing()
+   }
    
    ~ Capturing the drawn screen into a Texture so we don't have to re-compute 
    ~ and redraw the entire maze logic every single frame!
    let txt = LoadTextureFromImage(LoadImageFromScreen())
+   let src = Rectangle(0, 0, txt.width, txt.height)
+   let dest = Rectangle(0, 0, W, H)
    
    while not WindowShouldClose() do:{
       BeginDrawing()
       ClearBackground(BLACK)
-      DrawTextureV(txt, <0 , 0>, WHITE)
+      DrawTexturePro(txt, src, dest, <0, 0>, 0.0F, WHITE)
       DrawFPS(10, 10)
       EndDrawing()
    }

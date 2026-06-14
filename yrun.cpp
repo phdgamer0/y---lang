@@ -47,6 +47,7 @@ int main(int argc, char *argv[]) {
 	ss << file.rdbuf();
 	string code = ss.str();
 	DEBUGGER_MODE_IS_ENABLED = false;
+	enableColors();
 	std::chrono::steady_clock::time_point start;
 	std::chrono::steady_clock::time_point end;
 	try {

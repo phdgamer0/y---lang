@@ -138,44 +138,56 @@ define function show_details(): {
 }
 
 define function main(): {
-	InitWindow(WIN_WIDTH, WIN_HEIGHT, "speedometer")
-	SetTargetFPS(60)
-	
-	`
-	  TEXTURE CACHING OPTIMIZATION:
-	  Drawing the static background (the speed dial and lines) every single frame 
-	  is expensive. Instead, we draw it ONCE, capture the screen into an image, 
-	  and load it as a Texture. Inside the while loop, we just draw that single 
-	  texture, saving massive amounts of CPU/GPU overhead!
-	`
-    BeginDrawing()
-	ClearBackground(BLACK)
-	Draw_Speed_Meter(SKYBLUE, BLACK, WHITE, RED)
-    EndDrawing()
+   ~ 1. Stop Windows from lying
+   SetConfigFlags(8192)
+
+   InitWindow(WIN_WIDTH, WIN_HEIGHT, "speedometer")
+   SetTargetFPS(60)
    
-    let txt = LoadTextureFromImage(LoadImageFromScreen())
+   ~ 2. Ask the OS for the true monitor scale (e.g., 1.25)
+   let scale = GetWindowScaleF()
    
-	while not WindowShouldClose() do: {
-		BeginDrawing()
-		ClearBackground(BLACK)
-		
-		~ Draw the cached static background texture
-        DrawTextureV(txt, <0, 0>, WHITE)
+   `
+     TEXTURE CACHING OPTIMIZATION:
+     Drawing the static background (the speed dial and lines) every single frame 
+     is expensive. Instead, we draw it ONCE, capture the screen into an image, 
+     and load it as a Texture. Inside the while loop, we just draw that single 
+     texture, saving massive amounts of CPU/GPU overhead!
+   `
+   for i in range(2) do:{
+      BeginDrawing()
+      ClearBackground(BLACK)
+      Draw_Speed_Meter(SKYBLUE, BLACK, WHITE, RED)
+      EndDrawing()
+   }
+   
+   let img = LoadImageFromScreen()
+   let txt = LoadTextureFromImage(img)
+   UnloadImage(img) ~ Free RAM!
+   
+   while not WindowShouldClose() do: {
+      BeginDrawing()
+      ClearBackground(BLACK)
       
-        ~ STRING.ASCII() CASTING:
-        ~ .ascii() instantly converts a string character to its integer code representation,
-        ~ which Raylib uses for key detection.
-        if car_speed < 240 and(IsKeyPressed("W".ascii()) or IsKeyDown("W".ascii())): {
-           car_speed += SPEED_STEP
-        }
-        elif car_speed > 0 and(IsKeyPressed("S".ascii()) or IsKeyDown("S".ascii())): {
-           car_speed -= SPEED_STEP
-        }
+      ~ 3. THE SCALE FIX: 
+      ~ Windows bloated the screenshot by our 'scale' factor.
+      ~ We use DrawTexturePro to crush it perfectly back into our logical window!
+      let src = Rectangle(0, 0, txt.width, txt.height)
+      let dest = Rectangle(0, 0, WIN_WIDTH, WIN_HEIGHT)
+      DrawTexturePro(txt, src, dest, <0, 0>, 0.0, WHITE)
       
-        show_details()
-        Draw_speed_line(0.05)
-        DrawFPS(10, 10)
-        
+      ~ STRING.ASCII() CASTING:
+      if car_speed < 240 and(IsKeyPressed("W".ascii()) or IsKeyDown("W".ascii())): {
+         car_speed += SPEED_STEP
+      }
+      elif car_speed > 0 and(IsKeyPressed("S".ascii()) or IsKeyDown("S".ascii())): {
+         car_speed -= SPEED_STEP
+      }
+      
+      show_details()
+      Draw_speed_line(0.05)
+      DrawFPS(10, 10)
+      
       EndDrawing()
    }
    

@@ -131,6 +131,7 @@ define function draw_clock(center, clc_clor, dot_color): {
   the main() function. 
 `
 define function main(): {
+	SetConfigFlags(8192)
 	InitWindow(WIN_WIDTH, WIN_HEIGHT,"Clock sim")
 	
 	~ You can declare multiple variables cleanly. 

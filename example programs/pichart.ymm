@@ -76,6 +76,7 @@ define function main():{
      We build the PiChart using a List Comprehension directly in the constructor arguments!
      [RandChoice(10...100) for i in range(10)] generates a list of 10 random integers.
    `
+   Raylib.SetConfigFlags(8192)
    let pChart = PiChart(<W, H> // 2, 300, [RandChoice(10...100) for i in range(10)])
    
    Raylib.InitWindow(W, H, NAME)

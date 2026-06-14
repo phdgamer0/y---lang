@@ -24,7 +24,7 @@ let const MAX_ITERATION = 1000
 let const C_REAL = -0.8F
 let const C_IMAGINARY = 0.156F
 let const K = 100 // 6
-let const PATH = "Absolute/Path/To/value_for_cpp_compile.h"
+let const PATH = "C:\\Users\\Windows\\source\\repos\\phdgamer0\\y---lang\\builds\\value_for_cpp_compile.h"
 ~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ~ Make sure to have the value_for_cpp_compile.h included inside the builds folder
 ~ Simply pass the absolute path for it so the FFI Can Find it. 
@@ -75,10 +75,9 @@ define function choose_the_best_color(num:int()):{
 }
 
 define function main():{
+   SetConfigFlags(8192)
    InitWindow(W, H, NAME)
    SetTargetFPS(FPS)
-   BeginDrawing()
-   ClearBackground(BLACK)
    
    `
      THE C++ PAYLOAD:
@@ -175,30 +174,35 @@ define function main():{
    ~ 'None' is the explicit representation of an absent value.
    let retVal = None
    
-   ~ THE FFI EXECUTION:
-   ~ This compiles the string using the local C++ compiler with -O3 optimizations,
-   ~ executes it seamlessly, and returns control to the y-- VM!
-   ~ We are leaving almost 480 million computations to the optimized backend.
-   cppCompile(code, retVal, args, PATH)
-   ~ Dont forget to pass the Path to the function as well! 
-   
-   EndDrawing()
+   for flush in range(2) do:{   
+      BeginDrawing()
+      ClearBackground(BLACK)
+      ~ THE FFI EXECUTION:
+      ~ This compiles the string using the local C++ compiler with -O3 optimizations,
+      ~ executes it seamlessly, and returns control to the y-- VM!
+      ~ We are leaving almost 480 million computations to the optimized backend.
+      cppCompile(code, retVal, args, PATH)
+      ~ Dont forget to pass the Path to the function as well! 
+      
+      EndDrawing()
+   }
   
    ~ Back in y--, we capture the screen output the C++ code just drew.
    let img = LoadImageFromScreen()
    let txt = LoadTextureFromImage(img)
-   
+   UnloadImage(img)
+   let src = Rectangle(0, 0, txt.width, txt.height)
+   let dest = Rectangle(0, 0, W, H)
    while not WindowShouldClose() do:{
       BeginDrawing()
       ClearBackground(COLOR_MAP[0])
       
       ~ Render the static texture computed by our native C++ payload
-      DrawTextureV(txt, <0,0>, WHITE)     
+      DrawTexturePro(txt, src, dest, <0, 0>, 0.0F, WHITE)   
       
       EndDrawing()
    }
    
-   UnloadImage(img)
    UnloadTexture(txt)
    CloseWindow()
 }

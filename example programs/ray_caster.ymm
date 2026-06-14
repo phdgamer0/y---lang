@@ -429,13 +429,16 @@ define function DDA(Begin:vector(), Dir:vector(), RenderDistance:float()) -> lis
 }
 
 define function render_map() -> object():{
-   BeginDrawing()
-   for let width = 0 if width < MAP_W then width++ do:{
-      for let height = 0 if height < MAP_H then height++ do:{
-         DrawRectangleV(MAP_START + <width, height> * MAP_BLOCK_LENGTH, <MAP_BLOCK_LENGTH, MAP_BLOCK_LENGTH>, WHITE if MAP[height][width] else BLACK)
+   for flush in range(5) do:{
+      BeginDrawing()
+      ClearBackground(BLACK)
+      for let width = 0 if width < MAP_W then width++ do:{
+         for let height = 0 if height < MAP_H then height++ do:{
+            DrawRectangleV(MAP_START + <width, height> * MAP_BLOCK_LENGTH, <MAP_BLOCK_LENGTH, MAP_BLOCK_LENGTH>, WHITE if MAP[height][width] else BLACK)
+         }
       }
+      EndDrawing()
    }
-   EndDrawing()
    
    let img = LoadImageFromScreen()
    let txt = LoadTextureFromImage(img)
@@ -448,15 +451,19 @@ define function render_map() -> object():{
 
 define function render_ground_sky() -> list():{
    let r = 4
-   BeginDrawing()
-   for let vertical_line = H if vertical_line > 0 then vertical_line-- do:{
-      let colr_intense = map_range(vertical_line, 0, H, 0, 255)
-      DrawLineV(<0, vertical_line>, <W, vertical_line>, Color(0, 0, colr_intense, 255))
+   let coord = (<RandChoice(r...W), RandChoice(r...H)> for i in range(60))
+   for flush in range(5) do:{
+      BeginDrawing()
+      ClearBackground(BLACK)
+      for let vertical_line = H if vertical_line > 0 then vertical_line-- do:{
+         let colr_intense = map_range(vertical_line, 0, H, 0, 255)
+         DrawLineV(<0, vertical_line>, <W, vertical_line>, Color(0, 0, colr_intense, 255))
+      }
+      for i in coord do:{
+         DrawCircleV(i, r, GRAY)
+      }
+      EndDrawing()
    }
-   for i in range(60)do:{
-      DrawCircleV(<RandChoice(r...W), RandChoice(r...H)>, r, GRAY)
-   }
-   EndDrawing()
    
    let img1 = LoadImageFromScreen()
    let img2 = LoadImageFromScreen()
@@ -490,11 +497,12 @@ define function TransitionToDeathScreen(death_screen:object(), font:object(), te
 }
 
 define function main():{
+   SetConfigFlags(8192)
    InitWindow(W, H, NAME)
    SetTargetFPS(FPS)
    BeginDrawing()
    ClearBackground(BLACK)
-   
+   EndDrawing()
    let txture = render_map()
    let sky_ground_texture_array = render_ground_sky()
    
@@ -520,7 +528,8 @@ define function main():{
    
    SetMousePosition(0, H // 2)
    let death_frame_count = 0
-   
+   let src = Rectangle(0, 0, txture.width, txture.height)
+   let dest = Rectangle(0, 0, W, H)
    while not WindowShouldClose() do:{
       BeginDrawing()
       ClearBackground(BLACK)
@@ -529,9 +538,10 @@ define function main():{
          player.display_ray_cast(wall_texture, sky, ground, enemy)
       }
       else:{
-         DrawTextureV(txture, <0, 0>, WHITE)
-         player.display_2D()
-         enemy.display_2D()
+         
+         DrawTexturePro(txture, src, dest, <0, 0>, 0.0F, WHITE)
+         player.display_2D(GREEN)
+         enemy.display_2D(RED)
       }
       
       if RELEASE_THE_ENEMY:

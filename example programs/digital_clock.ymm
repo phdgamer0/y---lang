@@ -286,7 +286,7 @@ define class Multiplexer: {
 `
 define function main():{
    let C = Color(100,100,100,40)
-   
+   SetConfigFlags(8192)
    ~ THE 'omit' KEYWORD: 
    ~ The Multiplexer constructor takes (pos, separation, OffColor, LitColor).
    ~ By using 'omit', we skip the 'separation' argument, forcing it to use 
