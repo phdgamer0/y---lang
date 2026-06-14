@@ -24,7 +24,7 @@ let const MAX_ITERATION = 1000
 let const C_REAL = -0.8F
 let const C_IMAGINARY = 0.156F
 let const K = 100 // 6
-let const PATH = "C:\\Users\\Windows\\source\\repos\\phdgamer0\\y---lang\\builds\\value_for_cpp_compile.h"
+let const PATH = "absolute/path/to/value_for_cpp_compile.h"
 ~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ~ Make sure to have the value_for_cpp_compile.h included inside the builds folder
 ~ Simply pass the absolute path for it so the FFI Can Find it. 
