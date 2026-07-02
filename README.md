@@ -469,6 +469,7 @@ import parentFunc, dependentChild from "logic.ymm"
 | --- | --- |
 | **Math** | Advanced mathematical functions and constants. |
 | **Vector** | N-dimensional vector operations. |
+| **OpenNN** | Cpu acclerated Neural network and machine learning library. |
 | **Raylib** | Native bindings for 2D/3D hardware-accelerated graphics. |
 | **Ncurses** | Terminal UI graphics handling (Linux targets only). |
 | **QRgen** | Native QR code generation. |
