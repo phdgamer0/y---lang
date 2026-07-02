@@ -84,6 +84,7 @@
 #define KEY_UP RAY_UP
 #define KEY_BACKSPACE RAY_BACKSPACE
 #define KEY_END RAY_END
+#define Matrix RaylibMatrix
 #include "raylib.h"
 #undef KEY_ENTER
 #undef KEY_HOME
@@ -93,6 +94,7 @@
 #undef KEY_DOWN
 #undef KEY_BACKSPACE
 #undef KEY_END
+#undef Matrix
 #include "qrcodegen.hpp"
 #include <nlohmann/json.hpp>
 #ifdef _WIN32
@@ -120,6 +122,7 @@
 #undef WHITE
 #define REPLXX_STATIC
 #include <replxx.hxx>
+#include <opennn/opennn.h>
 bool DEBUGGER_MODE_IS_ENABLED = false;
 namespace fs = std::filesystem;
 using std::string;
@@ -2956,6 +2959,11 @@ class Parser {
 	}
 };
 // -------------------- RUNTIME -------------------
+struct OptimizerHack : public opennn::Optimizer {
+	static void set_epochs(opennn::Optimizer *opt, long epochs) {
+		static_cast<OptimizerHack *>(opt)->maximum_epochs = (Index)epochs;
+	}
+};
 struct Env;
 struct HeapObject;
 struct BigIntObject;
@@ -3861,6 +3869,17 @@ inline bool Value::strictEquals(const Value &other) const {
 		}
 		return true;
 	}
+	case ValueType::INSTANCE: {
+      auto *inst1 = static_cast<InstanceObject *>(ref.get());
+      auto *inst2 = static_cast<InstanceObject *>(other.ref.get());
+      if (inst1 == inst2) return true;
+      if (inst1->klass->name != inst2->klass->name) return false;
+      if (inst1->fields.size() != inst2->fields.size()) return false;
+      for (const auto &[k, v] : inst1->fields) {
+         if (inst2->fields.find(k) == inst2->fields.end() || !v.strictEquals(inst2->fields.at(k))) return false;
+      }
+      return true;
+   }
 	}
 	return false;
 }
@@ -5130,28 +5149,28 @@ static inline Rectangle ValueToRect(const Value &v, int l, int c) {
 		(float)inst->fields["width"].asInt(),
 		(float)inst->fields["height"].asInt()};
 }
-static inline Vector2 ValueToVector2(const Value &v, int l, int c) {
+static inline ::Vector2 ValueToVector2(const Value &v, int l, int c) {
 	if (v.type != ValueType::VECTOR)
 		throw TypeError("Expected Vector object", l, c);
 	auto *vec = static_cast<VectorObject *>(v.ref.get());
 	if (vec->elements.size() < 2)
 		throw ValueError("Vector must have at least 2 elements for Vector2", l,
 			c);
-	return Vector2{(float)vec->elements[0].asFloat(),
+	return ::Vector2{(float)vec->elements[0].asFloat(),
 		(float)vec->elements[1].asFloat()};
 }
-static inline auto Vector2ToValue = [](Vector2 v) -> Value {
+static inline auto Vector2ToValue = [](::Vector2 v) -> Value {
 	std::vector<Value> elems;
 	elems.reserve(2);
 	elems.push_back(Value::Float(v.x));
 	elems.push_back(Value::Float(v.y));
 	return Value::Vector(elems);
 };
-static inline std::vector<Vector2> ValueToVectorList(const Value &v, int l, int c) {
+static inline std::vector<::Vector2> ValueToVectorList(const Value &v, int l, int c) {
 	if (v.type != ValueType::LIST)
 		throw TypeError("Expected List of Vectors", l, c);
 	auto *list = static_cast<ListObject *>(v.ref.get());
-	std::vector<Vector2> points;
+	std::vector<::Vector2> points;
 	points.reserve(list->elements.size());
 	for (const auto &el : list->elements)
 		points.push_back(ValueToVector2(el, l, c));
@@ -15843,6 +15862,7 @@ void Interpreter::registerStdLib() {
 			unordered_map<Value, Value, ValueHash, ValueEqual> parts;
 			parts[Value::String("year")] = Value::Int(t->tm_year + 1900);
 			parts[Value::String("month")] = Value::Int(t->tm_mon + 1);
+			parts[Value::String("weekday")] = Value::Int(t->tm_wday);
 			parts[Value::String("day")] = Value::Int(t->tm_mday);
 			parts[Value::String("hour")] = Value::Int(t->tm_hour);
 			parts[Value::String("min")] = Value::Int(t->tm_min);
@@ -16706,6 +16726,189 @@ void Interpreter::registerStdLib() {
 		defineValue("MAGENTA", MakeColor(255, 0, 255, 255));
 		defineValue("CYAN", MakeColor(0, 255, 255, 255));
 		defineValue("RAYWHITE", MakeColor(245, 245, 245, 255));
+		defineValue("TEXTURE_FILTER_POINT", Value::Int(0));
+		defineValue("TEXTURE_FILTER_BILINEAR", Value::Int(1));
+		defineValue("TEXTURE_FILTER_TRILINEAR", Value::Int(2));
+		defineValue("TEXTURE_FILTER_ANISOTROPIC_4X", Value::Int(3));
+		defineValue("TEXTURE_FILTER_ANISOTROPIC_8X", Value::Int(4));
+		defineValue("TEXTURE_FILTER_ANISOTROPIC_16X", Value::Int(5));
+		defineValue("TEXTURE_WRAP_REPEAT", Value::Int(0));
+		defineValue("TEXTURE_WRAP_CLAMP", Value::Int(1));
+		defineValue("TEXTURE_WRAP_MIRROR_REPEAT", Value::Int(2));
+		defineValue("TEXTURE_WRAP_MIRROR_CLAMP", Value::Int(3));
+		defineValue("FLAG_VSYNC_HINT", Value::Int(64));
+		defineValue("FLAG_FULLSCREEN_MODE", Value::Int(2));
+		defineValue("FLAG_WINDOW_RESIZABLE", Value::Int(4));
+		defineValue("FLAG_WINDOW_UNDECORATED", Value::Int(8));
+		defineValue("FLAG_WINDOW_TRANSPARENT", Value::Int(16));
+		defineValue("FLAG_WINDOW_HIDDEN", Value::Int(128));
+		defineValue("FLAG_WINDOW_MINIMIZED", Value::Int(512));
+		defineValue("FLAG_WINDOW_MAXIMIZED", Value::Int(1024));
+		defineValue("FLAG_WINDOW_UNFOCUSED", Value::Int(2048));
+		defineValue("FLAG_WINDOW_TOPMOST", Value::Int(4096));
+		defineValue("FLAG_WINDOW_ALWAYS_RUN", Value::Int(256));
+		defineValue("FLAG_WINDOW_HIGHDPI", Value::Int(8192));
+		defineValue("FLAG_WINDOW_MOUSE_PASSTHROUGH", Value::Int(16384));
+		defineValue("FLAG_BORDERLESS_WINDOWED_MODE", Value::Int(32768));
+		defineValue("FLAG_MSAA_4X_HINT", Value::Int(32));
+		defineValue("FLAG_INTERLACED_HINT", Value::Int(65536));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_GRAYSCALE", Value::Int(1));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA", Value::Int(2));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R5G6B5", Value::Int(3));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R8G8B8", Value::Int(4));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R5G5B5A1", Value::Int(5));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R4G4B4A4", Value::Int(6));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R8G8B8A8", Value::Int(7));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R32", Value::Int(8));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R32G32B32", Value::Int(9));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R32G32B32A32", Value::Int(10));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R16", Value::Int(11));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R16G16B16", Value::Int(12));
+		defineValue("PIXELFORMAT_UNCOMPRESSED_R16G16B16A16", Value::Int(13));
+		defineValue("PIXELFORMAT_COMPRESSED_DXT1_RGB", Value::Int(14));
+		defineValue("PIXELFORMAT_COMPRESSED_DXT1_RGBA", Value::Int(15));
+		defineValue("PIXELFORMAT_COMPRESSED_DXT3_RGBA", Value::Int(16));
+		defineValue("PIXELFORMAT_COMPRESSED_DXT5_RGBA", Value::Int(17));
+		defineValue("PIXELFORMAT_COMPRESSED_ETC1_RGB", Value::Int(18));
+		defineValue("PIXELFORMAT_COMPRESSED_ETC2_RGB", Value::Int(19));
+		defineValue("PIXELFORMAT_COMPRESSED_ETC2_EAC_RGBA", Value::Int(20));
+		defineValue("PIXELFORMAT_COMPRESSED_PVRT_RGB", Value::Int(21));
+		defineValue("PIXELFORMAT_COMPRESSED_PVRT_RGBA", Value::Int(22));
+		defineValue("PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA", Value::Int(23));
+		defineValue("PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA", Value::Int(24));
+		defineValue("BLEND_ALPHA", Value::Int(0));
+		defineValue("BLEND_ADDITIVE", Value::Int(1));
+		defineValue("BLEND_MULTIPLIED", Value::Int(2));
+		defineValue("BLEND_ADD_COLORS", Value::Int(3));
+		defineValue("BLEND_SUBTRACT_COLORS", Value::Int(4));
+		defineValue("BLEND_ALPHA_PREMULTIPLY", Value::Int(5));
+		defineValue("BLEND_CUSTOM", Value::Int(6));
+		defineValue("BLEND_CUSTOM_SEPARATE", Value::Int(7));
+		defineValue("KEY_NULL", Value::Int(0));
+		defineValue("KEY_APOSTROPHE", Value::Int(39));
+		defineValue("KEY_COMMA", Value::Int(44));
+		defineValue("KEY_MINUS", Value::Int(45));
+		defineValue("KEY_PERIOD", Value::Int(46));
+		defineValue("KEY_SLASH", Value::Int(47));
+		defineValue("KEY_ZERO", Value::Int(48));
+		defineValue("KEY_ONE", Value::Int(49));
+		defineValue("KEY_TWO", Value::Int(50));
+		defineValue("KEY_THREE", Value::Int(51));
+		defineValue("KEY_FOUR", Value::Int(52));
+		defineValue("KEY_FIVE", Value::Int(53));
+		defineValue("KEY_SIX", Value::Int(54));
+		defineValue("KEY_SEVEN", Value::Int(55));
+		defineValue("KEY_EIGHT", Value::Int(56));
+		defineValue("KEY_NINE", Value::Int(57));
+		defineValue("KEY_SEMICOLON", Value::Int(59));
+		defineValue("KEY_EQUAL", Value::Int(61));
+		defineValue("KEY_A", Value::Int(65));
+		defineValue("KEY_B", Value::Int(66));
+		defineValue("KEY_C", Value::Int(67));
+		defineValue("KEY_D", Value::Int(68));
+		defineValue("KEY_E", Value::Int(69));
+		defineValue("KEY_F", Value::Int(70));
+		defineValue("KEY_G", Value::Int(71));
+		defineValue("KEY_H", Value::Int(72));
+		defineValue("KEY_I", Value::Int(73));
+		defineValue("KEY_J", Value::Int(74));
+		defineValue("KEY_K", Value::Int(75));
+		defineValue("KEY_L", Value::Int(76));
+		defineValue("KEY_M", Value::Int(77));
+		defineValue("KEY_N", Value::Int(78));
+		defineValue("KEY_O", Value::Int(79));
+		defineValue("KEY_P", Value::Int(80));
+		defineValue("KEY_Q", Value::Int(81));
+		defineValue("KEY_R", Value::Int(82));
+		defineValue("KEY_S", Value::Int(83));
+		defineValue("KEY_T", Value::Int(84));
+		defineValue("KEY_U", Value::Int(85));
+		defineValue("KEY_V", Value::Int(86));
+		defineValue("KEY_W", Value::Int(87));
+		defineValue("KEY_X", Value::Int(88));
+		defineValue("KEY_Y", Value::Int(89));
+		defineValue("KEY_Z", Value::Int(90));
+		defineValue("KEY_LEFT_BRACKET", Value::Int(91));
+		defineValue("KEY_BACKSLASH", Value::Int(92));
+		defineValue("KEY_RIGHT_BRACKET", Value::Int(93));
+		defineValue("KEY_GRAVE", Value::Int(96));
+		defineValue("KEY_SPACE", Value::Int(32));
+		defineValue("KEY_ESCAPE", Value::Int(256));
+		defineValue("KEY_ENTER", Value::Int(257));
+		defineValue("KEY_TAB", Value::Int(258));
+		defineValue("KEY_BACKSPACE", Value::Int(259));
+		defineValue("KEY_INSERT", Value::Int(260));
+		defineValue("KEY_DELETE", Value::Int(261));
+		defineValue("KEY_RIGHT", Value::Int(262));
+		defineValue("KEY_LEFT", Value::Int(263));
+		defineValue("KEY_DOWN", Value::Int(264));
+		defineValue("KEY_UP", Value::Int(265));
+		defineValue("KEY_PAGE_UP", Value::Int(266));
+		defineValue("KEY_PAGE_DOWN", Value::Int(267));
+		defineValue("KEY_HOME", Value::Int(268));
+		defineValue("KEY_END", Value::Int(269));
+		defineValue("KEY_CAPS_LOCK", Value::Int(280));
+		defineValue("KEY_SCROLL_LOCK", Value::Int(281));
+		defineValue("KEY_NUM_LOCK", Value::Int(282));
+		defineValue("KEY_PRINT_SCREEN", Value::Int(283));
+		defineValue("KEY_PAUSE", Value::Int(284));
+		defineValue("KEY_F1", Value::Int(290));
+		defineValue("KEY_F2", Value::Int(291));
+		defineValue("KEY_F3", Value::Int(292));
+		defineValue("KEY_F4", Value::Int(293));
+		defineValue("KEY_F5", Value::Int(294));
+		defineValue("KEY_F6", Value::Int(295));
+		defineValue("KEY_F7", Value::Int(296));
+		defineValue("KEY_F8", Value::Int(297));
+		defineValue("KEY_F9", Value::Int(298));
+		defineValue("KEY_F10", Value::Int(299));
+		defineValue("KEY_F11", Value::Int(300));
+		defineValue("KEY_F12", Value::Int(301));
+		defineValue("KEY_LEFT_SHIFT", Value::Int(340));
+		defineValue("KEY_LEFT_CONTROL", Value::Int(341));
+		defineValue("KEY_LEFT_ALT", Value::Int(342));
+		defineValue("KEY_LEFT_SUPER", Value::Int(343));
+		defineValue("KEY_RIGHT_SHIFT", Value::Int(344));
+		defineValue("KEY_RIGHT_CONTROL", Value::Int(345));
+		defineValue("KEY_RIGHT_ALT", Value::Int(346));
+		defineValue("KEY_RIGHT_SUPER", Value::Int(347));
+		defineValue("KEY_KB_MENU", Value::Int(348));
+		defineValue("KEY_KP_0", Value::Int(320));
+		defineValue("KEY_KP_1", Value::Int(321));
+		defineValue("KEY_KP_2", Value::Int(322));
+		defineValue("KEY_KP_3", Value::Int(323));
+		defineValue("KEY_KP_4", Value::Int(324));
+		defineValue("KEY_KP_5", Value::Int(325));
+		defineValue("KEY_KP_6", Value::Int(326));
+		defineValue("KEY_KP_7", Value::Int(327));
+		defineValue("KEY_KP_8", Value::Int(328));
+		defineValue("KEY_KP_9", Value::Int(329));
+		defineValue("KEY_KP_DECIMAL", Value::Int(330));
+		defineValue("KEY_KP_DIVIDE", Value::Int(331));
+		defineValue("KEY_KP_MULTIPLY", Value::Int(332));
+		defineValue("KEY_KP_SUBTRACT", Value::Int(333));
+		defineValue("KEY_KP_ADD", Value::Int(334));
+		defineValue("KEY_KP_ENTER", Value::Int(335));
+		defineValue("KEY_KP_EQUAL", Value::Int(336));
+		defineValue("GAMEPAD_BUTTON_UNKNOWN", Value::Int(0));
+		defineValue("GAMEPAD_BUTTON_LEFT_FACE_UP", Value::Int(1));
+		defineValue("GAMEPAD_BUTTON_LEFT_FACE_RIGHT", Value::Int(2));
+		defineValue("GAMEPAD_BUTTON_LEFT_FACE_DOWN", Value::Int(3));
+		defineValue("GAMEPAD_BUTTON_LEFT_FACE_LEFT", Value::Int(4));
+		defineValue("GAMEPAD_BUTTON_RIGHT_FACE_UP", Value::Int(5));
+		defineValue("GAMEPAD_BUTTON_RIGHT_FACE_RIGHT", Value::Int(6));
+		defineValue("GAMEPAD_BUTTON_RIGHT_FACE_DOWN", Value::Int(7));
+		defineValue("GAMEPAD_BUTTON_RIGHT_FACE_LEFT", Value::Int(8));
+		defineValue("GAMEPAD_BUTTON_LEFT_TRIGGER_1", Value::Int(9));
+		defineValue("GAMEPAD_BUTTON_LEFT_TRIGGER_2", Value::Int(10));
+		defineValue("GAMEPAD_BUTTON_RIGHT_TRIGGER_1", Value::Int(11));
+		defineValue("GAMEPAD_BUTTON_RIGHT_TRIGGER_2", Value::Int(12));
+		defineValue("GAMEPAD_BUTTON_MIDDLE_LEFT", Value::Int(13));
+		defineValue("GAMEPAD_BUTTON_MIDDLE", Value::Int(14));
+		defineValue("GAMEPAD_BUTTON_MIDDLE_RIGHT", Value::Int(15));
+		defineValue("GAMEPAD_BUTTON_LEFT_THUMB", Value::Int(16));
+		defineValue("GAMEPAD_BUTTON_RIGHT_THUMB", Value::Int(17));
+
 		define("Color", [=](const vector<Value> &args, int l, int c) {
 			if (args.size() != 4)
 				throw ArgumentError("Color(r, g, b, a)", l, c);
@@ -16833,22 +17036,55 @@ void Interpreter::registerStdLib() {
 			return Value::None();
 		});
 		define("SetConfigFlags", [](const std::vector<Value> &args, int l, int c) {
-			if (args.size() != 1) 
-				throw ArgumentError("SetConfigFlags(flags)", l, c);
-			unsigned int flags = (unsigned int)args[0].asInt();
+			if (args.size() < 1) 
+				throw ArgumentError("SetConfigFlags(flags...)", l, c);
+			unsigned int flags = 0;
+			for (const auto& f : args) flags |= static_cast<unsigned int>(f.asInt());
 			SetConfigFlags(flags);
 			return Value::None();
+		});
+		define("SetTextureFilter", [=](const std::vector<Value> &args, int l, int c) {
+			if (args.size() < 2) 
+				throw ArgumentError("SetTextureFilter(texture, flags...)", l, c);
+			unsigned int flags = 0;
+			for (auto f = args.begin() + 1; f < args.end(); f++) flags |= static_cast<unsigned int>(f->asInt());
+			auto t = ValueToTexture(args[0], l, c);
+			SetTextureFilter(t, flags);
+			return Value::None();
+		});
+		define("SetWindowPosition", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 2) 
+				throw ArgumentError("SetWindowPosition(x, y)", l, c);
+			SetWindowPosition(args[0].asInt(), args[1].asInt());
+			return Value::None();
+		});
+		define("SetWindowPositionV", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 1) 
+				throw ArgumentError("SetWindowPositionV(VectorXY)", l, c);
+			::Vector2 pos = ValueToVector2(args[0], l, c);
+			SetWindowPosition(pos.x, pos.y);
+			return Value::None();
+		});
+		define("GetMonitorWidth", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 1) 
+				throw ArgumentError("GetMonitorWidth(monitorNumber)", l, c);
+			return Value::Int(GetMonitorWidth(args[0].asInt()));
+		});
+		define("GetMonitorHeight", [](const std::vector<Value> &args, int l, int c) {
+			if (args.size() != 1) 
+				throw ArgumentError("GetMonitorHeight(monitorNumber)", l, c);
+			return Value::Int(GetMonitorHeight(args[0].asInt()));
 		});
 		define("GetWindowScaleV", [](const std::vector<Value> &args, int l, int c) {
 			if (args.size() != 0) 
 				throw ArgumentError("GetWindowScaleV()", l, c);
-			Vector2 scale = GetWindowScaleDPI();
+			::Vector2 scale = GetWindowScaleDPI();
 			return Vector2ToValue(scale); 
 		});
 		define("GetWindowScaleF", [](const std::vector<Value> &args, int l, int c) {
 			if (args.size() != 0) 
 				throw ArgumentError("GetWindowScaleF()", l, c);
-			Vector2 scale = GetWindowScaleDPI();
+			::Vector2 scale = GetWindowScaleDPI();
 			return Value::Float((double)scale.x); 
 		});
 		define("LoadRenderTexture", [&](const std::vector<Value> &args, int l, int c) {
@@ -16960,7 +17196,7 @@ void Interpreter::registerStdLib() {
 			if (args.size() != 4)
 				throw ArgumentError("MeasureTextEx(font, text, fontSize, spacing)",
 					l, c);
-			Vector2 size = MeasureTextEx(
+			::Vector2 size = MeasureTextEx(
 				ValueToFont(args[0], l, c), args[1].asString().c_str(),
 				(float)args[2].asFloat(), (float)args[3].asFloat());
 			return Vector2ToValue(size);
@@ -18098,6 +18334,195 @@ void Interpreter::registerStdLib() {
 		modVal.type = ValueType::CLASS;
 		modVal.ref = moduleNamespace;
 		env->set("Http", modVal, false, false);
+	};
+	modules["OpenNN"] = [](std::shared_ptr<Env> env, const vector<string> &symbols) {
+		auto moduleNamespace = std::make_shared<ClassObject>("OpenNN");
+		moduleNamespace->mro.push_back(moduleNamespace.get());
+		auto defineClass = [&](std::shared_ptr<ClassObject> cls) {
+			Value classVal;
+			classVal.type = ValueType::CLASS;
+			classVal.ref = cls;
+			moduleNamespace->staticFields[cls->name] = classVal;
+			if (symbols.size() == 1 && symbols[0] == "*") {
+				env->set(cls->name, classVal, true, true);
+				return;
+			}
+			for (const auto &s : symbols) {
+				if (s == cls->name) {
+					env->set(cls->name, classVal, true, true);
+					break;
+				}
+			}
+		};
+		static auto nnClass = std::make_shared<ClassObject>("NeuralNetwork");
+		nnClass->methods["__construct__"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("NeuralNetwork(inputs, outputs)", l, c);
+				long inputs = (long)args[2].asInt();
+				long outputs = (long)args[3].asInt();
+				long hidden = (inputs + outputs) / 2 + 1;
+				auto *net = new opennn::ApproximationNetwork({inputs}, {hidden}, {outputs});
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				self->fields["ptr"] = Value::pInt(net);
+				return args[0];
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		nnClass->methods["__destruct__"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				if (self->fields.find("ptr") != self->fields.end()) {
+					auto *net = (opennn::NeuralNetwork *)self->fields["ptr"].aspInt();
+					delete net;
+				}
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		nnClass->methods["predict"] = ClassObject::MethodInfo{
+         .func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+            if (args.size() < 3) throw ArgumentError("predict() requires 1 argument", l, c);
+            auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+            auto *net = (opennn::ApproximationNetwork *)self->fields["ptr"].aspInt();
+            std::vector<Value>* elements_ptr = nullptr;
+            if (args[2].type == ValueType::VECTOR) elements_ptr = &static_cast<VectorObject *>(args[2].ref.get())->elements;
+				else if (args[2].type == ValueType::LIST) elements_ptr = &static_cast<ListObject *>(args[2].ref.get())->elements;
+				else if (args[2].type == ValueType::TUPLE) elements_ptr = &static_cast<TupleObject *>(args[2].ref.get())->elements;
+				else throw ArgumentError("predict() expects a vector <>, list [], or tuple ()", l, c);
+            long input_size = (long)elements_ptr->size();
+            MatrixR inputs(1, input_size);
+            for (long i = 0; i < input_size; i++) inputs(0, i) = (*elements_ptr)[i].asFloat();
+            MatrixR outputs = net->calculate_outputs(inputs);
+            std::vector<Value> result;
+            long output_size = outputs.cols();
+            for (long i = 0; i < output_size; i++) result.push_back(Value::Float(outputs(0, i)));
+				return Value::Vector(result);
+         }),
+         .access = AccessLevel::PUBLIC
+      };
+		nnClass->methods["save"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3) throw ArgumentError("save(filepath)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *net = (opennn::NeuralNetwork *)self->fields["ptr"].aspInt();
+				net->save(args[2].asString());
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		nnClass->methods["load"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3 || args[2].type != ValueType::STRING) throw ArgumentError("load(filepath)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *net = (opennn::ApproximationNetwork *)self->fields["ptr"].aspInt();
+				net->load(args[2].asString());
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		static auto dataClass = std::make_shared<ClassObject>("Dataset");
+		dataClass->methods["__construct__"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4 || args[2].type != ValueType::STRING) throw ArgumentError("Dataset(csv_filepath_string, has_header_bool)", l, c);
+				bool has_header = args[3].asBool();
+				auto *ds = new opennn::Dataset(args[2].asString(), ",", has_header, false);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				self->fields["ptr"] = Value::pInt(ds);
+				return args[0];
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		dataClass->methods["__destruct__"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				if (self->fields.find("ptr") != self->fields.end()) {
+					auto *ds = (opennn::Dataset *)self->fields["ptr"].aspInt();
+					delete ds;
+				}
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		dataClass->methods["set_columns"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("set_columns(input_count, target_count)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *ds = (opennn::Dataset *)self->fields["ptr"].aspInt();
+				long inputs = (long)args[2].asInt();
+				long targets = (long)args[3].asInt();
+				long total_vars = (long)ds->get_variables().size();
+            for (long i = 0; i < total_vars; i++) {
+               if (i < inputs) ds->set_variable_role(i, "Input");
+					else if (i < inputs + targets) ds->set_variable_role(i, "Target");
+					else ds->set_variable_role(i, "Unused");
+            }
+            return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		static auto optClass = std::make_shared<ClassObject>("Optimizer");
+		optClass->staticFields["GRADIENT_DESCENT"] = Value::String("GradientDescent");
+		optClass->staticFields["QUASI_NEWTON"] = Value::String("QuasiNewtonMethod");
+		optClass->staticFields["LEVENBERG_MARQUARDT"] = Value::String("LevenbergMarquardtAlgorithm");
+		optClass->staticFields["ADAM"] = Value::String("AdaptiveMomentEstimation");
+		optClass->methods["__construct__"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("Optimizer(network_instance, dataset_instance)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *netInst = static_cast<InstanceObject *>(args[2].ref.get());
+				auto *dataInst = static_cast<InstanceObject *>(args[3].ref.get());
+				auto *net = (opennn::NeuralNetwork *)netInst->fields["ptr"].aspInt();
+				auto *ds = (opennn::Dataset *)dataInst->fields["ptr"].aspInt();
+				auto *strategy = new opennn::TrainingStrategy(net, ds);
+				self->fields["ptr"] = Value::pInt(strategy);
+				return args[0]; 
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		optClass->methods["set_epochs"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3) throw ArgumentError("set_epochs(int)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *strategy = (opennn::TrainingStrategy *)self->fields["ptr"].aspInt();
+				long epochs = (long)args[2].asInt();
+				OptimizerHack::set_epochs(strategy->get_optimization_algorithm(), epochs);
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		optClass->methods["train"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *strategy = (opennn::TrainingStrategy *)self->fields["ptr"].aspInt();
+				auto results = strategy->train();
+				return Value::Float((double)results.get_training_error());
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		optClass->methods["set_algorithm"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3 || args[2].type != ValueType::STRING) throw ArgumentError("set_algorithm(string)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *strategy = (opennn::TrainingStrategy *)self->fields["ptr"].aspInt();
+				strategy->set_optimization_algorithm(args[2].asString());
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		optClass->methods["__destruct__"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				if (self->fields.find("ptr") != self->fields.end()) {
+					auto *strategy = (opennn::TrainingStrategy *)self->fields["ptr"].aspInt();
+					delete strategy;
+				}
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		defineClass(nnClass);
+		defineClass(dataClass);
+		defineClass(optClass);
 	};
 	// ========= CASTING ==========
 	env->set("exit", Value::Native([this](const vector<Value> &args, int l, int c) {
