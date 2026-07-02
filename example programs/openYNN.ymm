@@ -1,0 +1,49 @@
+import * from OpenNN
+import Vector
+
+define function main(): {
+   print("=== OpenNN XOR Gate Training ===")
+	
+   ~ 1. Initialize the Neural Network (2 inputs, 1 output)
+   ~ (OpenNN automatically builds the hidden layer for us!)
+   let brain = NeuralNetwork(2, 1)
+	
+   ~ 2. Load the Dataset
+   print("Loading XOR dataset...")
+   let data = Dataset("example programs/src/xor_data.csv", true)
+	
+   ~ 3. Configure the columns (2 inputs, 1 target)
+   data.set_columns(2, 1)
+	
+   ~ 4. Set up the Optimizer
+   let opt = Optimizer(brain, data)
+   
+   ~ 5. Apply the optimal algorithm
+   opt.set_algorithm(Optimizer.QUASI_NEWTON)
+   
+	~ Cap it at 5000 epochs
+	opt.set_epochs(5000)
+	
+   ~ 6. Train the Network
+   print("Training the network...")
+   let final_loss = opt.train()
+   print(f"Training finished! Final Error/Loss: {final_loss}")
+	
+   ~ 7. Test the Predictions
+   print("\n=== Testing XOR Predictions ===")
+   
+   let out_00 = brain.predict(<0.0, 0.0>)
+   print(f"0 XOR 0 = {out_00}  (Expected: ~0.0)")
+   
+   let out_01 = brain.predict(<0.0, 1.0>)
+   print(f"0 XOR 1 = {out_01}  (Expected: ~1.0)")
+   
+   let out_10 = brain.predict(<1.0, 0.0>)
+   print(f"1 XOR 0 = {out_10}  (Expected: ~1.0)")
+   
+   let out_11 = brain.predict(<1.0, 1.0>)
+   print(f"1 XOR 1 = {out_11}  (Expected: ~0.0)")	
+   
+   print("\nSaving the trained brain to xor_brain.xml...")
+   brain.save("xor_brain.xml")
+}
