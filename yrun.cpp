@@ -106,9 +106,9 @@ int main(int argc, char *argv[]) {
 			vm.methodResolver = [&](MethodCallExpr *m) {
 				return interp.Resolve_methods(m);
 			};
-			vm.importResolver = [&](std::string libName, std::vector<std::string> symbols) {
+			vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
 				if (interp.modules.find(libName) != interp.modules.end())
-					interp.modules[libName](interp.env, symbols);
+					interp.modules[libName](targetEnv, symbols);
 				else
 					throw ImportError("Unknown module '" + libName + "'", 0, 0);
 			};
@@ -183,9 +183,9 @@ void runREPL() {
    Interpreter interp;
    vm.globals = interp.env;
    vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
-   vm.importResolver = [&](std::string libName, std::vector<std::string> symbols) {
+   vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
       if (interp.modules.find(libName) != interp.modules.end())
-         interp.modules[libName](interp.env, symbols);
+         interp.modules[libName](targetEnv, symbols);
       else
          throw ImportError("Unknown module '" + libName + "'", 0, 0);
    };

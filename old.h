@@ -32,10 +32,30 @@
 #undef max
 #undef LoadImage
 #include <conio.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
 #else // Who decided that?
 #include <dlfcn.h>
 #include <termios.h>
+#include <fcntl.h>
+#define Font X11_Font
+#define Status X11_Status
+#define Success X11_Success
+#define None X11_None
+#define Bool X11_Bool
+#include <X11/Xlib.h>
+#include <X11/extensions/XTest.h>
+#include <X11/keysym.h>
+#undef Font
+#undef Status
+#undef Success
+#undef None
+#undef Bool
 #include <unistd.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 #endif
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
@@ -59,6 +79,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <regex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -181,6 +202,20 @@ enum class TokenType {
 	LBRACKET,
 	RBRACKET,
 	COLON_EQ,
+	BITWISE_AND,
+	BITWISE_OR,
+	BITWISE_XOR,
+	BITWISE_NOT,
+	BITWISE_SHL,
+	BITWISE_SHR,
+	BITWISE_AND_EQ,
+	BITWISE_OR_EQ,
+	BITWISE_XOR_EQ,
+	BITWISE_NOT_EQ,
+	BITWISE_SHL_EQ,
+	BITWISE_SHR_EQ,
+	PLUS_PLUS,
+	MINUS_MINUS,
 	HASHTAG,
 	PLUS,
 	MINUS,
@@ -596,6 +631,20 @@ inline vector<Token> tokenize(const string &code, std::unordered_map<std::string
 		continue;                                       \
 	}
 		CHECK_OP("...", TokenType::DOT_DOT_DOT);
+		CHECK_OP("&&=", TokenType::BITWISE_AND_EQ);
+		CHECK_OP("||=", TokenType::BITWISE_OR_EQ);
+		CHECK_OP("^^=", TokenType::BITWISE_XOR_EQ);
+		CHECK_OP("!!=", TokenType::BITWISE_NOT_EQ);
+		CHECK_OP("<<=", TokenType::BITWISE_SHL_EQ);
+		CHECK_OP(">>=", TokenType::BITWISE_SHR_EQ);
+		CHECK_OP("&&", TokenType::BITWISE_AND);
+		CHECK_OP("||", TokenType::BITWISE_OR);
+		CHECK_OP("^^", TokenType::BITWISE_XOR);
+		CHECK_OP("!!", TokenType::BITWISE_NOT);
+		CHECK_OP("<<", TokenType::BITWISE_SHL);
+		CHECK_OP(">>", TokenType::BITWISE_SHR);
+		CHECK_OP("++", TokenType::PLUS_PLUS);
+		CHECK_OP("--", TokenType::MINUS_MINUS);
 		CHECK_OP("===", TokenType::STRICT_EQ);
 		CHECK_OP("!==", TokenType::STRICT_NEQ);
 		CHECK_OP("//=", TokenType::FLOOR_DIV_EQ);
@@ -1086,7 +1135,8 @@ enum class ExprType {
 	SLICE,
 	VECTOR,
 	OMIT_MARKER_EXPR,
-	GET
+	GET,
+	INC_DEC
 };
 enum class StmtType {
 	ASSIGN,
@@ -1124,7 +1174,8 @@ struct Expr {
 struct NumberExpr : Expr {
 	double val;
 	bool isFloat;
-	NumberExpr(double v, bool f) : Expr(ExprType::NUMBER), val(v), isFloat(f) {}
+	string raw;
+	NumberExpr(double v, bool f, const string& r = "") : Expr(ExprType::NUMBER), val(v), isFloat(f), raw(r) {}
 };
 struct StringExpr : Expr {
 	string val;
@@ -1140,6 +1191,13 @@ struct BinExpr : Expr {
 	TokenType op;
 	BinExpr(Expr *l, Expr *r, TokenType o)
 		 : Expr(ExprType::BINARY), left(l), right(r), op(o) {}
+};
+struct IncDecExpr : Expr {
+	Expr *expr;
+	bool isIncrement;
+	bool isPrefix;
+	IncDecExpr(Expr *e, bool isInc, bool isPref)
+		 : Expr(ExprType::INC_DEC), expr(e), isIncrement(isInc), isPrefix(isPref) {}
 };
 struct CallExpr : Expr {
 	string name;
@@ -1623,8 +1681,35 @@ class Parser {
 		return left;
 	}
 	Expr *parseAnd() {
-		Expr *left = parseCompare();
+		Expr *left = parseBitwiseOr();
 		while (peek().type == TokenType::AND || peek().type == TokenType::NAND) {
+			Token opToken = advance();
+			Expr *right = parseBitwiseOr();
+			left = setPos(new BinExpr(left, right, opToken.type), opToken);
+		}
+		return left;
+	}
+	Expr *parseBitwiseOr() {
+		Expr *left = parseBitwiseXor();
+		while (peek().type == TokenType::BITWISE_OR) {
+			Token opToken = advance();
+			Expr *right = parseBitwiseXor();
+			left = setPos(new BinExpr(left, right, opToken.type), opToken);
+		}
+		return left;
+	}
+	Expr *parseBitwiseXor() {
+		Expr *left = parseBitwiseAnd();
+		while (peek().type == TokenType::BITWISE_XOR) {
+			Token opToken = advance();
+			Expr *right = parseBitwiseAnd();
+			left = setPos(new BinExpr(left, right, opToken.type), opToken);
+		}
+		return left;
+	}
+	Expr *parseBitwiseAnd() {
+		Expr *left = parseCompare();
+		while (peek().type == TokenType::BITWISE_AND) {
 			Token opToken = advance();
 			Expr *right = parseCompare();
 			left = setPos(new BinExpr(left, right, opToken.type), opToken);
@@ -1632,7 +1717,7 @@ class Parser {
 		return left;
 	}
 	Expr *parseCompare() {
-		Expr *left = parseAdd();
+		Expr *left = parseShift();
 		while (peek().type == TokenType::GT || peek().type == TokenType::LT ||
 				 peek().type == TokenType::GTE || peek().type == TokenType::LTE ||
 				 peek().type == TokenType::EQ || peek().type == TokenType::NEQ ||
@@ -1660,6 +1745,15 @@ class Parser {
 			}
 			Expr *right = parseAdd();
 			left = setPos(new BinExpr(left, right, op), opToken);
+		}
+		return left;
+	}
+	Expr *parseShift() {
+		Expr *left = parseAdd();
+		while (peek().type == TokenType::BITWISE_SHL || peek().type == TokenType::BITWISE_SHR) {
+			Token opToken = advance();
+			Expr *right = parseAdd();
+			left = setPos(new BinExpr(left, right, opToken.type), opToken);
 		}
 		return left;
 	}
@@ -1722,6 +1816,21 @@ class Parser {
 			Token opToken = tokens[pos - 1];
 			Expr *right = parseUnary();
 			return setPos(new BinExpr(nullptr, right, TokenType::NOT), opToken);
+		}
+		if (match(TokenType::BITWISE_NOT)) {
+			Token opToken = tokens[pos - 1];
+			Expr *right = parseUnary();
+			return setPos(new BinExpr(nullptr, right, TokenType::BITWISE_NOT), opToken);
+		}
+		if (match(TokenType::PLUS_PLUS)) {
+			Token opToken = tokens[pos - 1];
+			Expr *right = parseUnary();
+			return setPos(new IncDecExpr(right, true, true), opToken);
+		}
+		if (match(TokenType::MINUS_MINUS)) {
+			Token opToken = tokens[pos - 1];
+			Expr *right = parseUnary();
+			return setPos(new IncDecExpr(right, false, true), opToken);
 		}
 		return parsePrimary();
 	}
@@ -1966,7 +2075,13 @@ class Parser {
 		if (match(TokenType::NUMBER)) {
 			string v = tokens[pos - 1].value;
 			bool isFloat = v.find('.') != string::npos;
-			expr = setPos(new NumberExpr(std::stod(v), isFloat), tokens[pos - 1]);
+			double parsedVal = 0.0;
+			try {
+				parsedVal = std::stod(v);
+			} catch (...) {
+				// Too large for double, will be handled by BigInt logic later
+			}
+			expr = setPos(new NumberExpr(parsedVal, isFloat, v), tokens[pos - 1]);
 		} else if (match(TokenType::STRING)) {
 			expr = setPos(new StringExpr(tokens[pos - 1].value), tokens[pos - 1]);
 		} else if (match(TokenType::TRUE)) {
@@ -2233,6 +2348,12 @@ class Parser {
 					expr = setPos(new MethodCallExpr(expr, method, args), dot);
 				} else
 					expr = setPos(new GetExpr(expr, method), dot);
+			} else if (match(TokenType::PLUS_PLUS)) {
+				Token opToken = tokens[pos - 1];
+				expr = setPos(new IncDecExpr(expr, true, false), opToken);
+			} else if (match(TokenType::MINUS_MINUS)) {
+				Token opToken = tokens[pos - 1];
+				expr = setPos(new IncDecExpr(expr, false, false), opToken);
 			} else
 				break;
 		}
@@ -2250,7 +2371,10 @@ class Parser {
 			 type == TokenType::STAR_EQ || type == TokenType::DIV_EQ ||
 			 type == TokenType::MOD_EQ || type == TokenType::POW_EQ ||
 			 type == TokenType::FLOOR_DIV_EQ || type == TokenType::AND_EQ ||
-			 type == TokenType::OR_EQ || type == TokenType::XOR_EQ) {
+			 type == TokenType::OR_EQ || type == TokenType::XOR_EQ ||
+			 type == TokenType::BITWISE_AND_EQ || type == TokenType::BITWISE_OR_EQ ||
+			 type == TokenType::BITWISE_XOR_EQ || type == TokenType::BITWISE_NOT_EQ ||
+			 type == TokenType::BITWISE_SHL_EQ || type == TokenType::BITWISE_SHR_EQ) {
 			Token op = advance();
 			Expr *val = parseExpr();
 			return setPos(new AssignStmt(e, type, val), op);
@@ -2925,7 +3049,10 @@ class Parser {
 			 match(TokenType::DIV_EQ) || match(TokenType::MOD_EQ) ||
 			 match(TokenType::FLOOR_DIV_EQ) || match(TokenType::POW_EQ) ||
 			 match(TokenType::AND_EQ) || match(TokenType::OR_EQ) ||
-			 match(TokenType::XOR_EQ)) {
+			 match(TokenType::XOR_EQ) || match(TokenType::BITWISE_AND_EQ) ||
+			 match(TokenType::BITWISE_OR_EQ) || match(TokenType::BITWISE_XOR_EQ) ||
+			 match(TokenType::BITWISE_NOT_EQ) || match(TokenType::BITWISE_SHL_EQ) ||
+			 match(TokenType::BITWISE_SHR_EQ)) {
 			Token op = tokens[pos - 1];
 			Expr *rhs = parseExpr();
 			return setPos(new AssignStmt(e, op.type, rhs), op);
@@ -3001,6 +3128,7 @@ struct Value {
 	static Value BigInt(long long n);
 	static Value BigInt(std::vector<uint32_t> chunks, bool isNegative);
 	static Value BigInt(std::shared_ptr<BigIntObject> obj);
+	static Value BigInt(const std::string& str);
 	static Value Float(double v, bool locked = false, bool isConst = false);
 	static Value Bool(bool v, bool locked = false, bool isConst = false);
 	static Value String(const string &v, bool locked = false,
@@ -3037,13 +3165,34 @@ struct Value {
 	bool asBool() const;
 	const string &asString() const;
 	bool sameType(const Value &other) const { return type == other.type; }
+
+	Value* get_ptr_safe() const;
 };
+inline HeapObject* gc_head = nullptr;
+inline int gc_alloc_count = 0;
+
 struct HeapObject {
 	std::string name = "";
 	ValueType type;
 	bool typeLocked = false;
-	HeapObject(ValueType t, bool locked = false) : type(t), typeLocked(locked) {}
-	virtual ~HeapObject() = default;
+	bool gc_marked = false;
+	HeapObject* gc_next = nullptr;
+	HeapObject* gc_prev = nullptr;
+
+	HeapObject(ValueType t, bool locked = false) : type(t), typeLocked(locked) {
+		if (gc_head) {
+			gc_head->gc_prev = this;
+			this->gc_next = gc_head;
+		}
+		gc_head = this;
+		gc_alloc_count++;
+	}
+	virtual ~HeapObject() {
+		if (gc_prev) gc_prev->gc_next = gc_next;
+		if (gc_next) gc_next->gc_prev = gc_prev;
+		if (gc_head == this) gc_head = gc_next;
+	}
+	virtual void breakCycles() {}
 };
 struct StringObject : HeapObject {
 	string value;
@@ -3055,6 +3204,7 @@ struct ListObject : HeapObject {
 	ListObject() : HeapObject(ValueType::LIST) {}
 	ListObject(const std::vector<Value> &elems, bool locked = false)
 		 : HeapObject(ValueType::LIST, locked), elements(elems) {}
+	void breakCycles() override { elements.clear(); }
 };
 struct RangeObject : HeapObject {
 	double start, end, step;
@@ -3073,14 +3223,17 @@ struct RangeObject : HeapObject {
 struct SetObject : HeapObject {
 	std::unordered_set<Value, ValueHash, ValueEqual> elements;
 	SetObject() : HeapObject(ValueType::SET) {}
-	SetObject(const std::unordered_set<Value, ValueHash, ValueEqual> &e, bool locked = false)
+	SetObject(const std::unordered_set<Value, ValueHash, ValueEqual> &e,
+		bool locked = false)
 		 : HeapObject(ValueType::SET, locked), elements(e) {}
+	void breakCycles() override { elements.clear(); }
 };
 struct TupleObject : HeapObject {
 	std::vector<Value> elements;
 	TupleObject() : HeapObject(ValueType::TUPLE) {}
 	TupleObject(const std::vector<Value> &elems, bool locked = false)
 		 : HeapObject(ValueType::TUPLE, locked), elements(elems) {}
+	void breakCycles() override { elements.clear(); }
 };
 struct DictObject : HeapObject {
 	std::unordered_map<Value, Value, ValueHash, ValueEqual> items;
@@ -3088,11 +3241,13 @@ struct DictObject : HeapObject {
 	DictObject(const std::unordered_map<Value, Value, ValueHash, ValueEqual> &m,
 		bool locked = false)
 		 : HeapObject(ValueType::DICT, locked), items(m) {}
+	void breakCycles() override { items.clear(); }
 };
 struct PairedObject : HeapObject {
 	std::vector<std::pair<Value, Value>> pairs;
 	PairedObject(const std::vector<std::pair<Value, Value>> &p)
 		 : HeapObject(ValueType::PAIRED), pairs(p) {}
+	void breakCycles() override { pairs.clear(); }
 };
 struct NativeFunctionObject : HeapObject {
 	NativeFunc func;
@@ -3101,8 +3256,13 @@ struct NativeFunctionObject : HeapObject {
 };
 struct OverloadObject : HeapObject {
 	std::vector<Value> overloads;
+	std::unordered_map<std::size_t, Value> signatureCache;
 	OverloadObject(const Value &v) : HeapObject(ValueType::OVERLOAD) {
 		overloads.push_back(v);
+	}
+	void breakCycles() override {
+		overloads.clear();
+		signatureCache.clear();
 	}
 };
 struct FileObject : HeapObject {
@@ -3135,6 +3295,7 @@ struct VectorObject : HeapObject {
 	vector<Value> elements;
 	VectorObject(const vector<Value> &e)
 		 : HeapObject(ValueType::VECTOR), elements(e) {}
+	void breakCycles() override { elements.clear(); }
 };
 struct BigIntObject : HeapObject {
 	bool isNegative;
@@ -3251,20 +3412,68 @@ struct BigIntObject : HeapObject {
 			}
 		}
 	}
-	BigIntObject operator*(const BigIntObject &other) const {
-		size_t n = chunks.size(), m = other.chunks.size();
-		std::vector<uint32_t> res(n + m, 0);
-		for (size_t i = 0; i < n; i++) {
-			uint64_t carry = 0;
-			for (size_t j = 0; j < m; j++) {
-				uint64_t prod =
-					(uint64_t)chunks[i] * other.chunks[j] + res[i + j] + carry;
-				res[i + j] = (uint32_t)(prod & 0xFFFFFFFF);
-				carry = prod >> 32;
+	static std::vector<uint32_t> karatsubaMul(const std::vector<uint32_t>& A, const std::vector<uint32_t>& B) {
+		if (A.size() < 32 || B.size() < 32) {
+			size_t n = A.size(), m = B.size();
+			if (n == 0 || m == 0) return {0};
+			std::vector<uint32_t> res(n + m, 0);
+			for (size_t i = 0; i < n; i++) {
+				uint64_t carry = 0;
+				for (size_t j = 0; j < m; j++) {
+					uint64_t prod = (uint64_t)A[i] * B[j] + res[i + j] + carry;
+					res[i + j] = (uint32_t)(prod & 0xFFFFFFFF);
+					carry = prod >> 32;
+				}
+				res[i + m] += (uint32_t)carry;
 			}
-			res[i + m] += (uint32_t)carry;
+			while(res.size() > 1 && res.back() == 0) res.pop_back();
+			return res;
 		}
-		return BigIntObject(res, isNegative != other.isNegative);
+		
+		size_t m = std::max(A.size(), B.size());
+		size_t k = m / 2;
+		
+		std::vector<uint32_t> A_0(A.begin(), A.begin() + std::min(A.size(), k));
+		std::vector<uint32_t> A_1(A.begin() + std::min(A.size(), k), A.end());
+		if (A_1.empty()) A_1.push_back(0);
+		if (A_0.empty()) A_0.push_back(0);
+		
+		std::vector<uint32_t> B_0(B.begin(), B.begin() + std::min(B.size(), k));
+		std::vector<uint32_t> B_1(B.begin() + std::min(B.size(), k), B.end());
+		if (B_1.empty()) B_1.push_back(0);
+		if (B_0.empty()) B_0.push_back(0);
+		
+		std::vector<uint32_t> Z_2 = karatsubaMul(A_1, B_1);
+		std::vector<uint32_t> Z_0 = karatsubaMul(A_0, B_0);
+		
+		BigIntObject a0(A_0, false), a1(A_1, false);
+		BigIntObject b0(B_0, false), b1(B_1, false);
+		BigIntObject sumA = a0.absAdd(a1);
+		BigIntObject sumB = b0.absAdd(b1);
+		
+		std::vector<uint32_t> Z_1 = karatsubaMul(sumA.chunks, sumB.chunks);
+		
+		BigIntObject z1(Z_1, false), z2(Z_2, false), z0(Z_0, false);
+		z1 = z1.absSub(z2).absSub(z0);
+		
+		BigIntObject res(Z_0, false);
+		BigIntObject z1_shifted = z1;
+		if (!(z1_shifted.chunks.size() == 1 && z1_shifted.chunks[0] == 0)) {
+			z1_shifted.chunks.insert(z1_shifted.chunks.begin(), k, 0);
+			res = res.absAdd(z1_shifted);
+		}
+		
+		BigIntObject z2_shifted = z2;
+		if (!(z2_shifted.chunks.size() == 1 && z2_shifted.chunks[0] == 0)) {
+			z2_shifted.chunks.insert(z2_shifted.chunks.begin(), 2 * k, 0);
+			res = res.absAdd(z2_shifted);
+		}
+		
+		return res.chunks;
+	}
+
+	BigIntObject operator*(const BigIntObject &other) const {
+		return BigIntObject(karatsubaMul(chunks, other.chunks), isNegative != other.isNegative);
 	}
 	std::pair<BigIntObject, BigIntObject> divMod(const BigIntObject &other) const {
 		if (other.chunks.size() == 1 && other.chunks[0] == 0)
@@ -3325,6 +3534,81 @@ struct BigIntObject : HeapObject {
 			chunks.resize(chunkIdx + 1, 0);
 		chunks[chunkIdx] |= (1U << bitIdx);
 	}
+	BigIntObject operator&(const BigIntObject &other) const {
+		BigIntObject result(0);
+		size_t maxLen = std::max(chunks.size(), other.chunks.size());
+		result.chunks.resize(maxLen, 0);
+		for (size_t i = 0; i < maxLen; ++i) {
+			uint32_t a = (i < chunks.size()) ? chunks[i] : (isNegative ? 0xFFFFFFFF : 0);
+			uint32_t b = (i < other.chunks.size()) ? other.chunks[i] : (other.isNegative ? 0xFFFFFFFF : 0);
+			result.chunks[i] = a & b;
+		}
+		result.isNegative = isNegative & other.isNegative;
+		result.trim();
+		return result;
+	}
+	BigIntObject operator|(const BigIntObject &other) const {
+		BigIntObject result(0);
+		size_t maxLen = std::max(chunks.size(), other.chunks.size());
+		result.chunks.resize(maxLen, 0);
+		for (size_t i = 0; i < maxLen; ++i) {
+			uint32_t a = (i < chunks.size()) ? chunks[i] : (isNegative ? 0xFFFFFFFF : 0);
+			uint32_t b = (i < other.chunks.size()) ? other.chunks[i] : (other.isNegative ? 0xFFFFFFFF : 0);
+			result.chunks[i] = a | b;
+		}
+		result.isNegative = isNegative | other.isNegative;
+		result.trim();
+		return result;
+	}
+	BigIntObject operator^(const BigIntObject &other) const {
+		BigIntObject result(0);
+		size_t maxLen = std::max(chunks.size(), other.chunks.size());
+		result.chunks.resize(maxLen, 0);
+		for (size_t i = 0; i < maxLen; ++i) {
+			uint32_t a = (i < chunks.size()) ? chunks[i] : (isNegative ? 0xFFFFFFFF : 0);
+			uint32_t b = (i < other.chunks.size()) ? other.chunks[i] : (other.isNegative ? 0xFFFFFFFF : 0);
+			result.chunks[i] = a ^ b;
+		}
+		result.isNegative = isNegative ^ other.isNegative;
+		result.trim();
+		return result;
+	}
+	BigIntObject operator<<(long long shift) const {
+		if (shift < 0) return operator>>(-shift);
+		if (shift == 0 || chunks.empty()) return *this;
+		BigIntObject result(0);
+		size_t chunkShift = shift / 32;
+		size_t bitShift = shift % 32;
+		result.chunks.resize(chunks.size() + chunkShift + 1, 0);
+		uint32_t carry = 0;
+		for (size_t i = 0; i < chunks.size(); ++i) {
+			result.chunks[i + chunkShift] = (chunks[i] << bitShift) | carry;
+			carry = (bitShift == 0) ? 0 : (chunks[i] >> (32 - bitShift));
+		}
+		result.chunks[chunks.size() + chunkShift] = carry;
+		result.isNegative = isNegative;
+		result.trim();
+		return result;
+	}
+	BigIntObject operator>>(long long shift) const {
+		if (shift < 0) return operator<<(-shift);
+		if (shift == 0 || chunks.empty()) return *this;
+		BigIntObject result(0);
+		size_t chunkShift = shift / 32;
+		size_t bitShift = shift % 32;
+		if (chunkShift >= chunks.size()) {
+			return BigIntObject(isNegative ? -1 : 0);
+		}
+		result.chunks.resize(chunks.size() - chunkShift, 0);
+		uint32_t carry = isNegative ? (0xFFFFFFFF << (32 - bitShift)) : 0;
+		for (long long i = chunks.size() - 1; i >= (long long)chunkShift; --i) {
+			result.chunks[i - chunkShift] = (chunks[i] >> bitShift) | carry;
+			carry = (bitShift == 0) ? 0 : (chunks[i] << (32 - bitShift));
+		}
+		result.isNegative = isNegative;
+		result.trim();
+		return result;
+	}
 	static Value add(Value a, Value b) {
 		BigIntObject tempA(0), tempB(0);
 		BigIntObject *ba = (a.type == ValueType::BIGINT)
@@ -3374,6 +3658,34 @@ struct BigIntObject : HeapObject {
 									 ? static_cast<BigIntObject *>(b.ref.get())
 									 : &(tempB = BigIntObject(b.asInt()));
 		return Value::BigInt(std::make_shared<BigIntObject>(*ba % *bb));
+	}
+	static Value bit_and(const Value &a, const Value &b) {
+		BigIntObject tempA(0), tempB(0);
+		BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
+		BigIntObject *bb = (b.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(b.ref.get()) : &(tempB = BigIntObject(b.asInt()));
+		return Value::BigInt(std::make_shared<BigIntObject>(*ba & *bb));
+	}
+	static Value bit_or(const Value &a, const Value &b) {
+		BigIntObject tempA(0), tempB(0);
+		BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
+		BigIntObject *bb = (b.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(b.ref.get()) : &(tempB = BigIntObject(b.asInt()));
+		return Value::BigInt(std::make_shared<BigIntObject>(*ba | *bb));
+	}
+	static Value bit_xor(const Value &a, const Value &b) {
+		BigIntObject tempA(0), tempB(0);
+		BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
+		BigIntObject *bb = (b.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(b.ref.get()) : &(tempB = BigIntObject(b.asInt()));
+		return Value::BigInt(std::make_shared<BigIntObject>(*ba ^ *bb));
+	}
+	static Value bit_shl(const Value &a, const Value &b) {
+		BigIntObject tempA(0);
+		BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
+		return Value::BigInt(std::make_shared<BigIntObject>(*ba << b.asInt()));
+	}
+	static Value bit_shr(const Value &a, const Value &b) {
+		BigIntObject tempA(0);
+		BigIntObject *ba = (a.type == ValueType::BIGINT) ? static_cast<BigIntObject *>(a.ref.get()) : &(tempA = BigIntObject(a.asInt()));
+		return Value::BigInt(std::make_shared<BigIntObject>(*ba >> b.asInt()));
 	}
 	static Value pow(Value a, Value b) {
 		BigIntObject tempA(0), tempB(0);
@@ -3485,12 +3797,47 @@ struct ClassObject : HeapObject {
 		}
 	}
 	string toString() const { return "<class '" + name + "'>"; }
+	void breakCycles() override {
+		parents.clear();
+		mro.clear();
+		staticFields.clear();
+		methods.clear();
+	}
 };
 struct InstanceObject : HeapObject {
 	ClassObject *klass;
 	unordered_map<string, Value> fields;
 	InstanceObject(ClassObject *k) : HeapObject(ValueType::INSTANCE), klass(k) {}
+	void breakCycles() override { fields.clear(); }
 	string toString() const { return "<instance of '" + klass->name + "'>"; }
+};
+struct RefObject : HeapObject {
+	RefObject() : HeapObject(ValueType::REFERENCE) {}
+	virtual Value* get_ptr() = 0;
+};
+struct ListRefObject : RefObject {
+	std::shared_ptr<ListObject> list;
+	int index;
+	ListRefObject(std::shared_ptr<ListObject> l, int i)
+		 : list(l), index(i) {}
+	Value* get_ptr() override { return &list->elements[index]; }
+	void breakCycles() override { list.reset(); }
+};
+struct VarRefObject : RefObject {
+	std::shared_ptr<Env> env;
+	std::string name;
+	VarRefObject(std::shared_ptr<Env> e, const std::string &n)
+		 : env(e), name(n) {}
+	Value* get_ptr() override;
+	void breakCycles() override { env.reset(); }
+};
+struct PropRefObject : RefObject {
+	std::shared_ptr<InstanceObject> inst;
+	std::string name;
+	PropRefObject(std::shared_ptr<InstanceObject> i, const std::string &n)
+		 : inst(i), name(n) {}
+	Value* get_ptr() override { return &inst->fields[name]; }
+	void breakCycles() override { inst.reset(); }
 };
 struct SuperObject : HeapObject {
 	Value instance;
@@ -3536,6 +3883,39 @@ inline Value Value::BigInt(std::shared_ptr<BigIntObject> obj) {
 	Value v;
 	v.type = ValueType::BIGINT;
 	v.ref = obj;
+	return v;
+}
+inline Value Value::BigInt(const std::string& str) {
+	Value v;
+	v.type = ValueType::BIGINT;
+	std::vector<uint32_t> chunks;
+	bool isNegative = false;
+	size_t start = 0;
+	if (str.length() > 0 && str[0] == '-') {
+		isNegative = true;
+		start = 1;
+	} else if (str.length() > 0 && str[0] == '+') {
+		start = 1;
+	}
+	
+	// Parse base 10
+	chunks.push_back(0);
+	for (size_t i = start; i < str.length(); i++) {
+		if (str[i] < '0' || str[i] > '9') continue;
+		uint32_t digit = str[i] - '0';
+		
+		// Multiply chunks by 10 and add digit
+		uint64_t carry = digit;
+		for (size_t j = 0; j < chunks.size(); j++) {
+			uint64_t p = (uint64_t)chunks[j] * 10 + carry;
+			chunks[j] = (uint32_t)(p & 0xFFFFFFFF);
+			carry = p >> 32;
+		}
+		if (carry > 0) {
+			chunks.push_back((uint32_t)carry);
+		}
+	}
+	v.ref = std::make_shared<BigIntObject>(chunks, isNegative);
 	return v;
 }
 inline Value Value::Float(double v, bool locked, bool isConst) {
@@ -4130,27 +4510,34 @@ struct Env {
 		vars.clear();
 	}
 	Var &lookup(const string &n) {
-		if (vars.count(n))
-			return vars[n];
+		auto it = vars.find(n);
+		if (it != vars.end())
+			return it->second;
 		if (parent)
 			return parent->lookup(n);
 		static Var nullVar;
 		return nullVar;
 	}
-	bool existsLocal(const string &n) { return vars.count(n); }
+	bool existsLocal(const string &n) { return vars.find(n) != vars.end(); }
 	void set(const string &n, Value v, bool locked, bool isConstVar = false) {
 #ifdef VM_DEBUG_MODE
 		v.__DEBUGGING__NAME__ = n;
 #endif
-		if (vars.count(n)) {
-			Var &existing = vars[n];
+		auto it = vars.find(n);
+		if (it != vars.end()) {
+			Var &existing = it->second;
 			if (existing.isLocked && existing.value.type != v.type) {
 				throw RuntimeError(
 					"Type mismatch: variable '" + n + "' is type-locked.", 0, 0);
 			}
-			if (existing.isConst)
-				throw RuntimeError(
-					"Cannot reassign a constant variable '" + n + "'", 0, 0);
+
+			if (existing.isConst) {
+				if (existing.value.type == v.type && existing.value.ref == v.ref) {
+					return; // Already set to the exact same constant reference, safely skip!
+				}
+				throw RuntimeError("Cannot reassign a constant variable '" + n + "'", 0, 0);
+			}
+
 			existing.value = v;
 			v.isLocked = existing.isLocked;
 			v.isConst = existing.isConst;
@@ -4187,16 +4574,25 @@ struct Env {
 		return false;
 	}
 };
-static inline int divMod10(std::vector<uint32_t> &chunks) {
+
+inline Value* VarRefObject::get_ptr() {
+	return &env->lookup(name).value;
+}
+
+inline Value* Value::get_ptr_safe() const {
+	if (ref && ref->type == ValueType::REFERENCE) return static_cast<RefObject*>(ref.get())->get_ptr();
+	return ptr;
+}
+static inline uint32_t divMod1e9(std::vector<uint32_t> &chunks) {
 	uint64_t remainder = 0;
 	for (int i = chunks.size() - 1; i >= 0; i--) {
 		uint64_t combined = (remainder << 32) | chunks[i];
-		chunks[i] = (uint32_t)(combined / 10);
-		remainder = combined % 10;
+		chunks[i] = (uint32_t)(combined / 1000000000ULL);
+		remainder = combined % 1000000000ULL;
 	}
 	while (chunks.size() > 1 && chunks.back() == 0)
 		chunks.pop_back();
-	return (int)remainder;
+	return (uint32_t)remainder;
 }
 static inline std::string bigIntToString(BigIntObject *big) {
 	if (big->chunks.empty())
@@ -4206,15 +4602,40 @@ static inline std::string bigIntToString(BigIntObject *big) {
 	std::vector<uint32_t> temp = big->chunks;
 	std::string res = "";
 	while (temp.size() > 1 || temp[0] > 0) {
-		int digit = divMod10(temp);
-		res += std::to_string(digit);
+		uint32_t rem = divMod1e9(temp);
+		std::string part = std::to_string(rem);
+		if (temp.size() > 1 || temp[0] > 0) {
+			// Pad with zeros up to 9 digits
+			res += std::string(9 - part.length(), '0') + part;
+		} else {
+			res += part;
+		}
 	}
 	if (res.empty())
 		return "0";
+	std::string final_res = "";
 	if (big->isNegative)
-		res += "-";
-	std::reverse(res.begin(), res.end());
-	return res;
+		final_res += "-";
+	
+	// Reverse 9-digit chunks by reversing the whole string then reversing each chunk?
+	// Wait, we append chunks in reverse order (least significant first).
+	// So we should build a vector of strings or insert at front.
+	// Since string prepend is slow, let's collect chunks.
+	std::vector<std::string> parts;
+	temp = big->chunks;
+	while (temp.size() > 1 || temp[0] > 0) {
+		uint32_t rem = divMod1e9(temp);
+		std::string part = std::to_string(rem);
+		if (temp.size() > 1 || temp[0] > 0) {
+			part = std::string(9 - part.length(), '0') + part;
+		}
+		parts.push_back(part);
+	}
+	for (int i = parts.size() - 1; i >= 0; i--) {
+		final_res += parts[i];
+	}
+	if (final_res.empty()) return "0";
+	return final_res;
 }
 static inline std::string formatNumber(double val) {
 	std::string s = std::to_string(val);
@@ -4342,7 +4763,7 @@ static inline std::string valueToString(const Value &v, int line = 0, int col = 
 		return bigIntToString(big);
 	}
 	case ValueType::REFERENCE: {
-		return valueToString(*v.ptr);
+		return valueToString(*(v.get_ptr_safe()));
 	}
 	case ValueType::SUPER: {
 		auto *super = static_cast<SuperObject *>(v.ref.get());
@@ -4472,9 +4893,9 @@ static inline std::string PrintStackForDebug(const std::vector<Value> &stack) {
 	}
 	return result + "] <- end";
 }
-static inline bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver);
+static inline bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver);
 struct CacheKeyCmp {
-	bool operator()(const vector<Value> &a, const vector<Value> &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver) const {
+	bool operator()(const vector<Value> &a, const vector<Value> &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver) const {
 		return std::lexicographical_compare(
 			a.begin(), a.end(), b.begin(), b.end(),
 			[&](const Value &x, const Value &y) { return lessValue(x, y, globals, methodResolver, importResolver); });
@@ -4497,6 +4918,7 @@ struct FunctionObject : HeapObject {
 	bool isCached;
 	ClassObject *owner = nullptr;
 	std::unordered_map<vector<Value>, Value, VectorHash, VectorEqual> cache;
+	std::unordered_map<Value, Value, ValueHash, ValueEqual> singleArgCache;
 	FunctionObject(const vector<ParamSpec> &p, ValueType rt, vector<Expr *> dra,
 		bool rc, const vector<Stmt *> &b, std::shared_ptr<Env> c,
 		bool cached, Chunk *ch = nullptr)
@@ -4509,9 +4931,11 @@ struct FunctionObject : HeapObject {
 			closure(c),
 			isCached(cached),
 			chunk(ch) {}
-	~FunctionObject() {
-		if (chunk)
-			delete chunk;
+	~FunctionObject();
+	void breakCycles() override {
+		closure = nullptr;
+		cache.clear();
+		singleArgCache.clear();
 	}
 };
 static void setAdd(std::unordered_set<Value, ValueHash, ValueEqual> &elems, const Value &v) {
@@ -4680,7 +5104,7 @@ void printValue(const Value &v, std::unordered_set<const HeapObject *> &seen, bo
 		break;
 	}
 	case ValueType::REFERENCE: {
-		std::cout << valueToString(*v.ptr);
+		std::cout << valueToString(*(v.get_ptr_safe()));
 		break;
 	}
 
@@ -5243,6 +5667,14 @@ enum class OpCode : uint8_t {
 	OP_NEGATE,
 	OP_INCREMENT,
 	OP_DECREMENT,
+	OP_BITWISE_AND,
+	OP_BITWISE_OR,
+	OP_BITWISE_XOR,
+	OP_BITWISE_NOT,
+	OP_BITWISE_SHL,
+	OP_BITWISE_SHR,
+	OP_PRE_INCREMENT,
+	OP_PRE_DECREMENT,
 	// Containers
 	OP_BUILD_LIST,
 	OP_BUILD_TUPLE,
@@ -5427,6 +5859,22 @@ static inline std::string OpCodeToString(OpCode num) {
 		return "OP_INCREMENT";
 	case OpCode::OP_DECREMENT:
 		return "OP_DECREMENT";
+	case OpCode::OP_BITWISE_AND:
+		return "OP_BITWISE_AND";
+	case OpCode::OP_BITWISE_OR:
+		return "OP_BITWISE_OR";
+	case OpCode::OP_BITWISE_XOR:
+		return "OP_BITWISE_XOR";
+	case OpCode::OP_BITWISE_NOT:
+		return "OP_BITWISE_NOT";
+	case OpCode::OP_BITWISE_SHL:
+		return "OP_BITWISE_SHL";
+	case OpCode::OP_BITWISE_SHR:
+		return "OP_BITWISE_SHR";
+	case OpCode::OP_PRE_INCREMENT:
+		return "OP_PRE_INCREMENT";
+	case OpCode::OP_PRE_DECREMENT:
+		return "OP_PRE_DECREMENT";
 	case OpCode::OP_BUILD_LIST:
 		return "OP_BUILD_LIST";
 	case OpCode::OP_BUILD_TUPLE:
@@ -5552,6 +6000,10 @@ struct Chunk {
 		return static_cast<int>(constants.size() - 1);
 	}
 };
+
+inline FunctionObject::~FunctionObject() {
+	if (chunk) delete chunk;
+}
 struct LoopContext {
 	int startAddress;
 	int stepAddress;
@@ -5580,6 +6032,7 @@ struct CallFrame {
 	uint8_t *ip;
 	int basePointer;
 	vector<Value> cacheKey;
+	Value singleCacheKey = Value::NoType();
 	vector<ExceptionHandler> handlerStack;
 };
 inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b);
@@ -8358,8 +8811,20 @@ struct ByteCodeCompiler {
 		}
 		case ExprType::NUMBER: {
 			auto n = static_cast<NumberExpr *>(e);
-			Value val = n->isFloat ? Value::Float(n->val)
-										  : Value::Int((long long)n->val);
+			Value val;
+			if (n->isFloat) {
+				val = Value::Float(n->val);
+			} else {
+				if (n->raw.length() >= 19) {
+					val = Value::BigInt(n->raw);
+				} else {
+					try {
+						val = Value::Int(std::stoll(n->raw));
+					} catch (...) {
+						val = Value::BigInt(n->raw);
+					}
+				}
+			}
 			emitConstant(val, n->line, n->col);
 			break;
 		}
@@ -8587,6 +9052,31 @@ struct ByteCodeCompiler {
 			chunk->write(flags, r->line, r->col);
 			break;
 		}
+		case ExprType::INC_DEC: {
+			auto incdec = static_cast<IncDecExpr *>(e);
+			if (auto v = dynamic_cast<VarExpr*>(incdec->expr)) {
+				int arg = resolveLocal(v->name);
+				if (arg != -1) {
+					emitByte(OpCode::OP_GET_LOCAL, e->line, e->col);
+					chunk->write((uint8_t)arg, e->line, e->col);
+				} else {
+					emitIdentifier(OpCode::OP_GET_VAR, v->name, e->line, e->col);
+				}
+				if (!incdec->isPrefix) emitByte(OpCode::OP_DUP, e->line, e->col);
+				emitConstant(Value::Int(1), e->line, e->col);
+				emitByte(incdec->isIncrement ? OpCode::OP_ADD : OpCode::OP_SUB, e->line, e->col);
+				if (arg != -1) {
+					emitByte(OpCode::OP_SET_LOCAL, e->line, e->col);
+					chunk->write((uint8_t)arg, e->line, e->col);
+				} else {
+					emitIdentifier(OpCode::OP_SET_VAR, v->name, e->line, e->col);
+				}
+				if (!incdec->isPrefix) emitByte(OpCode::OP_POP, e->line, e->col);
+			} else {
+				throw SyntaxError("Increment/Decrement only supported on simple variables", e->line, e->col);
+			}
+			break;
+		}
 		case ExprType::VECTOR: {
 			auto ve = static_cast<VectorExpr *>(e);
 			for (auto *el : ve->elements)
@@ -8618,6 +9108,11 @@ struct ByteCodeCompiler {
 			emitByte(OpCode::OP_NOT, b->line, b->col);
 			return; // Exit early!
 		}
+		if (b->op == TokenType::BITWISE_NOT) {
+			compile(b->right);
+			emitByte(OpCode::OP_BITWISE_NOT, b->line, b->col);
+			return;
+		}
 		// constant folding (experimental):
 		Value foldedResult;
 		if (tryExtractConstant(b, foldedResult)) {
@@ -8647,6 +9142,21 @@ struct ByteCodeCompiler {
 			break;
 		case TokenType::POW:
 			emitByte(OpCode::OP_POW, b->line, b->col);
+			break;
+		case TokenType::BITWISE_AND:
+			emitByte(OpCode::OP_BITWISE_AND, b->line, b->col);
+			break;
+		case TokenType::BITWISE_OR:
+			emitByte(OpCode::OP_BITWISE_OR, b->line, b->col);
+			break;
+		case TokenType::BITWISE_XOR:
+			emitByte(OpCode::OP_BITWISE_XOR, b->line, b->col);
+			break;
+		case TokenType::BITWISE_SHL:
+			emitByte(OpCode::OP_BITWISE_SHL, b->line, b->col);
+			break;
+		case TokenType::BITWISE_SHR:
+			emitByte(OpCode::OP_BITWISE_SHR, b->line, b->col);
 			break;
 			// Logic
 		case TokenType::GT:
@@ -9009,10 +9519,19 @@ struct ByteCodeCompiler {
 			emitByte(OpCode::OP_IMPORT, imp->line, 0);
 			chunk->write((uint8_t)imp->symbols.size(), imp->line, 0);
 			if (imp->symbols.empty()) {
+				auto getModuleName = [](const std::string& path) {
+					size_t slash = path.find_last_of("/\\");
+					std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+					if (name.length() > 4 && name.substr(name.length() - 4) == ".ymm") {
+						name = name.substr(0, name.length() - 4);
+					}
+					return name;
+				};
+				std::string modName = getModuleName(imp->libName);
 				if (scopeDepth > 0) {
-					addLocal(imp->libName);
+					addLocal(modName);
 				} else {
-					emitIdentifier(OpCode::OP_DEFINE_VAR, imp->libName, imp->line, 0);
+					emitIdentifier(OpCode::OP_DEFINE_VAR, modName, imp->line, 0);
 					chunk->write(0, imp->line, 0);
 				}
 			} else {
@@ -9147,6 +9666,24 @@ struct ByteCodeCompiler {
 					case TokenType::POW_EQ:
 						emitByte(OpCode::OP_IPOW, as->line, as->col);
 						break;
+					case TokenType::BITWISE_AND_EQ:
+						emitByte(OpCode::OP_BITWISE_AND, as->line, as->col);
+						break;
+					case TokenType::BITWISE_OR_EQ:
+						emitByte(OpCode::OP_BITWISE_OR, as->line, as->col);
+						break;
+					case TokenType::BITWISE_XOR_EQ:
+						emitByte(OpCode::OP_BITWISE_XOR, as->line, as->col);
+						break;
+					case TokenType::BITWISE_NOT_EQ:
+						emitByte(OpCode::OP_BITWISE_NOT, as->line, as->col);
+						break;
+					case TokenType::BITWISE_SHL_EQ:
+						emitByte(OpCode::OP_BITWISE_SHL, as->line, as->col);
+						break;
+					case TokenType::BITWISE_SHR_EQ:
+						emitByte(OpCode::OP_BITWISE_SHR, as->line, as->col);
+						break;
 
 					default:
 						throw SyntaxError(
@@ -9188,6 +9725,24 @@ struct ByteCodeCompiler {
 						break;
 					case TokenType::POW_EQ:
 						emitByte(OpCode::OP_IPOW, as->line, as->col);
+						break;
+					case TokenType::BITWISE_AND_EQ:
+						emitByte(OpCode::OP_BITWISE_AND, as->line, as->col);
+						break;
+					case TokenType::BITWISE_OR_EQ:
+						emitByte(OpCode::OP_BITWISE_OR, as->line, as->col);
+						break;
+					case TokenType::BITWISE_XOR_EQ:
+						emitByte(OpCode::OP_BITWISE_XOR, as->line, as->col);
+						break;
+					case TokenType::BITWISE_NOT_EQ:
+						emitByte(OpCode::OP_BITWISE_NOT, as->line, as->col);
+						break;
+					case TokenType::BITWISE_SHL_EQ:
+						emitByte(OpCode::OP_BITWISE_SHL, as->line, as->col);
+						break;
+					case TokenType::BITWISE_SHR_EQ:
+						emitByte(OpCode::OP_BITWISE_SHR, as->line, as->col);
 						break;
 					default:
 						throw SyntaxError("Unknown augmented assignment",
@@ -9264,6 +9819,24 @@ struct ByteCodeCompiler {
 					break;
 				case TokenType::MOD_EQ:
 					emitByte(OpCode::OP_IMOD, as->line, as->col);
+					break;
+				case TokenType::BITWISE_AND_EQ:
+					emitByte(OpCode::OP_BITWISE_AND, as->line, as->col);
+					break;
+				case TokenType::BITWISE_OR_EQ:
+					emitByte(OpCode::OP_BITWISE_OR, as->line, as->col);
+					break;
+				case TokenType::BITWISE_XOR_EQ:
+					emitByte(OpCode::OP_BITWISE_XOR, as->line, as->col);
+					break;
+				case TokenType::BITWISE_NOT_EQ:
+					emitByte(OpCode::OP_BITWISE_NOT, as->line, as->col);
+					break;
+				case TokenType::BITWISE_SHL_EQ:
+					emitByte(OpCode::OP_BITWISE_SHL, as->line, as->col);
+					break;
+				case TokenType::BITWISE_SHR_EQ:
+					emitByte(OpCode::OP_BITWISE_SHR, as->line, as->col);
 					break;
 				}
 			}
@@ -9524,7 +10097,7 @@ struct ByteCodeCompiler {
 			beginScope();
 			auto w = static_cast<WhileStmt *>(s);
 			int startAddr = (int)chunk->code.size();
-			LoopContext loop = {startAddr, startAddr, {}, {}, false, locals.size(), -1};
+			LoopContext loop = {startAddr, startAddr, {}, {}, false, (int)locals.size(), -1};
 			loopStack.push_back(loop);
 			bool optimized = false;
 			int exitJump = -1;
@@ -9573,7 +10146,7 @@ struct ByteCodeCompiler {
 			auto dw = static_cast<DoWhileStmt *>(s);
 			int startAddr = (int)chunk->code.size();
 			beginScope();
-			LoopContext loop = {startAddr, -1, {}, {}, false, locals.size(), -1};
+			LoopContext loop = {startAddr, -1, {}, {}, false, (int)locals.size(), -1};
 			loopStack.push_back(loop);
 			beginScope();
 			for (auto stmt : dw->body)
@@ -9607,7 +10180,7 @@ struct ByteCodeCompiler {
 				exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, f->line, f->col);
 				emitByte(OpCode::OP_POP, f->line, f->col);
 			}
-			LoopContext loop = {condAddr, -1, {}, {}, false, locals.size(), -1};
+			LoopContext loop = {condAddr, -1, {}, {}, false, (int)locals.size(), -1};
 			loopStack.push_back(loop);
 			beginScope();
 			for (auto stmt : f->body)
@@ -9872,6 +10445,7 @@ struct ByteCodeCompiler {
 #ifdef USE_COMPUTED_GOTOS
 #define DISPATCH()                                                      \
 	do {                                                                 \
+		if (gc_alloc_count > 50000) { gc_collect(); gc_alloc_count = 0; } \
 		RUN_DEBUGGER();                                                   \
 		currentChunk = frame->function ? frame->function->chunk : &chunk; \
 		instruction = static_cast<OpCode>(*ip++);                         \
@@ -9885,14 +10459,14 @@ struct ByteCodeCompiler {
 #endif
 // Helper: Attempts to synchronously execute a native dunder method.
 // Returns a pair: <bool found, Value result>
-static inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver);
+static inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver);
 struct VM {
 	std::vector<Value> stack;
 	std::shared_ptr<Env> globals;
 	std::function<Value(MethodCallExpr *)> methodResolver;
 	std::vector<CallFrame> frames;
 	std::unordered_set<std::string> importStack;
-	std::function<void(std::string, std::vector<std::string>)> importResolver;
+	std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver;
 	CallFrame *frame;
 	uint8_t *ip;
 	bool printOutput;
@@ -9902,6 +10476,127 @@ struct VM {
 		frame = nullptr;
 		ip = nullptr;
 		printOutput = false;
+	}
+	void markObject(HeapObject *obj) {
+		if (!obj || obj->gc_marked) return;
+		obj->gc_marked = true;
+		switch (obj->type) {
+			case ValueType::LIST: {
+				for (auto &v : static_cast<ListObject*>(obj)->elements) markValue(v);
+				break;
+			}
+			case ValueType::TUPLE: {
+				for (auto &v : static_cast<TupleObject*>(obj)->elements) markValue(v);
+				break;
+			}
+			case ValueType::SET: {
+				for (auto &v : static_cast<SetObject*>(obj)->elements) markValue(const_cast<Value&>(v));
+				break;
+			}
+			case ValueType::DICT: {
+				for (auto &kv : static_cast<DictObject*>(obj)->items) {
+					markValue(const_cast<Value&>(kv.first));
+					markValue(kv.second);
+				}
+				break;
+			}
+			case ValueType::PAIRED: {
+				for (auto &kv : static_cast<PairedObject*>(obj)->pairs) {
+					markValue(kv.first);
+					markValue(kv.second);
+				}
+				break;
+			}
+			case ValueType::VECTOR: {
+				for (auto &v : static_cast<VectorObject*>(obj)->elements) markValue(v);
+				break;
+			}
+			case ValueType::FUNCTION: {
+				auto *f = static_cast<FunctionObject*>(obj);
+				if (f->closure) markEnv(f->closure.get());
+				for (auto &kv : f->cache) {
+					for (auto &v : kv.first) markValue(const_cast<Value&>(v));
+					markValue(const_cast<Value&>(kv.second));
+				}
+				for (auto &kv : f->singleArgCache) {
+					markValue(const_cast<Value&>(kv.first));
+					markValue(kv.second);
+				}
+				break;
+			}
+			case ValueType::CLASS: {
+				auto *c = static_cast<ClassObject*>(obj);
+				for (auto &v : c->parents) markValue(v);
+				for (auto &kv : c->staticFields) markValue(kv.second);
+				for (auto &kv : c->methods) markValue(kv.second.func);
+				break;
+			}
+			case ValueType::INSTANCE: {
+				auto *inst = static_cast<InstanceObject*>(obj);
+				if (inst->klass) markObject(inst->klass);
+				for (auto &kv : inst->fields) markValue(kv.second);
+				break;
+			}
+			case ValueType::SUPER: {
+				auto *s = static_cast<SuperObject*>(obj);
+				markValue(s->instance);
+				if (s->startClass) markObject(s->startClass);
+				break;
+			}
+			case ValueType::OVERLOAD: {
+				auto *o = static_cast<OverloadObject*>(obj);
+				for (auto &v : o->overloads) markValue(v);
+				for (auto &kv : o->signatureCache) markValue(kv.second);
+				break;
+			}
+			case ValueType::REFERENCE: {
+				if (auto *lr = dynamic_cast<ListRefObject*>(obj)) {
+					if (lr->list) markObject(lr->list.get());
+				} else if (auto *pr = dynamic_cast<PropRefObject*>(obj)) {
+					if (pr->inst) markObject(pr->inst.get());
+				} else if (auto *vr = dynamic_cast<VarRefObject*>(obj)) {
+					if (vr->env) markEnv(vr->env.get());
+				}
+				break;
+			}
+			default: break;
+		}
+	}
+	void markValue(Value &v, int depth = 0) {
+		if (v.ref) markObject(v.ref.get());
+		if (v.type == ValueType::REFERENCE && depth < 100) {
+			Value* p = v.get_ptr_safe();
+			if (p && p != &v) markValue(*p, depth + 1);
+		}
+	}
+	void markEnv(Env *env) {
+		if (!env) return;
+		for (auto &kv : env->vars) {
+			markValue(kv.second.value);
+			if (kv.second.alias) markValue(*kv.second.alias);
+		}
+		if (env->parent) markEnv(env->parent.get());
+	}
+	void gc_collect() {
+		HeapObject* curr = gc_head;
+		while (curr) {
+			curr->gc_marked = false;
+			curr = curr->gc_next;
+		}
+		for (auto &v : stack) markValue(v);
+		if (globals) markEnv(globals.get());
+		for (auto &f : frames) {
+			if (f.function) markObject(f.function);
+			for (auto &v : f.cacheKey) markValue(v);
+			markValue(f.singleCacheKey);
+		}
+		curr = gc_head;
+		while (curr) {
+			if (!curr->gc_marked) {
+				curr->breakCycles();
+			}
+			curr = curr->gc_next;
+		}
 	}
 	void run(Chunk &chunk) {
 		CallFrame mainFrame;
@@ -9943,6 +10638,9 @@ struct VM {
 			&&TARGET_OP_STRICT_EQ, &&TARGET_OP_IS_IN, &&TARGET_OP_IS_NOT_IN,
 			&&TARGET_OP_NXOR, &&TARGET_OP_NAND, &&TARGET_OP_NOR,
 			&&TARGET_OP_NEGATE, &&TARGET_OP_INCREMENT, &&TARGET_OP_DECREMENT,
+			&&TARGET_OP_BITWISE_AND, &&TARGET_OP_BITWISE_OR, &&TARGET_OP_BITWISE_XOR,
+			&&TARGET_OP_BITWISE_NOT, &&TARGET_OP_BITWISE_SHL, &&TARGET_OP_BITWISE_SHR,
+			&&TARGET_OP_PRE_INCREMENT, &&TARGET_OP_PRE_DECREMENT,
 
 			// Containers
 			&&TARGET_OP_BUILD_LIST, &&TARGET_OP_BUILD_TUPLE,
@@ -10075,6 +10773,7 @@ struct VM {
 				DISPATCH();
 #else
 			loop_start:
+				if (gc_alloc_count > 50000) { gc_collect(); gc_alloc_count = 0; }
 				currentChunk = frame->function ? frame->function->chunk : &chunk;
 				RUN_DEBUGGER();
 				instruction = static_cast<OpCode>(*ip++);
@@ -10299,7 +10998,7 @@ struct VM {
 							} else {
 								std::shared_ptr<HeapObject> lifeline = obj.ref;
 								if (obj.type == ValueType::REFERENCE) {
-									if (obj.ptr == nullptr) {
+									if (obj.get_ptr_safe() == nullptr) {
 										throw RuntimeError("Null pointer dereference.", line, col);
 									}
 									obj = *(obj.ptr);
@@ -10353,9 +11052,17 @@ struct VM {
 																		"' has no attribute '" + name +
 																		"'",
 											line, col);
+								} else if (obj.type == ValueType::DICT) {
+									auto *dictObj = static_cast<DictObject *>(obj.ref.get());
+									Value key = Value::String(name);
+									if (dictObj->items.count(key)) {
+										stack.push_back(dictObj->items[key]);
+									} else {
+										throw AttributeError("Dictionary has no attribute '" + name + "'", line, col);
+									}
 								} else
 									throw AttributeError(
-										"Only instances and classes have properties", line,
+										"Only instances, classes, and modules (dicts) have properties", line,
 										col);
 							}
 						}
@@ -10368,7 +11075,7 @@ struct VM {
 							Value obj = pop();
 							std::shared_ptr<HeapObject> lifeline = obj.ref;
 							if (obj.type == ValueType::REFERENCE) {
-								if (obj.ptr == nullptr) {
+								if (obj.get_ptr_safe() == nullptr) {
 									throw RuntimeError("Null pointer dereference.", line, col);
 								}
 								obj = *(obj.ptr);
@@ -10381,8 +11088,7 @@ struct VM {
 								if (instance->fields.find(name) == instance->fields.end()) {
 									instance->fields[name] = Value::None();
 								}
-								Value *ptr = &instance->fields[name];
-								stack.push_back(Value::Reference(ptr, obj.ref));
+								stack.push_back(Value::FromExisting(std::make_shared<PropRefObject>(std::static_pointer_cast<InstanceObject>(obj.ref), name), ValueType::REFERENCE));
 							} else if (obj.type == ValueType::CLASS) {
 								auto *cls = static_cast<ClassObject *>(obj.ref.get());
 								Value *ptr = &cls->staticFields[name];
@@ -10403,7 +11109,7 @@ struct VM {
 							Value obj = pop();
 							std::shared_ptr<HeapObject> lifeline = obj.ref;
 							if (obj.type == ValueType::REFERENCE) {
-								if (obj.ptr == nullptr) {
+								if (obj.get_ptr_safe() == nullptr) {
 									throw RuntimeError("Null pointer dereference.", line, col);
 								}
 								obj = *(obj.ptr);
@@ -10419,6 +11125,10 @@ struct VM {
 								auto *cls = static_cast<ClassObject *>(obj.ref.get());
 								cls->staticFields[name] = val;
 								cls->fieldAccess[name] = access;
+							} else if (obj.type == ValueType::DICT) {
+								auto *dictObj = static_cast<DictObject *>(obj.ref.get());
+								Value key = Value::String(name);
+								dictObj->items[key] = val;
 							} else
 								throw AttributeError("Cannot set property on non-object",
 									line, col);
@@ -10471,9 +11181,8 @@ struct VM {
 							uint8_t argCount = *ip++;
 							Value callee = pop();
 							if (callee.type == ValueType::NATIVE_FUNCTION) {
-								vector<Value> args;
-								for (int i = 0; i < argCount; i++)
-									args.insert(args.begin(), pop());
+								vector<Value> args(stack.end() - argCount, stack.end());
+								stack.erase(stack.end() - argCount, stack.end());
 								auto native =
 									static_cast<NativeFunctionObject *>(callee.ref.get());
 								Value result = native->func(args, line, 0);
@@ -10551,15 +11260,22 @@ struct VM {
 									throw ImportError("Module file not found: " + libName, line, col);
 								std::error_code ec;
 								std::string absPath = fs::absolute(p, ec).string();
-								if (importStack.count(absPath))
-									throw CircularImportError("Circular import detected: " + libName, line, col);
-								std::ifstream file(absPath);
-								if (!file)
-									throw FileNotFoundError("Unable to read module: " + libName, line, col);
-								std::stringstream buffer;
-								buffer << file.rdbuf();
-								std::string source = buffer.str();
-								importStack.insert(absPath);
+								
+								// Check if already loaded in globals
+								// We can check if a special dictionary or variable exists
+								// Since this is VM::run, we need to know if the module was loaded
+								if (globals->exists(absPath)) {
+									moduleResult = globals->get(absPath);
+								} else {
+									if (importStack.count(absPath))
+										throw CircularImportError("Circular import detected: " + libName, line, col);
+									std::ifstream file(absPath);
+									if (!file)
+										throw FileNotFoundError("Unable to read module: " + libName, line, col);
+									std::stringstream buffer;
+									buffer << file.rdbuf();
+									std::string source = buffer.str();
+									importStack.insert(absPath);
 								try {
 									auto tokens = tokenize(source);
 									Parser parser(tokens);
@@ -10581,7 +11297,7 @@ struct VM {
 										if (key == "None")
 											continue;
 										exportDict->items[Value::String(key)] = var.value;
-										if (count == 0 || isStar) {
+										if (isStar) {
 											if (!globals->exists(key)) {
 												globals->set(key, var.value, var.isLocked,
 													var.isConst);
@@ -10589,14 +11305,17 @@ struct VM {
 										}
 									}
 									moduleResult = Value::Dict(exportDict->items);
+									// Cache the module result using the absolute path
+									globals->set(absPath, moduleResult, false, false);
 								} catch (...) {
 									importStack.erase(absPath);
 									throw;
 								}
 								importStack.erase(absPath);
-							} else {
+							}
+						} else {
 								if (this->importResolver) {
-									this->importResolver(libName, symbols);
+									this->importResolver(libName, symbols, globals);
 									if (count == 0) {
 										if (globals->exists(libName))
 											moduleResult = globals->get(libName);
@@ -10743,9 +11462,9 @@ struct VM {
 					OP(OP_GET_LOCAL) : {
 						{
 							uint8_t slot = *ip++;
-							Value val = stack[frame->basePointer + slot];
+							const Value& val = stack[frame->basePointer + slot];
 							if (val.type == ValueType::REFERENCE)
-								stack.push_back(*val.ptr);
+								stack.push_back(*(val.get_ptr_safe()));
 							else
 								stack.push_back(val);
 						}
@@ -10821,7 +11540,7 @@ struct VM {
 							Var &v = globals->lookup(name);
 							Value *ptr = v.alias ? v.alias : &v.value;
 							if (!invokeUnaryDunder(*ptr, "__ref__", line, col)) {
-								stack.push_back(Value::Reference(ptr, nullptr));
+								stack.push_back(Value::FromExisting(std::make_shared<VarRefObject>(globals, name), ValueType::REFERENCE));
 							}
 						}
 						DISPATCH();
@@ -10835,15 +11554,15 @@ struct VM {
 							if (base.type == ValueType::LIST) {
 								auto *list = static_cast<ListObject *>(base.ref.get());
 								long long idx = index.asInt();
-								ptr = &list->elements[idx];
+								stack.push_back(Value::FromExisting(std::make_shared<ListRefObject>(std::static_pointer_cast<ListObject>(base.ref), idx), ValueType::REFERENCE));
 							} else if (base.type == ValueType::VECTOR) {
 								auto *vec = static_cast<VectorObject *>(base.ref.get());
 								long long idx = index.asInt();
 								ptr = &vec->elements[idx];
-							} else
-								throw OwnershipError("Cannot take reference of this type",
-									line, col);
-							stack.push_back(Value::Reference(ptr, owner));
+								stack.push_back(Value::Reference(ptr, owner));
+							} else {
+								throw OwnershipError("Cannot take reference of this type", line, col);
+							}
 						}
 						DISPATCH();
 					}
@@ -11091,9 +11810,9 @@ struct VM {
 									overflow = true;
 								} else {
 									while (!tempChunks.empty() && !(tempChunks.size() == 1 && tempChunks[0] == 0)) {
-										int digit = divMod10(tempChunks);
-										result += (floatBase * digit * powerOf10);
-										powerOf10 *= 10.0;
+										uint32_t rem = divMod1e9(tempChunks);
+										result += (floatBase * rem * powerOf10);
+										powerOf10 *= 1e9;
 										if (std::isinf(result) || std::isinf(powerOf10)) {
 											overflow = true;
 											break;
@@ -11249,6 +11968,66 @@ struct VM {
 					}
 						DISPATCH();
 					}
+					OP(OP_BITWISE_AND) : {
+						Value b = pop();
+						Value a = pop();
+						if (!invokeBinaryDunder(a, b, "__bit_and__", "__r_bit_and__", line, col)) {
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_AND, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
+							}
+						}
+						DISPATCH();
+					}
+					OP(OP_BITWISE_OR) : {
+						Value b = pop();
+						Value a = pop();
+						if (!invokeBinaryDunder(a, b, "__bit_or__", "__r_bit_or__", line, col)) {
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_OR, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
+							}
+						}
+						DISPATCH();
+					}
+					OP(OP_BITWISE_XOR) : {
+						Value b = pop();
+						Value a = pop();
+						if (!invokeBinaryDunder(a, b, "__bit_xor__", "__r_bit_xor__", line, col)) {
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_XOR, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
+							}
+						}
+						DISPATCH();
+					}
+					OP(OP_BITWISE_SHL) : {
+						Value b = pop();
+						Value a = pop();
+						if (!invokeBinaryDunder(a, b, "__bit_shl__", "__r_bit_shl__", line, col)) {
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_SHL, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
+							}
+						}
+						DISPATCH();
+					}
+					OP(OP_BITWISE_SHR) : {
+						Value b = pop();
+						Value a = pop();
+						if (!invokeBinaryDunder(a, b, "__bit_shr__", "__r_bit_shr__", line, col)) {
+							try {
+								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_SHR, a, b));
+							} catch (const std::runtime_error &e) {
+								throw ValueError(e.what(), line, col);
+							}
+						}
+						DISPATCH();
+					}
 					// --- Comparisons ---
 					OP(OP_GT) : {
 						{
@@ -11338,8 +12117,8 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							const Value &valA = (a.type == ValueType::REFERENCE && a.ptr) ? *a.ptr : a;
-							const Value &valB = (b.type == ValueType::REFERENCE && b.ptr) ? *b.ptr : b;
+							const Value &valA = (a.type == ValueType::REFERENCE && a.get_ptr_safe()) ? *(a.get_ptr_safe()) : a;
+							const Value &valB = (b.type == ValueType::REFERENCE && b.get_ptr_safe()) ? *(b.get_ptr_safe()) : b;
 							bool same = false;
 							if (valA.type == valB.type) {
 								if (valA.ref != nullptr || valB.ref != nullptr) {
@@ -11356,8 +12135,8 @@ struct VM {
 						{
 							Value b = pop();
 							Value a = pop();
-							const Value &valA = (a.type == ValueType::REFERENCE && a.ptr) ? *a.ptr : a;
-							const Value &valB = (b.type == ValueType::REFERENCE && b.ptr) ? *b.ptr : b;
+							const Value &valA = (a.type == ValueType::REFERENCE && a.get_ptr_safe()) ? *(a.get_ptr_safe()) : a;
+							const Value &valB = (b.type == ValueType::REFERENCE && b.get_ptr_safe()) ? *(b.get_ptr_safe()) : b;
 							bool same = false;
 							if (valA.type == valB.type) {
 								if (valA.ref != nullptr || valB.ref != nullptr) {
@@ -11406,6 +12185,19 @@ struct VM {
 						{
 							Value v = pop();
 							stack.push_back(Value::Bool(!v.isTruthy()));
+						}
+						DISPATCH();
+					}
+					OP(OP_BITWISE_NOT) : {
+						{
+							Value v = pop();
+							if (v.type == ValueType::INT) {
+								stack.push_back(Value::Int(~v.iVal));
+							} else if (v.type == ValueType::BIGINT) {
+								throw std::runtime_error("Bitwise NOT on BigInt is not supported");
+							} else {
+								throw TypeError("Bitwise NOT requires an integer", line, col);
+							}
 						}
 						DISPATCH();
 					}
@@ -12127,9 +12919,9 @@ struct VM {
 								return result;
 							};
 							while (base.type == ValueType::REFERENCE) {
-								if (!base.ptr)
+								if (!base.get_ptr_safe())
 									throw RuntimeError("Dead-end reference", line, col);
-								base = *base.ptr;
+								base = *(base.get_ptr_safe());
 							}
 							if (!invokeBinaryDunder(base, index, "__at__", "", line, col)) {
 								switch (base.type) {
@@ -12913,7 +13705,7 @@ struct VM {
 					OP(OP_DELETE) : {
 						{
 							Value refVal = pop();
-							if (refVal.type != ValueType::REFERENCE || !refVal.ptr)
+							if (refVal.type != ValueType::REFERENCE || !refVal.get_ptr_safe())
 								throw RuntimeError("Cannot delete a non-reference value",
 									line, col);
 							Value actualVal = *(refVal.ptr);
@@ -13079,8 +13871,13 @@ struct VM {
 									}
 									if (func->returnsConst)
 										result.isConst = true;
-									if (func->isCached)
-										func->cache[frame->cacheKey] = result;
+									if (func->isCached) {
+										if (frame->singleCacheKey.type != ValueType::NOTYPE) {
+											func->singleArgCache[frame->singleCacheKey] = result;
+										} else {
+											func->cache[frame->cacheKey] = result;
+										}
+									}
 								}
 								int returnSlot = frame->basePointer;
 								frames.pop_back();
@@ -13100,7 +13897,7 @@ struct VM {
 						}
 						DISPATCH();
 					}
-					OP(OP_MULTI_SET) : OP(OP_AND) : OP(OP_OR) : OP(OP_IN) : OP(OP_INCREMENT) : OP(OP_DECREMENT) : OP(OP_BUILD_FILE) : OP(OP_BREAK) : OP(OP_CONTINUE) : OP(OP_SKIP) : OP(OP_OMIT) : OP(OP_ASSERT) : {
+					OP(OP_MULTI_SET) : OP(OP_AND) : OP(OP_OR) : OP(OP_IN) : OP(OP_INCREMENT) : OP(OP_DECREMENT) : OP(OP_PRE_INCREMENT) : OP(OP_PRE_DECREMENT) : OP(OP_BUILD_FILE) : OP(OP_BREAK) : OP(OP_CONTINUE) : OP(OP_SKIP) : OP(OP_OMIT) : OP(OP_ASSERT) : {
 						throw InternalError("Optimized or unimplemented OpCode was executed!", line, col);
 						DISPATCH();
 					}
@@ -13155,92 +13952,119 @@ struct VM {
 			nativeObj = static_cast<NativeFunctionObject *>(callee.ref.get());
 		} else if (callee.type == ValueType::OVERLOAD) {
 			auto *ov = static_cast<OverloadObject *>(callee.ref.get());
+			std::size_t sigHash = argCount;
+			for (int i = 0; i < argCount; i++) {
+				Value argVal = stack[stack.size() - argCount + i];
+				ValueType checkType = argVal.type;
+				if (argVal.type == ValueType::REFERENCE && argVal.get_ptr_safe() != nullptr) {
+					checkType = argVal.get_ptr_safe()->type;
+				}
+				sigHash ^= std::hash<int>{}((int)checkType) + 0x9e3779b9 + (sigHash << 6) + (sigHash >> 2);
+			}
 			bool found = false;
-			FunctionObject *bestFunc = nullptr;
-			NativeFunctionObject *bestNative = nullptr;
-			int bestScore = -1;
-			for (int i = (int)ov->overloads.size() - 1; i >= 0; i--) {
-				Value candVal = ov->overloads[i];
-				if (candVal.type == ValueType::FUNCTION) {
-					auto *candidate =
-						static_cast<FunctionObject *>(candVal.ref.get());
-					size_t minArgs = 0;
-					bool isVariadic = false;
-					for (const auto &p : candidate->params) {
-						if (p.isVariadic || p.isKwargs)
-							isVariadic = true;
-						else if (p.defaultValue == nullptr)
-							minArgs++;
-					}
-					if (argCount < minArgs && !isVariadic)
-						continue;
-					if (!isVariadic && argCount > candidate->params.size())
-						continue;
-					bool typesMatch = true;
-					int currentScore = 0;
-					size_t paramIdx = 0;
-					for (int argIdx = 0; argIdx < argCount; argIdx++) {
-						if (paramIdx >= candidate->params.size()) {
-							if (!isVariadic) {
-								typesMatch = false;
-								break;
-							}
-							currentScore++;
-							break;
-						}
-						const ParamSpec &p = candidate->params[paramIdx];
-						if (p.isVariadic || p.isKwargs)
-							break;
-						Value argVal = stack[stack.size() - argCount + argIdx];
-						ValueType checkType = argVal.type;
-						if (argVal.type == ValueType::REFERENCE && argVal.ptr != nullptr) {
-							checkType = argVal.ptr->type;
-						}
-						if (p.type != ValueType::NOTYPE && checkType != p.type) {
-							if (p.type == ValueType::FLOAT && checkType == ValueType::INT) {
-								currentScore += 5;
-							} else {
-								typesMatch = false;
-								break;
-							}
-						} else if (p.type != ValueType::NOTYPE && checkType == p.type) {
-							currentScore += 10;
-						} else if (p.type == ValueType::NOTYPE) {
-							currentScore += 2;
-						}
-						paramIdx++;
-					}
-					if (typesMatch && currentScore > bestScore) {
-						bestScore = currentScore;
-						bestFunc = candidate;
-						bestNative = nullptr;
-					}
-				} else if (candVal.type == ValueType::NATIVE_FUNCTION) {
-					if (0 > bestScore) {
-						bestScore = 0;
-						bestFunc = nullptr;
-						bestNative = static_cast<NativeFunctionObject *>(candVal.ref.get());
-					}
+			if (ov->signatureCache.count(sigHash)) {
+				Value cachedTarget = ov->signatureCache[sigHash];
+				if (cachedTarget.type == ValueType::FUNCTION) {
+					function = static_cast<FunctionObject *>(cachedTarget.ref.get());
+					found = true;
+				} else if (cachedTarget.type == ValueType::NATIVE_FUNCTION) {
+					nativeObj = static_cast<NativeFunctionObject *>(cachedTarget.ref.get());
+					found = true;
 				}
 			}
-			if (bestFunc) {
-				function = bestFunc;
-				found = true;
-			} else if (bestNative) {
-				nativeObj = bestNative;
-				found = true;
+			if (!found) {
+				FunctionObject *bestFunc = nullptr;
+				NativeFunctionObject *bestNative = nullptr;
+				int bestScore = -1;
+				for (int i = (int)ov->overloads.size() - 1; i >= 0; i--) {
+					Value candVal = ov->overloads[i];
+					if (candVal.type == ValueType::FUNCTION) {
+						auto *candidate =
+							static_cast<FunctionObject *>(candVal.ref.get());
+						size_t minArgs = 0;
+						bool isVariadic = false;
+						for (const auto &p : candidate->params) {
+							if (p.isVariadic || p.isKwargs)
+								isVariadic = true;
+							else if (p.defaultValue == nullptr)
+								minArgs++;
+						}
+						if (argCount < minArgs && !isVariadic)
+							continue;
+						if (!isVariadic && argCount > candidate->params.size())
+							continue;
+						bool typesMatch = true;
+						int currentScore = 0;
+						size_t paramIdx = 0;
+						for (int argIdx = 0; argIdx < argCount; argIdx++) {
+							if (paramIdx >= candidate->params.size()) {
+								if (!isVariadic) {
+									typesMatch = false;
+									break;
+								}
+								currentScore++;
+								break;
+							}
+							const ParamSpec &p = candidate->params[paramIdx];
+							if (p.isVariadic || p.isKwargs)
+								break;
+							Value argVal = stack[stack.size() - argCount + argIdx];
+							ValueType checkType = argVal.type;
+							if (argVal.type == ValueType::REFERENCE && argVal.get_ptr_safe() != nullptr) {
+								checkType = argVal.get_ptr_safe()->type;
+							}
+							if (p.type != ValueType::NOTYPE && checkType != p.type) {
+								if (p.type == ValueType::FLOAT && checkType == ValueType::INT) {
+									currentScore += 5;
+								} else {
+									typesMatch = false;
+									break;
+								}
+							} else if (p.type != ValueType::NOTYPE && checkType == p.type) {
+								currentScore += 10;
+							} else if (p.type == ValueType::NOTYPE) {
+								currentScore += 2;
+							}
+							paramIdx++;
+						}
+						if (typesMatch && currentScore > bestScore) {
+							bestScore = currentScore;
+							bestFunc = candidate;
+							bestNative = nullptr;
+						}
+					} else if (candVal.type == ValueType::NATIVE_FUNCTION) {
+						if (0 > bestScore) {
+							bestScore = 0;
+							bestFunc = nullptr;
+							bestNative = static_cast<NativeFunctionObject *>(candVal.ref.get());
+						}
+					}
+				}
+				if (bestFunc) {
+					function = bestFunc;
+					found = true;
+					Value cachedTarget;
+					cachedTarget.type = ValueType::FUNCTION;
+					cachedTarget.ref = std::shared_ptr<HeapObject>(bestFunc, [](HeapObject *) {});
+					ov->signatureCache[sigHash] = cachedTarget;
+				} else if (bestNative) {
+					nativeObj = bestNative;
+					found = true;
+					Value cachedTarget;
+					cachedTarget.type = ValueType::NATIVE_FUNCTION;
+					cachedTarget.ref = std::shared_ptr<HeapObject>(bestNative, [](HeapObject *) {});
+					ov->signatureCache[sigHash] = cachedTarget;
+				}
+				if (!found)
+					throw TypeError(
+						"No matching overload found with provided arguments", line,
+						col);
 			}
-			if (!found)
-				throw TypeError(
-					"No matching overload found with provided arguments", line,
-					col);
 		} else
 			throw TypeError("Object is not callable", line, col);
 		if (nativeObj) {
-			vector<Value> args;
-			for (int i = 0; i < argCount; i++)
-				args.push_back(pop());
-			std::reverse(args.begin(), args.end());
+			vector<Value> args(stack.end() - argCount, stack.end());
+			stack.erase(stack.end() - argCount, stack.end());
 			stack.push_back(nativeObj->func(args, line, 0));
 			return;
 		}
@@ -13363,7 +14187,7 @@ struct VM {
 								  argVal.type == ValueType::INT) {
 						argVal = Value::BigInt(argVal.asInt());
 						mismatch = false;
-					} else if (argVal.type == ValueType::REFERENCE && argVal.ptr != nullptr && argVal.ptr->type == p.type) {
+					} else if (argVal.type == ValueType::REFERENCE && argVal.get_ptr_safe() != nullptr && argVal.get_ptr_safe()->type == p.type) {
 						mismatch = false;
 					} else if (argVal.type == ValueType::OMIT_MARKER) {
 						mismatch = false;
@@ -13380,9 +14204,16 @@ struct VM {
 			finalArgs[i] = argVal;
 		}
 		if (function->isCached) {
-			if (function->cache.count(finalArgs)) {
-				stack.push_back(function->cache[finalArgs]);
-				return;
+			if (finalArgs.size() == 1) {
+				if (function->singleArgCache.count(finalArgs[0])) {
+					stack.push_back(function->singleArgCache[finalArgs[0]]);
+					return;
+				}
+			} else {
+				if (function->cache.count(finalArgs)) {
+					stack.push_back(function->cache[finalArgs]);
+					return;
+				}
 			}
 		}
 		for (size_t k = 0; k < providedArgs.size(); k++) {
@@ -13396,8 +14227,13 @@ struct VM {
 		newFrame.function = function;
 		newFrame.ip = function->chunk->code.data();
 		newFrame.basePointer = stack.size();
-		if (function->isCached)
-			newFrame.cacheKey = finalArgs;
+		if (function->isCached) {
+			if (finalArgs.size() == 1) {
+				newFrame.singleCacheKey = finalArgs[0];
+			} else {
+				newFrame.cacheKey = finalArgs;
+			}
+		}
 		for (const auto &v : finalArgs)
 			stack.push_back(v);
 		frames.push_back(newFrame);
@@ -13429,7 +14265,7 @@ struct VM {
 			return collection;
 		}
 		if (collection.type == ValueType::REFERENCE) {
-			return *collection.ptr;
+			return *(collection.get_ptr_safe());
 		}
 		auto list = std::make_shared<ListObject>();
 		if (collection.type == ValueType::DICT) {
@@ -13468,9 +14304,9 @@ Value Interpreter::nativePrint(const vector<Value> &args, int l, int c) {
 				return this->Resolve_methods(m);
 			};
 			tempVM.importResolver = [this](std::string lib,
-												std::vector<std::string> sym) {
+												std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 				if (this->modules.count(lib))
-					this->modules[lib](this->env, sym);
+					this->modules[lib](targetEnv, sym);
 				else
 					throw ImportError("Unknown module '" + lib + "'", 0, 0);
 			};
@@ -13550,9 +14386,9 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 		return this->Resolve_methods(m);
 	};
 
-	auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+	auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 		if (this->modules.count(lib)) {
-			this->modules[lib](this->env, sym);
+			this->modules[lib](targetEnv, sym);
 		} else {
 			throw ImportError("Unknown module '" + lib + "'", 0, 0);
 		}
@@ -13569,9 +14405,9 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 	}
 	Value &target = *targetPtr;
 	while (target.type == ValueType::REFERENCE) {
-		if (!target.ptr)
+		if (!target.get_ptr_safe())
 			throw RuntimeError("Dead-end reference", m->line, m->col);
-		target = *target.ptr;
+		target = *(target.get_ptr_safe());
 	}
 	auto checkConst = [&]() {
 		if (target.isConst || isConstView) {
@@ -15222,6 +16058,18 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			}
 			return Value::List(pairs);
 		}
+		if (d->items.count(Value::String(m->method))) {
+			Value callee = d->items[Value::String(m->method)];
+			vector<CallArg> callArgs;
+			vector<CopyMode> modes;
+			for (size_t i = 0; i < m->args.size(); i++) {
+				CallArg ca;
+				ca.value = eval(m->args[i]);
+				callArgs.push_back(ca);
+				modes.push_back(CopyMode::SHALLOW);
+			}
+			return this->call(callee, callArgs, modes, m->line, m->col);
+		}
 		error("Object '" + m->method + "' is not a dict method",
 			"AttributeError");
 	}
@@ -15570,7 +16418,8 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 			else if (dim == 2) {
 				Value term1 = safeMul(v->elements[0], v2->elements[1]);
 				Value term2 = safeMul(v->elements[1], v2->elements[0]);
-				return safeSub(term1, term2);
+				std::vector<Value> res = {safeSub(term1, term2)};
+				return Value::Vector(res);
 			} else if (dim == 3) {
 				Value x = safeSub(safeMul(v->elements[1], v2->elements[2]),
 					safeMul(v->elements[2], v2->elements[1]));
@@ -15588,6 +16437,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 		error("Object '" + m->method + "' is not a vector method",
 			"AttributeError");
 	}
+	error("Type has no attribute '" + m->method + "'", "AttributeError");
 	return Value::None();
 }
 void Interpreter::registerStdLib() {
@@ -15772,6 +16622,35 @@ void Interpreter::registerStdLib() {
 			const char *val = std::getenv(valueToString(args[0]).c_str());
 			return val ? Value::String(val) : Value::None();
 		});
+		define("SetEnv", [](const vector<Value> &args, int l, int c) {
+			string name = args[0].asString();
+			string val = args[1].asString();
+#ifdef _WIN32
+			_putenv_s(name.c_str(), val.c_str());
+#else
+			setenv(name.c_str(), val.c_str(), 1);
+#endif
+			return Value::None();
+		});
+		define("Copy", [](const vector<Value> &args, int l, int c) {
+			fs::copy(args[0].asString(), args[1].asString(), fs::copy_options::overwrite_existing);
+			return Value::None();
+		});
+		define("FileSize", [](const vector<Value> &args, int l, int c) {
+			return Value::Int(fs::file_size(args[0].asString()));
+		});
+		define("IsDir", [](const vector<Value> &args, int l, int c) {
+			return Value::Bool(fs::is_directory(args[0].asString()));
+		});
+		define("IsFile", [](const vector<Value> &args, int l, int c) {
+			return Value::Bool(fs::is_regular_file(args[0].asString()));
+		});
+		define("Direct", [](const vector<Value> &args, int l, int c) {
+			string cmd = args[0].asString();
+			string file = args[1].asString();
+			string full_cmd = cmd + " > " + file + " 2>&1";
+			return Value::Int(std::system(full_cmd.c_str()));
+		});
 		define("Console", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
 				throw ArgumentError("Console() expects 1 argument (command)", l, c);
@@ -15874,6 +16753,296 @@ void Interpreter::registerStdLib() {
 		modVal.ref = moduleNamespace;
 		env->set("Time", modVal, false, false);
 	};
+
+	modules["Serial"] = [this](std::shared_ptr<Env> env, const vector<string> &symbols) {
+		auto moduleNamespace = std::make_shared<ClassObject>("Serial");
+		moduleNamespace->mro.push_back(moduleNamespace.get());
+		static auto serialClass = std::make_shared<ClassObject>("SerialObj");
+		auto define = [&](string name, NativeFunc f) {
+			moduleNamespace->staticFields[name] = Value::Native(f);
+		};
+		serialClass->methods["read"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				int n = args[2].asInt();
+#ifdef _WIN32
+				HANDLE hComm = (HANDLE)self->fields["ptr"].aspInt();
+				char* buf = new char[n + 1];
+				DWORD bytesRead = 0;
+				ReadFile(hComm, buf, n, &bytesRead, NULL);
+				buf[bytesRead] = '\0';
+				string res(buf, bytesRead);
+				delete[] buf;
+				return Value::String(res);
+#else
+				int fd = (int)(intptr_t)self->fields["ptr"].aspInt();
+				char* buf = new char[n + 1];
+				int bytesRead = ::read(fd, buf, n);
+				if (bytesRead < 0) bytesRead = 0;
+				buf[bytesRead] = '\0';
+				string res(buf, bytesRead);
+				delete[] buf;
+				return Value::String(res);
+#endif
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		serialClass->methods["write"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				string data = args[2].asString();
+#ifdef _WIN32
+				HANDLE hComm = (HANDLE)self->fields["ptr"].aspInt();
+				DWORD bytesWritten = 0;
+				WriteFile(hComm, data.c_str(), data.length(), &bytesWritten, NULL);
+				return Value::Int(bytesWritten);
+#else
+				int fd = (int)(intptr_t)self->fields["ptr"].aspInt();
+				int bytesWritten = ::write(fd, data.c_str(), data.length());
+				return Value::Int(bytesWritten);
+#endif
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		serialClass->methods["close"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				HANDLE hComm = (HANDLE)self->fields["ptr"].aspInt();
+				CloseHandle(hComm);
+#else
+				int fd = (int)(intptr_t)self->fields["ptr"].aspInt();
+				::close(fd);
+#endif
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		define("open", [=](const vector<Value> &args, int l, int c) -> Value {
+			string port = args[0].asString();
+			int baud = args[1].asInt();
+			auto inst = std::make_shared<InstanceObject>(serialClass.get());
+#ifdef _WIN32
+			HANDLE hComm = CreateFileA(port.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+			if (hComm == INVALID_HANDLE_VALUE) throw RuntimeError("Failed to open port", l, c);
+			DCB dcbSerialParams = {0};
+			dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
+			GetCommState(hComm, &dcbSerialParams);
+			dcbSerialParams.BaudRate = baud;
+			dcbSerialParams.ByteSize = 8;
+			dcbSerialParams.StopBits = ONESTOPBIT;
+			dcbSerialParams.Parity = NOPARITY;
+			SetCommState(hComm, &dcbSerialParams);
+			COMMTIMEOUTS timeouts = {0};
+			timeouts.ReadIntervalTimeout = 50;
+			timeouts.ReadTotalTimeoutConstant = 50;
+			timeouts.ReadTotalTimeoutMultiplier = 10;
+			timeouts.WriteTotalTimeoutConstant = 50;
+			timeouts.WriteTotalTimeoutMultiplier = 10;
+			SetCommTimeouts(hComm, &timeouts);
+			inst->fields["ptr"] = Value::pInt((void*)hComm);
+#else
+			int fd = ::open(port.c_str(), O_RDWR | O_NOCTTY | O_SYNC);
+			if (fd < 0) throw RuntimeError("Failed to open port", l, c);
+			struct termios tty;
+			if (tcgetattr(fd, &tty) != 0) throw RuntimeError("Error from tcgetattr", l, c);
+			cfsetospeed(&tty, baud);
+			cfsetispeed(&tty, baud);
+			tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
+			tty.c_iflag &= ~IGNBRK;
+			tty.c_lflag = 0;
+			tty.c_oflag = 0;
+			tty.c_cc[VMIN]  = 0;
+			tty.c_cc[VTIME] = 5;
+			tty.c_iflag &= ~(IXON | IXOFF | IXANY);
+			tty.c_cflag |= (CLOCAL | CREAD);
+			tty.c_cflag &= ~(PARENB | PARODD);
+			tty.c_cflag &= ~CSTOPB;
+			tty.c_cflag &= ~CRTSCTS;
+			if (tcsetattr(fd, TCSANOW, &tty) != 0) throw RuntimeError("Error from tcsetattr", l, c);
+			inst->fields["ptr"] = Value::pInt((void*)(intptr_t)fd);
+#endif
+			Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+			return v;
+		});
+		Value modVal; modVal.type = ValueType::CLASS; modVal.ref = moduleNamespace;
+		env->set("Serial", modVal, false, false);
+	};
+
+	modules["Events"] = [this](std::shared_ptr<Env> env, const vector<string> &symbols) {
+		auto moduleNamespace = std::make_shared<ClassObject>("Events");
+		moduleNamespace->mro.push_back(moduleNamespace.get());
+		auto define = [&](string name, NativeFunc f) {
+			moduleNamespace->staticFields[name] = Value::Native(f);
+		};
+
+#ifndef _WIN32
+		// Setup global display for XTest
+		static Display* x_display = XOpenDisplay(NULL);
+#endif
+
+		define("key_down", [=](const vector<Value> &args, int l, int c) {
+			int key = (int)args[0].asInt();
+#ifdef _WIN32
+			INPUT input = {0};
+			input.type = INPUT_KEYBOARD;
+			input.ki.wVk = key;
+			SendInput(1, &input, sizeof(INPUT));
+#else
+			if (x_display) {
+				KeyCode code = XKeysymToKeycode(x_display, key);
+				if (code != 0) { XTestFakeKeyEvent(x_display, code, true, CurrentTime); XFlush(x_display); }
+			}
+#endif
+			return Value::None();
+		});
+
+		define("key_up", [=](const vector<Value> &args, int l, int c) {
+			int key = (int)args[0].asInt();
+#ifdef _WIN32
+			INPUT input = {0};
+			input.type = INPUT_KEYBOARD;
+			input.ki.wVk = key;
+			input.ki.dwFlags = KEYEVENTF_KEYUP;
+			SendInput(1, &input, sizeof(INPUT));
+#else
+			if (x_display) {
+				KeyCode code = XKeysymToKeycode(x_display, key);
+				if (code != 0) { XTestFakeKeyEvent(x_display, code, false, CurrentTime); XFlush(x_display); }
+			}
+#endif
+			return Value::None();
+		});
+
+		define("key_press", [=](const vector<Value> &args, int l, int c) {
+			int key = (int)args[0].asInt();
+#ifdef _WIN32
+			INPUT inputs[2] = {0};
+			inputs[0].type = INPUT_KEYBOARD;
+			inputs[0].ki.wVk = key;
+			inputs[1].type = INPUT_KEYBOARD;
+			inputs[1].ki.wVk = key;
+			inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+			SendInput(2, inputs, sizeof(INPUT));
+#else
+			if (x_display) {
+				KeyCode code = XKeysymToKeycode(x_display, key);
+				if (code != 0) { 
+					XTestFakeKeyEvent(x_display, code, true, CurrentTime); 
+					XTestFakeKeyEvent(x_display, code, false, CurrentTime); 
+					XFlush(x_display); 
+				}
+			}
+#endif
+			return Value::None();
+		});
+
+		define("mouse_move", [=](const vector<Value> &args, int l, int c) {
+			int x = (int)args[0].asInt();
+			int y = (int)args[1].asInt();
+#ifdef _WIN32
+			SetCursorPos(x, y);
+#else
+			if (x_display) { XTestFakeMotionEvent(x_display, -1, x, y, CurrentTime); XFlush(x_display); }
+#endif
+			return Value::None();
+		});
+
+		define("mouse_down", [=](const vector<Value> &args, int l, int c) {
+			int btn = (int)args[0].asInt();
+#ifdef _WIN32
+			INPUT input = {0}; input.type = INPUT_MOUSE;
+			if (btn == 0) input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+			else if (btn == 1) input.mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+			else if (btn == 2) input.mi.dwFlags = MOUSEEVENTF_MIDDLEDOWN;
+			SendInput(1, &input, sizeof(INPUT));
+#else
+			if (x_display) {
+				int xbtn = (btn == 0) ? 1 : ((btn == 1) ? 3 : 2);
+				XTestFakeButtonEvent(x_display, xbtn, true, CurrentTime); XFlush(x_display);
+			}
+#endif
+			return Value::None();
+		});
+
+		define("mouse_up", [=](const vector<Value> &args, int l, int c) {
+			int btn = (int)args[0].asInt();
+#ifdef _WIN32
+			INPUT input = {0}; input.type = INPUT_MOUSE;
+			if (btn == 0) input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+			else if (btn == 1) input.mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+			else if (btn == 2) input.mi.dwFlags = MOUSEEVENTF_MIDDLEUP;
+			SendInput(1, &input, sizeof(INPUT));
+#else
+			if (x_display) {
+				int xbtn = (btn == 0) ? 1 : ((btn == 1) ? 3 : 2);
+				XTestFakeButtonEvent(x_display, xbtn, false, CurrentTime); XFlush(x_display);
+			}
+#endif
+			return Value::None();
+		});
+
+		define("mouse_click", [=](const vector<Value> &args, int l, int c) {
+			int btn = (int)args[0].asInt();
+#ifdef _WIN32
+			INPUT inputs[2] = {0};
+			inputs[0].type = INPUT_MOUSE; inputs[1].type = INPUT_MOUSE;
+			if (btn == 0) { inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN; inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP; }
+			else if (btn == 1) { inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN; inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP; }
+			else if (btn == 2) { inputs[0].mi.dwFlags = MOUSEEVENTF_MIDDLEDOWN; inputs[1].mi.dwFlags = MOUSEEVENTF_MIDDLEUP; }
+			SendInput(2, inputs, sizeof(INPUT));
+#else
+			if (x_display) {
+				int xbtn = (btn == 0) ? 1 : ((btn == 1) ? 3 : 2);
+				XTestFakeButtonEvent(x_display, xbtn, true, CurrentTime);
+				XTestFakeButtonEvent(x_display, xbtn, false, CurrentTime);
+				XFlush(x_display);
+			}
+#endif
+			return Value::None();
+		});
+
+		define("mouse_click_every", [=](const vector<Value> &args, int l, int c) {
+			int btn = (int)args[0].asInt();
+			int interval = (int)args[1].asInt();
+			int escape_key = (int)args[2].asInt();
+			auto isKeyDown = [=](int key) -> bool {
+#ifdef _WIN32
+				return (GetAsyncKeyState(key) & 0x8000) != 0;
+#else
+				if (!x_display) return false;
+				char keys_return[32];
+				XQueryKeymap(x_display, keys_return);
+				KeyCode kc = XKeysymToKeycode(x_display, key);
+				if (kc == 0) return false;
+				return (keys_return[kc / 8] & (1 << (kc % 8))) != 0;
+#endif
+			};
+			while (!isKeyDown(escape_key)) {
+#ifdef _WIN32
+				INPUT inputs[2] = {0};
+				inputs[0].type = INPUT_MOUSE; inputs[1].type = INPUT_MOUSE;
+				if (btn == 0) { inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN; inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP; }
+				else if (btn == 1) { inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN; inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP; }
+				else if (btn == 2) { inputs[0].mi.dwFlags = MOUSEEVENTF_MIDDLEDOWN; inputs[1].mi.dwFlags = MOUSEEVENTF_MIDDLEUP; }
+				SendInput(2, inputs, sizeof(INPUT));
+#else
+				if (x_display) {
+					int xbtn = (btn == 0) ? 1 : ((btn == 1) ? 3 : 2);
+					XTestFakeButtonEvent(x_display, xbtn, true, CurrentTime);
+					XTestFakeButtonEvent(x_display, xbtn, false, CurrentTime);
+					XFlush(x_display);
+				}
+#endif
+				std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+			}
+			return Value::None();
+		});
+
+		Value modVal; modVal.type = ValueType::CLASS; modVal.ref = moduleNamespace;
+		env->set("Events", modVal, false, false);
+	};
+
 	modules["System"] = [](std::shared_ptr<Env> env, const vector<string> &symbols) {
 		auto moduleNamespace = std::make_shared<ClassObject>("System");
 		moduleNamespace->mro.push_back(moduleNamespace.get());
@@ -15893,6 +17062,35 @@ void Interpreter::registerStdLib() {
 			int code = (args.size() > 0) ? (int)args[0].asInt() : 0;
 			exit(code);
 			return Value::None(); // Never reached
+		});
+		define("Args", [](const vector<Value> &args, int l, int c) {
+			vector<Value> argsList;
+#ifdef _WIN32
+			int nArgs;
+			LPWSTR *szArglist = CommandLineToArgvW(GetCommandLineW(), &nArgs);
+			if (szArglist != NULL) {
+				for(int i=0; i<nArgs; i++) {
+					std::wstring ws(szArglist[i]);
+					std::string s(ws.begin(), ws.end());
+					argsList.push_back(Value::String(s));
+				}
+				LocalFree(szArglist);
+			}
+#else
+			std::ifstream cmdline("/proc/self/cmdline");
+			std::string arg;
+			while (std::getline(cmdline, arg, '\0')) {
+				argsList.push_back(Value::String(arg));
+			}
+#endif
+			return Value::List(argsList);
+		});
+		define("ProcessId", [](const vector<Value> &args, int l, int c) {
+#ifdef _WIN32
+			return Value::Int((int)GetCurrentProcessId());
+#else
+			return Value::Int((int)getpid());
+#endif
 		});
 		define("Platform", [](const vector<Value> &args, int l, int c) {
 #ifdef _WIN32
@@ -17892,6 +19090,709 @@ void Interpreter::registerStdLib() {
 			SetMusicVolume(ValueToMusic(args[0], l, c), (float)args[1].asFloat());
 			return Value::None();
 		});
+
+
+		// --- AUTO-GENERATED RAYLIB BINDINGS ---
+		define("IsWindowReady", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsWindowReady expects 0 arguments", l, c);
+			return Value::Bool(IsWindowReady());
+		});
+		define("IsWindowFullscreen", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsWindowFullscreen expects 0 arguments", l, c);
+			return Value::Bool(IsWindowFullscreen());
+		});
+		define("IsWindowHidden", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsWindowHidden expects 0 arguments", l, c);
+			return Value::Bool(IsWindowHidden());
+		});
+		define("IsWindowMinimized", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsWindowMinimized expects 0 arguments", l, c);
+			return Value::Bool(IsWindowMinimized());
+		});
+		define("IsWindowMaximized", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsWindowMaximized expects 0 arguments", l, c);
+			return Value::Bool(IsWindowMaximized());
+		});
+		define("IsWindowFocused", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsWindowFocused expects 0 arguments", l, c);
+			return Value::Bool(IsWindowFocused());
+		});
+		define("IsWindowResized", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsWindowResized expects 0 arguments", l, c);
+			return Value::Bool(IsWindowResized());
+		});
+		define("IsWindowState", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsWindowState expects 1 arguments", l, c);
+			return Value::Bool(IsWindowState((unsigned int)args[0].asInt()));
+		});
+		define("SetWindowState", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetWindowState expects 1 arguments", l, c);
+			SetWindowState((unsigned int)args[0].asInt());
+			return Value::None();
+		});
+		define("ClearWindowState", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("ClearWindowState expects 1 arguments", l, c);
+			ClearWindowState((unsigned int)args[0].asInt());
+			return Value::None();
+		});
+		define("ToggleBorderlessWindowed", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("ToggleBorderlessWindowed expects 0 arguments", l, c);
+			ToggleBorderlessWindowed();
+			return Value::None();
+		});
+		define("MaximizeWindow", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("MaximizeWindow expects 0 arguments", l, c);
+			MaximizeWindow();
+			return Value::None();
+		});
+		define("MinimizeWindow", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("MinimizeWindow expects 0 arguments", l, c);
+			MinimizeWindow();
+			return Value::None();
+		});
+		define("RestoreWindow", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("RestoreWindow expects 0 arguments", l, c);
+			RestoreWindow();
+			return Value::None();
+		});
+		define("SetWindowIcon", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetWindowIcon expects 1 arguments", l, c);
+			SetWindowIcon(ValueToImage(args[0], l, c));
+			return Value::None();
+		});
+		define("SetWindowMonitor", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetWindowMonitor expects 1 arguments", l, c);
+			SetWindowMonitor((int)args[0].asInt());
+			return Value::None();
+		});
+		define("SetWindowMinSize", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("SetWindowMinSize expects 2 arguments", l, c);
+			SetWindowMinSize((int)args[0].asInt(), (int)args[1].asInt());
+			return Value::None();
+		});
+		define("SetWindowMaxSize", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("SetWindowMaxSize expects 2 arguments", l, c);
+			SetWindowMaxSize((int)args[0].asInt(), (int)args[1].asInt());
+			return Value::None();
+		});
+		define("SetWindowSize", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("SetWindowSize expects 2 arguments", l, c);
+			SetWindowSize((int)args[0].asInt(), (int)args[1].asInt());
+			return Value::None();
+		});
+		define("SetWindowOpacity", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetWindowOpacity expects 1 arguments", l, c);
+			SetWindowOpacity((float)args[0].asFloat());
+			return Value::None();
+		});
+		define("SetWindowFocused", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("SetWindowFocused expects 0 arguments", l, c);
+			SetWindowFocused();
+			return Value::None();
+		});
+		define("GetScreenWidth", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetScreenWidth expects 0 arguments", l, c);
+			return Value::Int(GetScreenWidth());
+		});
+		define("GetScreenHeight", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetScreenHeight expects 0 arguments", l, c);
+			return Value::Int(GetScreenHeight());
+		});
+		define("GetRenderWidth", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetRenderWidth expects 0 arguments", l, c);
+			return Value::Int(GetRenderWidth());
+		});
+		define("GetRenderHeight", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetRenderHeight expects 0 arguments", l, c);
+			return Value::Int(GetRenderHeight());
+		});
+		define("GetMonitorCount", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetMonitorCount expects 0 arguments", l, c);
+			return Value::Int(GetMonitorCount());
+		});
+		define("GetCurrentMonitor", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetCurrentMonitor expects 0 arguments", l, c);
+			return Value::Int(GetCurrentMonitor());
+		});
+		define("GetMonitorPosition", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetMonitorPosition expects 1 arguments", l, c);
+			return Vector2ToValue(GetMonitorPosition((int)args[0].asInt()));
+		});
+		define("GetMonitorPhysicalWidth", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetMonitorPhysicalWidth expects 1 arguments", l, c);
+			return Value::Int(GetMonitorPhysicalWidth((int)args[0].asInt()));
+		});
+		define("GetMonitorPhysicalHeight", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetMonitorPhysicalHeight expects 1 arguments", l, c);
+			return Value::Int(GetMonitorPhysicalHeight((int)args[0].asInt()));
+		});
+		define("GetMonitorRefreshRate", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetMonitorRefreshRate expects 1 arguments", l, c);
+			return Value::Int(GetMonitorRefreshRate((int)args[0].asInt()));
+		});
+		define("GetWindowPosition", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetWindowPosition expects 0 arguments", l, c);
+			return Vector2ToValue(GetWindowPosition());
+		});
+		define("GetWindowScaleDPI", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetWindowScaleDPI expects 0 arguments", l, c);
+			return Vector2ToValue(GetWindowScaleDPI());
+		});
+		define("GetClipboardImage", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetClipboardImage expects 0 arguments", l, c);
+			return ImageToValue(GetClipboardImage());
+		});
+		define("EnableEventWaiting", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("EnableEventWaiting expects 0 arguments", l, c);
+			EnableEventWaiting();
+			return Value::None();
+		});
+		define("DisableEventWaiting", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("DisableEventWaiting expects 0 arguments", l, c);
+			DisableEventWaiting();
+			return Value::None();
+		});
+		define("ShowCursor", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("ShowCursor expects 0 arguments", l, c);
+			ShowCursor();
+			return Value::None();
+		});
+		define("HideCursor", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("HideCursor expects 0 arguments", l, c);
+			HideCursor();
+			return Value::None();
+		});
+		define("IsCursorHidden", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsCursorHidden expects 0 arguments", l, c);
+			return Value::Bool(IsCursorHidden());
+		});
+		define("EnableCursor", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("EnableCursor expects 0 arguments", l, c);
+			EnableCursor();
+			return Value::None();
+		});
+		define("DisableCursor", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("DisableCursor expects 0 arguments", l, c);
+			DisableCursor();
+			return Value::None();
+		});
+		define("IsCursorOnScreen", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsCursorOnScreen expects 0 arguments", l, c);
+			return Value::Bool(IsCursorOnScreen());
+		});
+		define("EndMode2D", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("EndMode2D expects 0 arguments", l, c);
+			EndMode2D();
+			return Value::None();
+		});
+		define("BeginScissorMode", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("BeginScissorMode expects 4 arguments", l, c);
+			BeginScissorMode((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt());
+			return Value::None();
+		});
+		define("EndScissorMode", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("EndScissorMode expects 0 arguments", l, c);
+			EndScissorMode();
+			return Value::None();
+		});
+		define("EndVrStereoMode", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("EndVrStereoMode expects 0 arguments", l, c);
+			EndVrStereoMode();
+			return Value::None();
+		});
+		define("GetTime", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetTime expects 0 arguments", l, c);
+			return Value::Float(GetTime());
+		});
+		define("GetFPS", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetFPS expects 0 arguments", l, c);
+			return Value::Int(GetFPS());
+		});
+		define("SwapScreenBuffer", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("SwapScreenBuffer expects 0 arguments", l, c);
+			SwapScreenBuffer();
+			return Value::None();
+		});
+		define("PollInputEvents", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("PollInputEvents expects 0 arguments", l, c);
+			PollInputEvents();
+			return Value::None();
+		});
+		define("WaitTime", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("WaitTime expects 1 arguments", l, c);
+			WaitTime((double)args[0].asFloat());
+			return Value::None();
+		});
+		define("SetRandomSeed", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetRandomSeed expects 1 arguments", l, c);
+			SetRandomSeed((unsigned int)args[0].asInt());
+			return Value::None();
+		});
+		define("GetRandomValue", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("GetRandomValue expects 2 arguments", l, c);
+			return Value::Int(GetRandomValue((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("SetTraceLogLevel", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetTraceLogLevel expects 1 arguments", l, c);
+			SetTraceLogLevel((int)args[0].asInt());
+			return Value::None();
+		});
+		define("IsFileDropped", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsFileDropped expects 0 arguments", l, c);
+			return Value::Bool(IsFileDropped());
+		});
+		define("SetAutomationEventBaseFrame", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetAutomationEventBaseFrame expects 1 arguments", l, c);
+			SetAutomationEventBaseFrame((int)args[0].asInt());
+			return Value::None();
+		});
+		define("StartAutomationEventRecording", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("StartAutomationEventRecording expects 0 arguments", l, c);
+			StartAutomationEventRecording();
+			return Value::None();
+		});
+		define("StopAutomationEventRecording", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("StopAutomationEventRecording expects 0 arguments", l, c);
+			StopAutomationEventRecording();
+			return Value::None();
+		});
+		define("IsGamepadAvailable", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsGamepadAvailable expects 1 arguments", l, c);
+			return Value::Bool(IsGamepadAvailable((int)args[0].asInt()));
+		});
+		define("IsGamepadButtonPressed", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("IsGamepadButtonPressed expects 2 arguments", l, c);
+			return Value::Bool(IsGamepadButtonPressed((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("IsGamepadButtonDown", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("IsGamepadButtonDown expects 2 arguments", l, c);
+			return Value::Bool(IsGamepadButtonDown((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("IsGamepadButtonReleased", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("IsGamepadButtonReleased expects 2 arguments", l, c);
+			return Value::Bool(IsGamepadButtonReleased((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("IsGamepadButtonUp", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("IsGamepadButtonUp expects 2 arguments", l, c);
+			return Value::Bool(IsGamepadButtonUp((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("GetGamepadButtonPressed", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetGamepadButtonPressed expects 0 arguments", l, c);
+			return Value::Int(GetGamepadButtonPressed());
+		});
+		define("GetGamepadAxisCount", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetGamepadAxisCount expects 1 arguments", l, c);
+			return Value::Int(GetGamepadAxisCount((int)args[0].asInt()));
+		});
+		define("GetGamepadAxisMovement", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("GetGamepadAxisMovement expects 2 arguments", l, c);
+			return Value::Float(GetGamepadAxisMovement((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("SetGamepadVibration", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("SetGamepadVibration expects 4 arguments", l, c);
+			SetGamepadVibration((int)args[0].asInt(), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat());
+			return Value::None();
+		});
+		define("GetTouchX", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetTouchX expects 0 arguments", l, c);
+			return Value::Int(GetTouchX());
+		});
+		define("GetTouchY", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetTouchY expects 0 arguments", l, c);
+			return Value::Int(GetTouchY());
+		});
+		define("GetTouchPosition", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetTouchPosition expects 1 arguments", l, c);
+			return Vector2ToValue(GetTouchPosition((int)args[0].asInt()));
+		});
+		define("GetTouchPointId", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetTouchPointId expects 1 arguments", l, c);
+			return Value::Int(GetTouchPointId((int)args[0].asInt()));
+		});
+		define("GetTouchPointCount", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetTouchPointCount expects 0 arguments", l, c);
+			return Value::Int(GetTouchPointCount());
+		});
+		define("SetGesturesEnabled", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetGesturesEnabled expects 1 arguments", l, c);
+			SetGesturesEnabled((unsigned int)args[0].asInt());
+			return Value::None();
+		});
+		define("IsGestureDetected", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsGestureDetected expects 1 arguments", l, c);
+			return Value::Bool(IsGestureDetected((unsigned int)args[0].asInt()));
+		});
+		define("GetGestureDetected", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetGestureDetected expects 0 arguments", l, c);
+			return Value::Int(GetGestureDetected());
+		});
+		define("GetGestureHoldDuration", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetGestureHoldDuration expects 0 arguments", l, c);
+			return Value::Float(GetGestureHoldDuration());
+		});
+		define("GetGestureDragVector", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetGestureDragVector expects 0 arguments", l, c);
+			return Vector2ToValue(GetGestureDragVector());
+		});
+		define("GetGestureDragAngle", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetGestureDragAngle expects 0 arguments", l, c);
+			return Value::Float(GetGestureDragAngle());
+		});
+		define("GetGesturePinchVector", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetGesturePinchVector expects 0 arguments", l, c);
+			return Vector2ToValue(GetGesturePinchVector());
+		});
+		define("GetGesturePinchAngle", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetGesturePinchAngle expects 0 arguments", l, c);
+			return Value::Float(GetGesturePinchAngle());
+		});
+		define("SetShapesTexture", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("SetShapesTexture expects 2 arguments", l, c);
+			SetShapesTexture(ValueToTexture(args[0], l, c), ValueToRect(args[1], l, c));
+			return Value::None();
+		});
+		define("GetShapesTexture", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetShapesTexture expects 0 arguments", l, c);
+			return TextureToValue(GetShapesTexture());
+		});
+		define("DrawLineDashed", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawLineDashed expects 5 arguments", l, c);
+			DrawLineDashed(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("DrawCircleSectorLines", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 6) throw ArgumentError("DrawCircleSectorLines expects 6 arguments", l, c);
+			DrawCircleSectorLines(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (int)args[4].asInt(), ValueToColor(args[5], l, c));
+			return Value::None();
+		});
+		define("DrawCircleLinesV", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("DrawCircleLinesV expects 3 arguments", l, c);
+			DrawCircleLinesV(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), ValueToColor(args[2], l, c));
+			return Value::None();
+		});
+		define("DrawEllipseV", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("DrawEllipseV expects 4 arguments", l, c);
+			DrawEllipseV(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+			return Value::None();
+		});
+		define("DrawEllipseLines", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawEllipseLines expects 5 arguments", l, c);
+			DrawEllipseLines((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("DrawEllipseLinesV", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("DrawEllipseLinesV expects 4 arguments", l, c);
+			DrawEllipseLinesV(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+			return Value::None();
+		});
+		define("DrawRingLines", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 7) throw ArgumentError("DrawRingLines expects 7 arguments", l, c);
+			DrawRingLines(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), (float)args[2].asFloat(), (float)args[3].asFloat(), (float)args[4].asFloat(), (int)args[5].asInt(), ValueToColor(args[6], l, c));
+			return Value::None();
+		});
+		define("DrawRectangleGradientH", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 6) throw ArgumentError("DrawRectangleGradientH expects 6 arguments", l, c);
+			DrawRectangleGradientH((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c), ValueToColor(args[5], l, c));
+			return Value::None();
+		});
+		define("DrawRectangleGradientEx", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawRectangleGradientEx expects 5 arguments", l, c);
+			DrawRectangleGradientEx(ValueToRect(args[0], l, c), ValueToColor(args[1], l, c), ValueToColor(args[2], l, c), ValueToColor(args[3], l, c), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("DrawRectangleLines", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawRectangleLines expects 5 arguments", l, c);
+			DrawRectangleLines((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("DrawRectangleLinesEx", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("DrawRectangleLinesEx expects 3 arguments", l, c);
+			DrawRectangleLinesEx(ValueToRect(args[0], l, c), (float)args[1].asFloat(), ValueToColor(args[2], l, c));
+			return Value::None();
+		});
+		define("DrawRectangleRoundedLines", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("DrawRectangleRoundedLines expects 4 arguments", l, c);
+			DrawRectangleRoundedLines(ValueToRect(args[0], l, c), (float)args[1].asFloat(), (int)args[2].asInt(), ValueToColor(args[3], l, c));
+			return Value::None();
+		});
+		define("DrawRectangleRoundedLinesEx", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawRectangleRoundedLinesEx expects 5 arguments", l, c);
+			DrawRectangleRoundedLinesEx(ValueToRect(args[0], l, c), (float)args[1].asFloat(), (int)args[2].asInt(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("DrawTriangleLines", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("DrawTriangleLines expects 4 arguments", l, c);
+			DrawTriangleLines(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToColor(args[3], l, c));
+			return Value::None();
+		});
+		define("DrawPolyLines", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawPolyLines expects 5 arguments", l, c);
+			DrawPolyLines(ValueToVector2(args[0], l, c), (int)args[1].asInt(), (float)args[2].asFloat(), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("DrawSplineSegmentLinear", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("DrawSplineSegmentLinear expects 4 arguments", l, c);
+			DrawSplineSegmentLinear(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat(), ValueToColor(args[3], l, c));
+			return Value::None();
+		});
+		define("DrawSplineSegmentBasis", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 6) throw ArgumentError("DrawSplineSegmentBasis expects 6 arguments", l, c);
+			DrawSplineSegmentBasis(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
+			return Value::None();
+		});
+		define("DrawSplineSegmentCatmullRom", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 6) throw ArgumentError("DrawSplineSegmentCatmullRom expects 6 arguments", l, c);
+			DrawSplineSegmentCatmullRom(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
+			return Value::None();
+		});
+		define("DrawSplineSegmentBezierQuadratic", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawSplineSegmentBezierQuadratic expects 5 arguments", l, c);
+			DrawSplineSegmentBezierQuadratic(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("DrawSplineSegmentBezierCubic", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 6) throw ArgumentError("DrawSplineSegmentBezierCubic expects 6 arguments", l, c);
+			DrawSplineSegmentBezierCubic(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat(), ValueToColor(args[5], l, c));
+			return Value::None();
+		});
+		define("GetSplinePointLinear", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("GetSplinePointLinear expects 3 arguments", l, c);
+			return Vector2ToValue(GetSplinePointLinear(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat()));
+		});
+		define("GetSplinePointBasis", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("GetSplinePointBasis expects 5 arguments", l, c);
+			return Vector2ToValue(GetSplinePointBasis(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat()));
+		});
+		define("GetSplinePointCatmullRom", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("GetSplinePointCatmullRom expects 5 arguments", l, c);
+			return Vector2ToValue(GetSplinePointCatmullRom(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat()));
+		});
+		define("GetSplinePointBezierQuad", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("GetSplinePointBezierQuad expects 4 arguments", l, c);
+			return Vector2ToValue(GetSplinePointBezierQuad(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), (float)args[3].asFloat()));
+		});
+		define("GetSplinePointBezierCubic", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("GetSplinePointBezierCubic expects 5 arguments", l, c);
+			return Vector2ToValue(GetSplinePointBezierCubic(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c), (float)args[4].asFloat()));
+		});
+		define("CheckCollisionRecs", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("CheckCollisionRecs expects 2 arguments", l, c);
+			return Value::Bool(CheckCollisionRecs(ValueToRect(args[0], l, c), ValueToRect(args[1], l, c)));
+		});
+		define("CheckCollisionCircles", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("CheckCollisionCircles expects 4 arguments", l, c);
+			return Value::Bool(CheckCollisionCircles(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), ValueToVector2(args[2], l, c), (float)args[3].asFloat()));
+		});
+		define("CheckCollisionCircleRec", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("CheckCollisionCircleRec expects 3 arguments", l, c);
+			return Value::Bool(CheckCollisionCircleRec(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), ValueToRect(args[2], l, c)));
+		});
+		define("CheckCollisionCircleLine", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("CheckCollisionCircleLine expects 4 arguments", l, c);
+			return Value::Bool(CheckCollisionCircleLine(ValueToVector2(args[0], l, c), (float)args[1].asFloat(), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c)));
+		});
+		define("CheckCollisionPointRec", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("CheckCollisionPointRec expects 2 arguments", l, c);
+			return Value::Bool(CheckCollisionPointRec(ValueToVector2(args[0], l, c), ValueToRect(args[1], l, c)));
+		});
+		define("CheckCollisionPointCircle", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("CheckCollisionPointCircle expects 3 arguments", l, c);
+			return Value::Bool(CheckCollisionPointCircle(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), (float)args[2].asFloat()));
+		});
+		define("CheckCollisionPointTriangle", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("CheckCollisionPointTriangle expects 4 arguments", l, c);
+			return Value::Bool(CheckCollisionPointTriangle(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), ValueToVector2(args[3], l, c)));
+		});
+		define("CheckCollisionPointLine", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("CheckCollisionPointLine expects 4 arguments", l, c);
+			return Value::Bool(CheckCollisionPointLine(ValueToVector2(args[0], l, c), ValueToVector2(args[1], l, c), ValueToVector2(args[2], l, c), (int)args[3].asInt()));
+		});
+		define("LoadImageFromTexture", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("LoadImageFromTexture expects 1 arguments", l, c);
+			return ImageToValue(LoadImageFromTexture(ValueToTexture(args[0], l, c)));
+		});
+		define("IsImageValid", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsImageValid expects 1 arguments", l, c);
+			return Value::Bool(IsImageValid(ValueToImage(args[0], l, c)));
+		});
+		define("GenImageColor", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("GenImageColor expects 3 arguments", l, c);
+			return ImageToValue(GenImageColor((int)args[0].asInt(), (int)args[1].asInt(), ValueToColor(args[2], l, c)));
+		});
+		define("GenImageGradientLinear", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("GenImageGradientLinear expects 5 arguments", l, c);
+			return ImageToValue(GenImageGradientLinear((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), ValueToColor(args[3], l, c), ValueToColor(args[4], l, c)));
+		});
+		define("GenImageGradientRadial", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("GenImageGradientRadial expects 5 arguments", l, c);
+			return ImageToValue(GenImageGradientRadial((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c), ValueToColor(args[4], l, c)));
+		});
+		define("GenImageGradientSquare", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("GenImageGradientSquare expects 5 arguments", l, c);
+			return ImageToValue(GenImageGradientSquare((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat(), ValueToColor(args[3], l, c), ValueToColor(args[4], l, c)));
+		});
+		define("GenImageChecked", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 6) throw ArgumentError("GenImageChecked expects 6 arguments", l, c);
+			return ImageToValue(GenImageChecked((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), ValueToColor(args[4], l, c), ValueToColor(args[5], l, c)));
+		});
+		define("GenImageWhiteNoise", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("GenImageWhiteNoise expects 3 arguments", l, c);
+			return ImageToValue(GenImageWhiteNoise((int)args[0].asInt(), (int)args[1].asInt(), (float)args[2].asFloat()));
+		});
+		define("GenImagePerlinNoise", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("GenImagePerlinNoise expects 5 arguments", l, c);
+			return ImageToValue(GenImagePerlinNoise((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), (float)args[4].asFloat()));
+		});
+		define("GenImageCellular", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("GenImageCellular expects 3 arguments", l, c);
+			return ImageToValue(GenImageCellular((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("ImageCopy", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("ImageCopy expects 1 arguments", l, c);
+			return ImageToValue(ImageCopy(ValueToImage(args[0], l, c)));
+		});
+		define("ImageFromImage", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("ImageFromImage expects 2 arguments", l, c);
+			return ImageToValue(ImageFromImage(ValueToImage(args[0], l, c), ValueToRect(args[1], l, c)));
+		});
+		define("ImageFromChannel", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("ImageFromChannel expects 2 arguments", l, c);
+			return ImageToValue(ImageFromChannel(ValueToImage(args[0], l, c), (int)args[1].asInt()));
+		});
+		define("IsTextureValid", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsTextureValid expects 1 arguments", l, c);
+			return Value::Bool(IsTextureValid(ValueToTexture(args[0], l, c)));
+		});
+		define("IsRenderTextureValid", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsRenderTextureValid expects 1 arguments", l, c);
+			return Value::Bool(IsRenderTextureValid(ValueToRenderTexture(args[0], l, c)));
+		});
+		define("SetTextureWrap", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("SetTextureWrap expects 2 arguments", l, c);
+			SetTextureWrap(ValueToTexture(args[0], l, c), (int)args[1].asInt());
+			return Value::None();
+		});
+		define("ColorIsEqual", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("ColorIsEqual expects 2 arguments", l, c);
+			return Value::Bool(ColorIsEqual(ValueToColor(args[0], l, c), ValueToColor(args[1], l, c)));
+		});
+		define("ColorToInt", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("ColorToInt expects 1 arguments", l, c);
+			return Value::Int(ColorToInt(ValueToColor(args[0], l, c)));
+		});
+		define("GetPixelDataSize", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("GetPixelDataSize expects 3 arguments", l, c);
+			return Value::Int(GetPixelDataSize((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("LoadFontFromImage", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("LoadFontFromImage expects 3 arguments", l, c);
+			return FontToValue(LoadFontFromImage(ValueToImage(args[0], l, c), ValueToColor(args[1], l, c), (int)args[2].asInt()));
+		});
+		define("IsFontValid", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsFontValid expects 1 arguments", l, c);
+			return Value::Bool(IsFontValid(ValueToFont(args[0], l, c)));
+		});
+		define("DrawTextCodepoint", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("DrawTextCodepoint expects 5 arguments", l, c);
+			DrawTextCodepoint(ValueToFont(args[0], l, c), (int)args[1].asInt(), ValueToVector2(args[2], l, c), (float)args[3].asFloat(), ValueToColor(args[4], l, c));
+			return Value::None();
+		});
+		define("SetTextLineSpacing", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetTextLineSpacing expects 1 arguments", l, c);
+			SetTextLineSpacing((int)args[0].asInt());
+			return Value::None();
+		});
+		define("GetGlyphIndex", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("GetGlyphIndex expects 2 arguments", l, c);
+			return Value::Int(GetGlyphIndex(ValueToFont(args[0], l, c), (int)args[1].asInt()));
+		});
+		define("DrawGrid", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("DrawGrid expects 2 arguments", l, c);
+			DrawGrid((int)args[0].asInt(), (float)args[1].asFloat());
+			return Value::None();
+		});
+		define("IsAudioDeviceReady", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("IsAudioDeviceReady expects 0 arguments", l, c);
+			return Value::Bool(IsAudioDeviceReady());
+		});
+		define("GetMasterVolume", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("GetMasterVolume expects 0 arguments", l, c);
+			return Value::Float(GetMasterVolume());
+		});
+		define("LoadSoundAlias", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("LoadSoundAlias expects 1 arguments", l, c);
+			return SoundToValue(LoadSoundAlias(ValueToSound(args[0], l, c)));
+		});
+		define("IsSoundValid", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsSoundValid expects 1 arguments", l, c);
+			return Value::Bool(IsSoundValid(ValueToSound(args[0], l, c)));
+		});
+		define("UnloadSoundAlias", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("UnloadSoundAlias expects 1 arguments", l, c);
+			UnloadSoundAlias(ValueToSound(args[0], l, c));
+			return Value::None();
+		});
+		define("PauseSound", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("PauseSound expects 1 arguments", l, c);
+			PauseSound(ValueToSound(args[0], l, c));
+			return Value::None();
+		});
+		define("ResumeSound", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("ResumeSound expects 1 arguments", l, c);
+			ResumeSound(ValueToSound(args[0], l, c));
+			return Value::None();
+		});
+		define("IsSoundPlaying", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsSoundPlaying expects 1 arguments", l, c);
+			return Value::Bool(IsSoundPlaying(ValueToSound(args[0], l, c)));
+		});
+		define("IsMusicValid", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsMusicValid expects 1 arguments", l, c);
+			return Value::Bool(IsMusicValid(ValueToMusic(args[0], l, c)));
+		});
+		define("IsMusicStreamPlaying", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("IsMusicStreamPlaying expects 1 arguments", l, c);
+			return Value::Bool(IsMusicStreamPlaying(ValueToMusic(args[0], l, c)));
+		});
+		define("StopMusicStream", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("StopMusicStream expects 1 arguments", l, c);
+			StopMusicStream(ValueToMusic(args[0], l, c));
+			return Value::None();
+		});
+		define("PauseMusicStream", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("PauseMusicStream expects 1 arguments", l, c);
+			PauseMusicStream(ValueToMusic(args[0], l, c));
+			return Value::None();
+		});
+		define("ResumeMusicStream", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("ResumeMusicStream expects 1 arguments", l, c);
+			ResumeMusicStream(ValueToMusic(args[0], l, c));
+			return Value::None();
+		});
+		define("SeekMusicStream", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("SeekMusicStream expects 2 arguments", l, c);
+			SeekMusicStream(ValueToMusic(args[0], l, c), (float)args[1].asFloat());
+			return Value::None();
+		});
+		define("SetMusicPan", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("SetMusicPan expects 2 arguments", l, c);
+			SetMusicPan(ValueToMusic(args[0], l, c), (float)args[1].asFloat());
+			return Value::None();
+		});
+		define("GetMusicTimeLength", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetMusicTimeLength expects 1 arguments", l, c);
+			return Value::Float(GetMusicTimeLength(ValueToMusic(args[0], l, c)));
+		});
+		define("GetMusicTimePlayed", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("GetMusicTimePlayed expects 1 arguments", l, c);
+			return Value::Float(GetMusicTimePlayed(ValueToMusic(args[0], l, c)));
+		});
+		define("SetAudioStreamBufferSizeDefault", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("SetAudioStreamBufferSizeDefault expects 1 arguments", l, c);
+			SetAudioStreamBufferSizeDefault((int)args[0].asInt());
+			return Value::None();
+		});
+
 		Value modVal;
 		modVal.type = ValueType::CLASS;
 		modVal.ref = moduleNamespace;
@@ -17926,93 +19827,956 @@ void Interpreter::registerStdLib() {
 		env->set("A_UNDERLINE", Value::Int(A_UNDERLINE), true, true);
 		env->set("A_REVERSE", Value::Int(A_REVERSE), true, true);
 		env->set("A_BLINK", Value::Int(A_BLINK), true, true);
-		define("InitScr", [](const vector<Value> &args, int l, int c) {
+
+		define("initscr", [](const vector<Value> &args, int l, int c) {
 			setlocale(LC_ALL, "");
-			initscr();
+			WINDOW* win = initscr();
 			cbreak();
 			noecho();
 			keypad(stdscr, true);
-			return Value::None();
+			return Value::Int((long long)win);
 		});
-		define("EndWin", [](const vector<Value> &args, int l, int c) {
+		define("endwin", [](const vector<Value> &args, int l, int c) {
 			endwin();
 			return Value::None();
 		});
-		define("Print", [](const vector<Value> &args, int l, int c) {
+		define("printw", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 1)
-				throw ArgumentError("Print(string)", l, c);
+				throw ArgumentError("printw(string)", l, c);
 			printw("%s", args[0].asString().c_str());
 			return Value::None();
 		});
-		define("MovePrint", [](const vector<Value> &args, int l, int c) {
-			if (args.size() != 3)
-				throw ArgumentError("MovePrint(x, y, string)", l, c);
-			mvprintw((int)args[1].asInt(), (int)args[0].asInt(), "%s",
-				args[2].asString().c_str());
-			return Value::None();
-		});
-		define("Refresh", [](const vector<Value> &args, int l, int c) {
-			refresh();
-			return Value::None();
-		});
-		define("Clear", [](const vector<Value> &args, int l, int c) {
-			clear();
-			return Value::None();
-		});
-		define("GetCh", [](const vector<Value> &args, int l, int c) {
-			return Value::Int(getch());
-		});
-		define("GetMaxX", [](const vector<Value> &args, int l, int c) {
-			return Value::Int(getmaxx(stdscr));
-		});
-		define("GetMaxY", [](const vector<Value> &args, int l, int c) {
+		define("getmaxy", [](const vector<Value> &args, int l, int c) {
 			return Value::Int(getmaxy(stdscr));
 		});
-		define("CursSet", [](const vector<Value> &args, int l, int c) {
-			if (args.size() != 1)
-				throw ArgumentError(
-					"CursSet(visibility: 0=invisible, 1=normal, 2=bright)", l, c);
-			curs_set((int)args[0].asInt());
-			return Value::None();
+		define("getmaxx", [](const vector<Value> &args, int l, int c) {
+			return Value::Int(getmaxx(stdscr));
 		});
-		define("NoDelay", [](const vector<Value> &args, int l, int c) {
-			if (args.size() != 1)
-				throw ArgumentError("NoDelay(bool)", l, c);
-			nodelay(stdscr, args[0].asBool());
-			return Value::None();
+		define("getyx", [](const vector<Value> &args, int l, int c) {
+			int y, x;
+			getyx(stdscr, y, x);
+			return Value::List({Value::Int(y), Value::Int(x)});
 		});
-		define("StartColor", [](const vector<Value> &args, int l, int c) {
-			start_color();
-			return Value::None();
-		});
-		define("InitPair", [](const vector<Value> &args, int l, int c) {
+		define("mvprintw", [](const vector<Value> &args, int l, int c) {
 			if (args.size() != 3)
-				throw ArgumentError("InitPair(pair_id, fg_color, bg_color)", l, c);
-			init_pair((short)args[0].asInt(), (short)args[1].asInt(),
-				(short)args[2].asInt());
+				throw ArgumentError("mvprintw(y, x, string)", l, c);
+			mvprintw((int)args[0].asInt(), (int)args[1].asInt(), "%s", args[2].asString().c_str());
 			return Value::None();
 		});
-		define("ColorPair", [](const vector<Value> &args, int l, int c) {
-			if (args.size() != 1)
-				throw ArgumentError("ColorPair(pair_id)", l, c);
+		define("mvwprintw", [](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4)
+				throw ArgumentError("mvwprintw(win, y, x, string)", l, c);
+			mvwprintw((WINDOW*)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), "%s", args[3].asString().c_str());
+			return Value::None();
+		});
+		define("wprintw", [](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2)
+				throw ArgumentError("wprintw(win, string)", l, c);
+			wprintw((WINDOW*)(long long)args[0].asInt(), "%s", args[1].asString().c_str());
+			return Value::None();
+		});
+
+		// --- AUTO-GENERATED NCURSES BINDINGS ---
+		define("addnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("addnstr expects 2 arguments", l, c);
+			return Value::Int(addnstr(args[0].asString().c_str(), (int)args[1].asInt()));
+		});
+		define("attroff", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("attroff expects 1 arguments", l, c);
+			return Value::Int(attroff((NCURSES_ATTR_T)args[0].asInt()));
+		});
+		define("attron", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("attron expects 1 arguments", l, c);
+			return Value::Int(attron((NCURSES_ATTR_T)args[0].asInt()));
+		});
+		define("attrset", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("attrset expects 1 arguments", l, c);
+			return Value::Int(attrset((NCURSES_ATTR_T)args[0].asInt()));
+		});
+		define("baudrate", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("baudrate expects 0 arguments", l, c);
+			return Value::Int(baudrate());
+		});
+		define("beep", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("beep expects 0 arguments", l, c);
+			return Value::Int(beep());
+		});
+		define("bkgd", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("bkgd expects 1 arguments", l, c);
+			return Value::Int(bkgd((chtype)args[0].asInt()));
+		});
+		define("bkgdset", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("bkgdset expects 1 arguments", l, c);
+			bkgdset((chtype)args[0].asInt());
+			return Value::None();
+		});
+		define("border", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 8) throw ArgumentError("border expects 8 arguments", l, c);
+			return Value::Int(border((chtype)args[0].asInt(), (chtype)args[1].asInt(), (chtype)args[2].asInt(), (chtype)args[3].asInt(), (chtype)args[4].asInt(), (chtype)args[5].asInt(), (chtype)args[6].asInt(), (chtype)args[7].asInt()));
+		});
+		define("box", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("box expects 3 arguments", l, c);
+			return Value::Int(box((WINDOW *)(long long)args[0].asInt(), (chtype)args[1].asInt(), (chtype)args[2].asInt()));
+		});
+		define("can_change_color", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("can_change_color expects 0 arguments", l, c);
+			return Value::Bool(can_change_color());
+		});
+		define("cbreak", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("cbreak expects 0 arguments", l, c);
+			return Value::Int(cbreak());
+		});
+		define("clear", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("clear expects 0 arguments", l, c);
+			return Value::Int(clear());
+		});
+		define("clearok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("clearok expects 2 arguments", l, c);
+			return Value::Int(clearok((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("clrtobot", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("clrtobot expects 0 arguments", l, c);
+			return Value::Int(clrtobot());
+		});
+		define("clrtoeol", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("clrtoeol expects 0 arguments", l, c);
+			return Value::Int(clrtoeol());
+		});
+		define("COLOR_PAIR", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("COLOR_PAIR expects 1 arguments", l, c);
 			return Value::Int(COLOR_PAIR((int)args[0].asInt()));
 		});
-		define("AttrOn", [](const vector<Value> &args, int l, int c) {
-			if (args.size() != 1)
-				throw ArgumentError("AttrOn(attribute_or_color)", l, c);
-			attron((int)args[0].asInt());
+		define("curs_set", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("curs_set expects 1 arguments", l, c);
+			return Value::Int(curs_set((int)args[0].asInt()));
+		});
+		define("def_prog_mode", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("def_prog_mode expects 0 arguments", l, c);
+			return Value::Int(def_prog_mode());
+		});
+		define("def_shell_mode", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("def_shell_mode expects 0 arguments", l, c);
+			return Value::Int(def_shell_mode());
+		});
+		define("delay_output", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("delay_output expects 1 arguments", l, c);
+			return Value::Int(delay_output((int)args[0].asInt()));
+		});
+		define("delch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("delch expects 0 arguments", l, c);
+			return Value::Int(delch());
+		});
+		define("delwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("delwin expects 1 arguments", l, c);
+			return Value::Int(delwin((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("deleteln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("deleteln expects 0 arguments", l, c);
+			return Value::Int(deleteln());
+		});
+		define("derwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("derwin expects 5 arguments", l, c);
+			return Value::Int((long long)derwin((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), (int)args[4].asInt()));
+		});
+		define("doupdate", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("doupdate expects 0 arguments", l, c);
+			return Value::Int(doupdate());
+		});
+		define("dupwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("dupwin expects 1 arguments", l, c);
+			return Value::Int((long long)dupwin((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("echo", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("echo expects 0 arguments", l, c);
+			return Value::Int(echo());
+		});
+		define("erase", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("erase expects 0 arguments", l, c);
+			return Value::Int(erase());
+		});
+		define("endwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("endwin expects 0 arguments", l, c);
+			return Value::Int(endwin());
+		});
+		define("filter", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("filter expects 0 arguments", l, c);
+			filter();
 			return Value::None();
 		});
-		define("AttrOff", [](const vector<Value> &args, int l, int c) {
-			if (args.size() != 1)
-				throw ArgumentError("AttrOff(attribute_or_color)", l, c);
-			attroff((int)args[0].asInt());
+		define("flash", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("flash expects 0 arguments", l, c);
+			return Value::Int(flash());
+		});
+		define("flushinp", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("flushinp expects 0 arguments", l, c);
+			return Value::Int(flushinp());
+		});
+		define("getbkgd", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("getbkgd expects 1 arguments", l, c);
+			return Value::Int(getbkgd((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("getch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("getch expects 0 arguments", l, c);
+			return Value::Int(getch());
+		});
+		define("getnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("getnstr expects 2 arguments", l, c);
+			return Value::Int(getnstr((char *)args[0].asString().c_str(), (int)args[1].asInt()));
+		});
+		define("getstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("getstr expects 1 arguments", l, c);
+			return Value::Int(getstr((char *)args[0].asString().c_str()));
+		});
+		define("halfdelay", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("halfdelay expects 1 arguments", l, c);
+			return Value::Int(halfdelay((int)args[0].asInt()));
+		});
+		define("has_colors", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("has_colors expects 0 arguments", l, c);
+			return Value::Bool(has_colors());
+		});
+		define("has_ic", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("has_ic expects 0 arguments", l, c);
+			return Value::Bool(has_ic());
+		});
+		define("has_il", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("has_il expects 0 arguments", l, c);
+			return Value::Bool(has_il());
+		});
+		define("hline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("hline expects 2 arguments", l, c);
+			return Value::Int(hline((chtype)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("idcok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("idcok expects 2 arguments", l, c);
+			idcok((WINDOW *)(long long)args[0].asInt(), args[1].asBool());
 			return Value::None();
 		});
-		define("DrawBox", [](const vector<Value> &args, int l, int c) {
-			box(stdscr, 0, 0);
+		define("idlok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("idlok expects 2 arguments", l, c);
+			return Value::Int(idlok((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("immedok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("immedok expects 2 arguments", l, c);
+			immedok((WINDOW *)(long long)args[0].asInt(), args[1].asBool());
 			return Value::None();
 		});
+		define("inch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("inch expects 0 arguments", l, c);
+			return Value::Int(inch());
+		});
+		define("initscr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("initscr expects 0 arguments", l, c);
+			return Value::Int((long long)initscr());
+		});
+		define("init_color", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("init_color expects 4 arguments", l, c);
+			return Value::Int(init_color((NCURSES_COLOR_T)args[0].asInt(), (NCURSES_COLOR_T)args[1].asInt(), (NCURSES_COLOR_T)args[2].asInt(), (NCURSES_COLOR_T)args[3].asInt()));
+		});
+		define("init_pair", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("init_pair expects 3 arguments", l, c);
+			return Value::Int(init_pair((NCURSES_PAIRS_T)args[0].asInt(), (NCURSES_COLOR_T)args[1].asInt(), (NCURSES_COLOR_T)args[2].asInt()));
+		});
+		define("innstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("innstr expects 2 arguments", l, c);
+			return Value::Int(innstr((char *)args[0].asString().c_str(), (int)args[1].asInt()));
+		});
+		define("insch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("insch expects 1 arguments", l, c);
+			return Value::Int(insch((chtype)args[0].asInt()));
+		});
+		define("insdelln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("insdelln expects 1 arguments", l, c);
+			return Value::Int(insdelln((int)args[0].asInt()));
+		});
+		define("insertln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("insertln expects 0 arguments", l, c);
+			return Value::Int(insertln());
+		});
+		define("insnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("insnstr expects 2 arguments", l, c);
+			return Value::Int(insnstr(args[0].asString().c_str(), (int)args[1].asInt()));
+		});
+		define("insstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("insstr expects 1 arguments", l, c);
+			return Value::Int(insstr(args[0].asString().c_str()));
+		});
+		define("instr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("instr expects 1 arguments", l, c);
+			return Value::Int(instr((char *)args[0].asString().c_str()));
+		});
+		define("intrflush", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("intrflush expects 2 arguments", l, c);
+			return Value::Int(intrflush((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("isendwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("isendwin expects 0 arguments", l, c);
+			return Value::Bool(isendwin());
+		});
+		define("is_linetouched", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("is_linetouched expects 2 arguments", l, c);
+			return Value::Bool(is_linetouched((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("is_wintouched", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("is_wintouched expects 1 arguments", l, c);
+			return Value::Bool(is_wintouched((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("keypad", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("keypad expects 2 arguments", l, c);
+			return Value::Int(keypad((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("leaveok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("leaveok expects 2 arguments", l, c);
+			return Value::Int(leaveok((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("longname", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("longname expects 0 arguments", l, c);
+			return Value::String(longname());
+		});
+		define("meta", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("meta expects 2 arguments", l, c);
+			return Value::Int(meta((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("move", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("move expects 2 arguments", l, c);
+			return Value::Int(move((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("mvaddnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvaddnstr expects 4 arguments", l, c);
+			return Value::Int(mvaddnstr((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str(), (int)args[3].asInt()));
+		});
+		define("mvaddstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvaddstr expects 3 arguments", l, c);
+			return Value::Int(mvaddstr((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str()));
+		});
+		define("mvcur", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvcur expects 4 arguments", l, c);
+			return Value::Int(mvcur((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt()));
+		});
+		define("mvdelch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("mvdelch expects 2 arguments", l, c);
+			return Value::Int(mvdelch((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("mvderwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvderwin expects 3 arguments", l, c);
+			return Value::Int(mvderwin((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("mvgetch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("mvgetch expects 2 arguments", l, c);
+			return Value::Int(mvgetch((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("mvgetnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvgetnstr expects 4 arguments", l, c);
+			return Value::Int(mvgetnstr((int)args[0].asInt(), (int)args[1].asInt(), (char *)args[2].asString().c_str(), (int)args[3].asInt()));
+		});
+		define("mvgetstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvgetstr expects 3 arguments", l, c);
+			return Value::Int(mvgetstr((int)args[0].asInt(), (int)args[1].asInt(), (char *)args[2].asString().c_str()));
+		});
+		define("mvhline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvhline expects 4 arguments", l, c);
+			return Value::Int(mvhline((int)args[0].asInt(), (int)args[1].asInt(), (chtype)args[2].asInt(), (int)args[3].asInt()));
+		});
+		define("mvinch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("mvinch expects 2 arguments", l, c);
+			return Value::Int(mvinch((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("mvinnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvinnstr expects 4 arguments", l, c);
+			return Value::Int(mvinnstr((int)args[0].asInt(), (int)args[1].asInt(), (char *)args[2].asString().c_str(), (int)args[3].asInt()));
+		});
+		define("mvinsch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvinsch expects 3 arguments", l, c);
+			return Value::Int(mvinsch((int)args[0].asInt(), (int)args[1].asInt(), (chtype)args[2].asInt()));
+		});
+		define("mvinsnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvinsnstr expects 4 arguments", l, c);
+			return Value::Int(mvinsnstr((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str(), (int)args[3].asInt()));
+		});
+		define("mvinsstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvinsstr expects 3 arguments", l, c);
+			return Value::Int(mvinsstr((int)args[0].asInt(), (int)args[1].asInt(), args[2].asString().c_str()));
+		});
+		define("mvinstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvinstr expects 3 arguments", l, c);
+			return Value::Int(mvinstr((int)args[0].asInt(), (int)args[1].asInt(), (char *)args[2].asString().c_str()));
+		});
+		define("mvvline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvvline expects 4 arguments", l, c);
+			return Value::Int(mvvline((int)args[0].asInt(), (int)args[1].asInt(), (chtype)args[2].asInt(), (int)args[3].asInt()));
+		});
+		define("mvwaddnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("mvwaddnstr expects 5 arguments", l, c);
+			return Value::Int(mvwaddnstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), args[3].asString().c_str(), (int)args[4].asInt()));
+		});
+		define("mvwaddstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvwaddstr expects 4 arguments", l, c);
+			return Value::Int(mvwaddstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), args[3].asString().c_str()));
+		});
+		define("mvwdelch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvwdelch expects 3 arguments", l, c);
+			return Value::Int(mvwdelch((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("mvwgetch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvwgetch expects 3 arguments", l, c);
+			return Value::Int(mvwgetch((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("mvwgetnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("mvwgetnstr expects 5 arguments", l, c);
+			return Value::Int(mvwgetnstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (char *)args[3].asString().c_str(), (int)args[4].asInt()));
+		});
+		define("mvwgetstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvwgetstr expects 4 arguments", l, c);
+			return Value::Int(mvwgetstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (char *)args[3].asString().c_str()));
+		});
+		define("mvwhline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("mvwhline expects 5 arguments", l, c);
+			return Value::Int(mvwhline((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (chtype)args[3].asInt(), (int)args[4].asInt()));
+		});
+		define("mvwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvwin expects 3 arguments", l, c);
+			return Value::Int(mvwin((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("mvwinch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("mvwinch expects 3 arguments", l, c);
+			return Value::Int(mvwinch((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("mvwinnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("mvwinnstr expects 5 arguments", l, c);
+			return Value::Int(mvwinnstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (char *)args[3].asString().c_str(), (int)args[4].asInt()));
+		});
+		define("mvwinsch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvwinsch expects 4 arguments", l, c);
+			return Value::Int(mvwinsch((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (chtype)args[3].asInt()));
+		});
+		define("mvwinsnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("mvwinsnstr expects 5 arguments", l, c);
+			return Value::Int(mvwinsnstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), args[3].asString().c_str(), (int)args[4].asInt()));
+		});
+		define("mvwinsstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvwinsstr expects 4 arguments", l, c);
+			return Value::Int(mvwinsstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), args[3].asString().c_str()));
+		});
+		define("mvwinstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("mvwinstr expects 4 arguments", l, c);
+			return Value::Int(mvwinstr((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (char *)args[3].asString().c_str()));
+		});
+		define("mvwvline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("mvwvline expects 5 arguments", l, c);
+			return Value::Int(mvwvline((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (chtype)args[3].asInt(), (int)args[4].asInt()));
+		});
+		define("napms", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("napms expects 1 arguments", l, c);
+			return Value::Int(napms((int)args[0].asInt()));
+		});
+		define("newpad", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("newpad expects 2 arguments", l, c);
+			return Value::Int((long long)newpad((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("newwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("newwin expects 4 arguments", l, c);
+			return Value::Int((long long)newwin((int)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt()));
+		});
+		define("nl", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("nl expects 0 arguments", l, c);
+			return Value::Int(nl());
+		});
+		define("nocbreak", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("nocbreak expects 0 arguments", l, c);
+			return Value::Int(nocbreak());
+		});
+		define("nodelay", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("nodelay expects 2 arguments", l, c);
+			return Value::Int(nodelay((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("noecho", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("noecho expects 0 arguments", l, c);
+			return Value::Int(noecho());
+		});
+		define("nonl", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("nonl expects 0 arguments", l, c);
+			return Value::Int(nonl());
+		});
+		define("noqiflush", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("noqiflush expects 0 arguments", l, c);
+			noqiflush();
+			return Value::None();
+		});
+		define("noraw", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("noraw expects 0 arguments", l, c);
+			return Value::Int(noraw());
+		});
+		define("notimeout", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("notimeout expects 2 arguments", l, c);
+			return Value::Int(notimeout((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("PAIR_NUMBER", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("PAIR_NUMBER expects 1 arguments", l, c);
+			return Value::Int(PAIR_NUMBER((int)args[0].asInt()));
+		});
+		define("prefresh", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 7) throw ArgumentError("prefresh expects 7 arguments", l, c);
+			return Value::Int(prefresh((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), (int)args[4].asInt(), (int)args[5].asInt(), (int)args[6].asInt()));
+		});
+		define("qiflush", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("qiflush expects 0 arguments", l, c);
+			qiflush();
+			return Value::None();
+		});
+		define("raw", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("raw expects 0 arguments", l, c);
+			return Value::Int(raw());
+		});
+		define("redrawwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("redrawwin expects 1 arguments", l, c);
+			return Value::Int(redrawwin((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("refresh", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("refresh expects 0 arguments", l, c);
+			return Value::Int(refresh());
+		});
+		define("resetty", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("resetty expects 0 arguments", l, c);
+			return Value::Int(resetty());
+		});
+		define("reset_prog_mode", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("reset_prog_mode expects 0 arguments", l, c);
+			return Value::Int(reset_prog_mode());
+		});
+		define("reset_shell_mode", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("reset_shell_mode expects 0 arguments", l, c);
+			return Value::Int(reset_shell_mode());
+		});
+		define("savetty", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("savetty expects 0 arguments", l, c);
+			return Value::Int(savetty());
+		});
+		define("scr_dump", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("scr_dump expects 1 arguments", l, c);
+			return Value::Int(scr_dump(args[0].asString().c_str()));
+		});
+		define("scr_init", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("scr_init expects 1 arguments", l, c);
+			return Value::Int(scr_init(args[0].asString().c_str()));
+		});
+		define("scrl", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("scrl expects 1 arguments", l, c);
+			return Value::Int(scrl((int)args[0].asInt()));
+		});
+		define("scroll", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("scroll expects 1 arguments", l, c);
+			return Value::Int(scroll((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("scrollok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("scrollok expects 2 arguments", l, c);
+			return Value::Int(scrollok((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("scr_restore", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("scr_restore expects 1 arguments", l, c);
+			return Value::Int(scr_restore(args[0].asString().c_str()));
+		});
+		define("scr_set", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("scr_set expects 1 arguments", l, c);
+			return Value::Int(scr_set(args[0].asString().c_str()));
+		});
+		define("setscrreg", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("setscrreg expects 2 arguments", l, c);
+			return Value::Int(setscrreg((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("slk_clear", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("slk_clear expects 0 arguments", l, c);
+			return Value::Int(slk_clear());
+		});
+		define("slk_color", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("slk_color expects 1 arguments", l, c);
+			return Value::Int(slk_color((NCURSES_PAIRS_T)args[0].asInt()));
+		});
+		define("slk_init", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("slk_init expects 1 arguments", l, c);
+			return Value::Int(slk_init((int)args[0].asInt()));
+		});
+		define("slk_label", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("slk_label expects 1 arguments", l, c);
+			return Value::String(slk_label((int)args[0].asInt()));
+		});
+		define("slk_noutrefresh", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("slk_noutrefresh expects 0 arguments", l, c);
+			return Value::Int(slk_noutrefresh());
+		});
+		define("slk_refresh", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("slk_refresh expects 0 arguments", l, c);
+			return Value::Int(slk_refresh());
+		});
+		define("slk_restore", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("slk_restore expects 0 arguments", l, c);
+			return Value::Int(slk_restore());
+		});
+		define("slk_set", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("slk_set expects 3 arguments", l, c);
+			return Value::Int(slk_set((int)args[0].asInt(), args[1].asString().c_str(), (int)args[2].asInt()));
+		});
+		define("slk_touch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("slk_touch expects 0 arguments", l, c);
+			return Value::Int(slk_touch());
+		});
+		define("standout", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("standout expects 0 arguments", l, c);
+			return Value::Int(standout());
+		});
+		define("standend", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("standend expects 0 arguments", l, c);
+			return Value::Int(standend());
+		});
+		define("start_color", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("start_color expects 0 arguments", l, c);
+			return Value::Int(start_color());
+		});
+		define("subpad", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("subpad expects 5 arguments", l, c);
+			return Value::Int((long long)subpad((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), (int)args[4].asInt()));
+		});
+		define("subwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 5) throw ArgumentError("subwin expects 5 arguments", l, c);
+			return Value::Int((long long)subwin((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt(), (int)args[4].asInt()));
+		});
+		define("syncok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("syncok expects 2 arguments", l, c);
+			return Value::Int(syncok((WINDOW *)(long long)args[0].asInt(), args[1].asBool()));
+		});
+		define("termattrs", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("termattrs expects 0 arguments", l, c);
+			return Value::Int(termattrs());
+		});
+		define("termname", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("termname expects 0 arguments", l, c);
+			return Value::String(termname());
+		});
+		define("timeout", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("timeout expects 1 arguments", l, c);
+			timeout((int)args[0].asInt());
+			return Value::None();
+		});
+		define("touchline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("touchline expects 3 arguments", l, c);
+			return Value::Int(touchline((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("touchwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("touchwin expects 1 arguments", l, c);
+			return Value::Int(touchwin((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("typeahead", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("typeahead expects 1 arguments", l, c);
+			return Value::Int(typeahead((int)args[0].asInt()));
+		});
+		define("ungetch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("ungetch expects 1 arguments", l, c);
+			return Value::Int(ungetch((int)args[0].asInt()));
+		});
+		define("untouchwin", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("untouchwin expects 1 arguments", l, c);
+			return Value::Int(untouchwin((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("use_env", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("use_env expects 1 arguments", l, c);
+			use_env(args[0].asBool());
+			return Value::None();
+		});
+		define("use_tioctl", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("use_tioctl expects 1 arguments", l, c);
+			use_tioctl(args[0].asBool());
+			return Value::None();
+		});
+		define("vidattr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("vidattr expects 1 arguments", l, c);
+			return Value::Int(vidattr((chtype)args[0].asInt()));
+		});
+		define("vline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("vline expects 2 arguments", l, c);
+			return Value::Int(vline((chtype)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("waddnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("waddnstr expects 3 arguments", l, c);
+			return Value::Int(waddnstr((WINDOW *)(long long)args[0].asInt(), args[1].asString().c_str(), (int)args[2].asInt()));
+		});
+		define("waddstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("waddstr expects 2 arguments", l, c);
+			return Value::Int(waddstr((WINDOW *)(long long)args[0].asInt(), args[1].asString().c_str()));
+		});
+		define("wattron", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wattron expects 2 arguments", l, c);
+			return Value::Int(wattron((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("wattroff", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wattroff expects 2 arguments", l, c);
+			return Value::Int(wattroff((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("wattrset", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wattrset expects 2 arguments", l, c);
+			return Value::Int(wattrset((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("wbkgd", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wbkgd expects 2 arguments", l, c);
+			return Value::Int(wbkgd((WINDOW *)(long long)args[0].asInt(), (chtype)args[1].asInt()));
+		});
+		define("wbkgdset", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wbkgdset expects 2 arguments", l, c);
+			wbkgdset((WINDOW *)(long long)args[0].asInt(), (chtype)args[1].asInt());
+			return Value::None();
+		});
+		define("wborder", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 9) throw ArgumentError("wborder expects 9 arguments", l, c);
+			return Value::Int(wborder((WINDOW *)(long long)args[0].asInt(), (chtype)args[1].asInt(), (chtype)args[2].asInt(), (chtype)args[3].asInt(), (chtype)args[4].asInt(), (chtype)args[5].asInt(), (chtype)args[6].asInt(), (chtype)args[7].asInt(), (chtype)args[8].asInt()));
+		});
+		define("wclear", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wclear expects 1 arguments", l, c);
+			return Value::Int(wclear((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wclrtobot", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wclrtobot expects 1 arguments", l, c);
+			return Value::Int(wclrtobot((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wclrtoeol", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wclrtoeol expects 1 arguments", l, c);
+			return Value::Int(wclrtoeol((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wcursyncup", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wcursyncup expects 1 arguments", l, c);
+			wcursyncup((WINDOW *)(long long)args[0].asInt());
+			return Value::None();
+		});
+		define("wdelch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wdelch expects 1 arguments", l, c);
+			return Value::Int(wdelch((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wdeleteln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wdeleteln expects 1 arguments", l, c);
+			return Value::Int(wdeleteln((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("werase", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("werase expects 1 arguments", l, c);
+			return Value::Int(werase((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wgetch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wgetch expects 1 arguments", l, c);
+			return Value::Int(wgetch((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wgetnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("wgetnstr expects 3 arguments", l, c);
+			return Value::Int(wgetnstr((WINDOW *)(long long)args[0].asInt(), (char *)args[1].asString().c_str(), (int)args[2].asInt()));
+		});
+		define("wgetstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wgetstr expects 2 arguments", l, c);
+			return Value::Int(wgetstr((WINDOW *)(long long)args[0].asInt(), (char *)args[1].asString().c_str()));
+		});
+		define("whline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("whline expects 3 arguments", l, c);
+			return Value::Int(whline((WINDOW *)(long long)args[0].asInt(), (chtype)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("winch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("winch expects 1 arguments", l, c);
+			return Value::Int(winch((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("winnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("winnstr expects 3 arguments", l, c);
+			return Value::Int(winnstr((WINDOW *)(long long)args[0].asInt(), (char *)args[1].asString().c_str(), (int)args[2].asInt()));
+		});
+		define("winsch", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("winsch expects 2 arguments", l, c);
+			return Value::Int(winsch((WINDOW *)(long long)args[0].asInt(), (chtype)args[1].asInt()));
+		});
+		define("winsdelln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("winsdelln expects 2 arguments", l, c);
+			return Value::Int(winsdelln((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("winsertln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("winsertln expects 1 arguments", l, c);
+			return Value::Int(winsertln((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("winsnstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("winsnstr expects 3 arguments", l, c);
+			return Value::Int(winsnstr((WINDOW *)(long long)args[0].asInt(), args[1].asString().c_str(), (int)args[2].asInt()));
+		});
+		define("winsstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("winsstr expects 2 arguments", l, c);
+			return Value::Int(winsstr((WINDOW *)(long long)args[0].asInt(), args[1].asString().c_str()));
+		});
+		define("winstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("winstr expects 2 arguments", l, c);
+			return Value::Int(winstr((WINDOW *)(long long)args[0].asInt(), (char *)args[1].asString().c_str()));
+		});
+		define("wmove", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("wmove expects 3 arguments", l, c);
+			return Value::Int(wmove((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("wnoutrefresh", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wnoutrefresh expects 1 arguments", l, c);
+			return Value::Int(wnoutrefresh((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wredrawln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("wredrawln expects 3 arguments", l, c);
+			return Value::Int(wredrawln((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("wrefresh", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wrefresh expects 1 arguments", l, c);
+			return Value::Int(wrefresh((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wscrl", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wscrl expects 2 arguments", l, c);
+			return Value::Int(wscrl((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("wsetscrreg", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("wsetscrreg expects 3 arguments", l, c);
+			return Value::Int(wsetscrreg((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("wstandout", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wstandout expects 1 arguments", l, c);
+			return Value::Int(wstandout((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wstandend", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wstandend expects 1 arguments", l, c);
+			return Value::Int(wstandend((WINDOW *)(long long)args[0].asInt()));
+		});
+		define("wsyncdown", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wsyncdown expects 1 arguments", l, c);
+			wsyncdown((WINDOW *)(long long)args[0].asInt());
+			return Value::None();
+		});
+		define("wsyncup", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("wsyncup expects 1 arguments", l, c);
+			wsyncup((WINDOW *)(long long)args[0].asInt());
+			return Value::None();
+		});
+		define("wtimeout", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("wtimeout expects 2 arguments", l, c);
+			wtimeout((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt());
+			return Value::None();
+		});
+		define("wtouchln", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 4) throw ArgumentError("wtouchln expects 4 arguments", l, c);
+			return Value::Int(wtouchln((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt(), (int)args[3].asInt()));
+		});
+		define("wvline", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("wvline expects 3 arguments", l, c);
+			return Value::Int(wvline((WINDOW *)(long long)args[0].asInt(), (chtype)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("tigetflag", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("tigetflag expects 1 arguments", l, c);
+			return Value::Int(tigetflag(args[0].asString().c_str()));
+		});
+		define("tigetnum", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("tigetnum expects 1 arguments", l, c);
+			return Value::Int(tigetnum(args[0].asString().c_str()));
+		});
+		define("tigetstr", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("tigetstr expects 1 arguments", l, c);
+			return Value::String(tigetstr(args[0].asString().c_str()));
+		});
+		define("putp", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("putp expects 1 arguments", l, c);
+			return Value::Int(putp(args[0].asString().c_str()));
+		});
+		define("assume_default_colors", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("assume_default_colors expects 2 arguments", l, c);
+			return Value::Int(assume_default_colors((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("curses_version", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("curses_version expects 0 arguments", l, c);
+			return Value::String(curses_version());
+		});
+		define("define_key", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("define_key expects 2 arguments", l, c);
+			return Value::Int(define_key(args[0].asString().c_str(), (int)args[1].asInt()));
+		});
+		define("get_escdelay", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("get_escdelay expects 0 arguments", l, c);
+			return Value::Int(get_escdelay());
+		});
+		define("is_cbreak", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("is_cbreak expects 0 arguments", l, c);
+			return Value::Int(is_cbreak());
+		});
+		define("is_echo", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("is_echo expects 0 arguments", l, c);
+			return Value::Int(is_echo());
+		});
+		define("is_nl", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("is_nl expects 0 arguments", l, c);
+			return Value::Int(is_nl());
+		});
+		define("is_raw", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("is_raw expects 0 arguments", l, c);
+			return Value::Int(is_raw());
+		});
+		define("is_term_resized", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("is_term_resized expects 2 arguments", l, c);
+			return Value::Bool(is_term_resized((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("key_defined", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("key_defined expects 1 arguments", l, c);
+			return Value::Int(key_defined(args[0].asString().c_str()));
+		});
+		define("keybound", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("keybound expects 2 arguments", l, c);
+			return Value::String(keybound((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("keyok", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("keyok expects 2 arguments", l, c);
+			return Value::Int(keyok((int)args[0].asInt(), args[1].asBool()));
+		});
+		define("nofilter", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("nofilter expects 0 arguments", l, c);
+			nofilter();
+			return Value::None();
+		});
+		define("resize_term", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("resize_term expects 2 arguments", l, c);
+			return Value::Int(resize_term((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("resizeterm", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("resizeterm expects 2 arguments", l, c);
+			return Value::Int(resizeterm((int)args[0].asInt(), (int)args[1].asInt()));
+		});
+		define("set_escdelay", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("set_escdelay expects 1 arguments", l, c);
+			return Value::Int(set_escdelay((int)args[0].asInt()));
+		});
+		define("set_tabsize", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("set_tabsize expects 1 arguments", l, c);
+			return Value::Int(set_tabsize((int)args[0].asInt()));
+		});
+		define("use_default_colors", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("use_default_colors expects 0 arguments", l, c);
+			return Value::Int(use_default_colors());
+		});
+		define("use_legacy_coding", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("use_legacy_coding expects 1 arguments", l, c);
+			return Value::Int(use_legacy_coding((int)args[0].asInt()));
+		});
+		define("wresize", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("wresize expects 3 arguments", l, c);
+			return Value::Int(wresize((WINDOW *)(long long)args[0].asInt(), (int)args[1].asInt(), (int)args[2].asInt()));
+		});
+		define("use_extended_names", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("use_extended_names expects 1 arguments", l, c);
+			return Value::Int(use_extended_names(args[0].asBool()));
+		});
+		define("has_mouse", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 0) throw ArgumentError("has_mouse expects 0 arguments", l, c);
+			return Value::Bool(has_mouse());
+		});
+		define("mouseinterval", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("mouseinterval expects 1 arguments", l, c);
+			return Value::Int(mouseinterval((int)args[0].asInt()));
+		});
+		define("mcprint", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("mcprint expects 2 arguments", l, c);
+			return Value::Int(mcprint((char *)args[0].asString().c_str(), (int)args[1].asInt()));
+		});
+		define("has_key", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 1) throw ArgumentError("has_key expects 1 arguments", l, c);
+			return Value::Int(has_key((int)args[0].asInt()));
+		});
+
 		Value modVal;
 		modVal.type = ValueType::CLASS;
 		modVal.ref = moduleNamespace;
@@ -18213,9 +20977,263 @@ void Interpreter::registerStdLib() {
 		modVal.ref = moduleNamespace;
 		env->set("Math", modVal, false, false);
 	};
+	
+	modules["Socket"] = [](std::shared_ptr<Env> env, const vector<string> &symbols) {
+		auto moduleNamespace = std::make_shared<ClassObject>("Socket");
+		moduleNamespace->mro.push_back(moduleNamespace.get());
+
+		static auto socketClass = std::make_shared<ClassObject>("SocketObj");
+
+		auto defineConstants = [&](string name, long val) {
+			moduleNamespace->staticFields[name] = Value::Int(val);
+		};
+		defineConstants("AF_INET", AF_INET);
+		defineConstants("AF_INET6", AF_INET6);
+		defineConstants("SOCK_STREAM", SOCK_STREAM);
+		defineConstants("SOCK_DGRAM", SOCK_DGRAM);
+		defineConstants("SOCK_RAW", SOCK_RAW);
+		defineConstants("IPPROTO_TCP", IPPROTO_TCP);
+		defineConstants("IPPROTO_UDP", IPPROTO_UDP);
+		defineConstants("SOL_SOCKET", SOL_SOCKET);
+		defineConstants("SO_REUSEADDR", SO_REUSEADDR);
+		defineConstants("SO_BROADCAST", SO_BROADCAST);
+
+		socketClass->methods["bind"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("bind(host, port)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+#endif
+				string host = args[2].asString();
+				int port = (int)args[3].asInt();
+
+				struct sockaddr_in addr;
+				addr.sin_family = AF_INET;
+				addr.sin_port = htons(port);
+				addr.sin_addr.s_addr = inet_addr(host.c_str());
+
+				if (::bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+					throw RuntimeError("bind() failed", l, c);
+				}
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		socketClass->methods["listen"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3) throw ArgumentError("listen(backlog)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+#endif
+				int backlog = (int)args[2].asInt();
+				if (::listen(sock, backlog) < 0) {
+					throw RuntimeError("listen() failed", l, c);
+				}
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		socketClass->methods["accept"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+				struct sockaddr_in client_addr;
+				int addrlen = sizeof(client_addr);
+				SOCKET client_sock = ::accept(sock, (struct sockaddr*)&client_addr, &addrlen);
+				if (client_sock == INVALID_SOCKET) throw RuntimeError("accept() failed", l, c);
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+				struct sockaddr_in client_addr;
+				socklen_t addrlen = sizeof(client_addr);
+				int client_sock = ::accept(sock, (struct sockaddr*)&client_addr, &addrlen);
+				if (client_sock < 0) throw RuntimeError("accept() failed", l, c);
+#endif
+				auto inst = std::make_shared<InstanceObject>(socketClass.get());
+				inst->fields["ptr"] = Value::pInt((void*)(intptr_t)client_sock);
+				Value v;
+				v.type = ValueType::INSTANCE;
+				v.ref = inst;
+				return v;
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		socketClass->methods["connect"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("connect(host, port)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+#endif
+				string host = args[2].asString();
+				int port = (int)args[3].asInt();
+
+				struct sockaddr_in addr;
+				addr.sin_family = AF_INET;
+				addr.sin_port = htons(port);
+				addr.sin_addr.s_addr = inet_addr(host.c_str());
+
+				if (::connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+					throw RuntimeError("connect() failed", l, c);
+				}
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		socketClass->methods["send"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3) throw ArgumentError("send(data)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+#endif
+				string data = args[2].asString();
+				int sent = ::send(sock, data.c_str(), data.length(), 0);
+				return Value::Int(sent);
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		socketClass->methods["recv"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3) throw ArgumentError("recv(size)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+#endif
+				int size = (int)args[2].asInt();
+				std::vector<char> buffer(size);
+				int received = ::recv(sock, buffer.data(), size, 0);
+				if (received <= 0) return Value::String("");
+				return Value::String(string(buffer.data(), received));
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		socketClass->methods["close"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+				::closesocket(sock);
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+				::close(sock);
+#endif
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+        
+		
+		socketClass->methods["setblocking"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 3) throw ArgumentError("setblocking(bool)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+#endif
+				bool block = args[2].asBool();
+#ifdef _WIN32
+				u_long mode = block ? 0 : 1;
+				if (ioctlsocket(sock, FIONBIO, &mode) != NO_ERROR) {
+					throw RuntimeError("ioctlsocket failed", l, c);
+				}
+#else
+				int flags = fcntl(sock, F_GETFL, 0);
+				if (flags == -1) throw RuntimeError("fcntl F_GETFL failed", l, c);
+				flags = block ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+				if (fcntl(sock, F_SETFL, flags) != 0) {
+					throw RuntimeError("fcntl F_SETFL failed", l, c);
+				}
+#endif
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		socketClass->methods["setsockopt"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 5) throw ArgumentError("setsockopt(level, optname, value)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+#ifdef _WIN32
+				SOCKET sock = (SOCKET)self->fields["ptr"].aspInt();
+#else
+				int sock = (int)(intptr_t)self->fields["ptr"].aspInt();
+#endif
+				int level = (int)args[2].asInt();
+				int optname = (int)args[3].asInt();
+				int value = (int)args[4].asInt();
+				
+#ifdef _WIN32
+                const char* val_ptr = (const char*)&value;
+#else
+                const void* val_ptr = &value;
+#endif
+
+				if (::setsockopt(sock, level, optname, val_ptr, sizeof(value)) < 0) {
+					throw RuntimeError("setsockopt() failed", l, c);
+				}
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		moduleNamespace->staticFields["create"] = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+			if (args.size() < 3) throw ArgumentError("Socket.create(domain, type, protocol)", l, c);
+			int domain = (int)args[0].asInt();
+			int type = (int)args[1].asInt();
+			int protocol = (int)args[2].asInt();
+			
+#ifdef _WIN32
+			SOCKET sock = ::socket(domain, type, protocol);
+			if (sock == INVALID_SOCKET) throw RuntimeError("Failed to create socket", l, c);
+#else
+			int sock = ::socket(domain, type, protocol);
+			if (sock < 0) throw RuntimeError("Failed to create socket", l, c);
+#endif
+			auto inst = std::make_shared<InstanceObject>(socketClass.get());
+			inst->fields["ptr"] = Value::pInt((void*)(intptr_t)sock);
+			Value v;
+			v.type = ValueType::INSTANCE;
+			v.ref = inst;
+			return v;
+		});
+
+		Value classVal;
+		classVal.type = ValueType::CLASS;
+		classVal.ref = socketClass;
+		moduleNamespace->staticFields["SocketObj"] = classVal;
+		
+		Value modVal;
+		modVal.type = ValueType::CLASS;
+		modVal.ref = moduleNamespace;
+		env->set("Socket", modVal, false, false);
+	};
+
+
 	modules["Http"] = [this](std::shared_ptr<Env> env, const vector<string> &symbols) {
 		auto moduleNamespace = std::make_shared<ClassObject>("Http");
 		moduleNamespace->mro.push_back(moduleNamespace.get());
+
 		auto define = [&](string name, NativeFunc f) {
 			moduleNamespace->staticFields[name] = Value::Native(f);
 			if (symbols.size() == 1 && symbols[0] == "*") {
@@ -18228,10 +21246,13 @@ void Interpreter::registerStdLib() {
 					break;
 				}
 		};
+
 		static auto responseClass = std::make_shared<ClassObject>("HttpResponse");
 		auto ResultToValue = [=](const httplib::Result &res) -> Value {
-			if (!res)
+			if (!res) {
+				std::cerr << "HTTP request failed with error code: " << (int)res.error() << std::endl;
 				return Value::None();
+			}
 			auto inst = std::make_shared<InstanceObject>(responseClass.get());
 			inst->fields["status"] = Value::Int(res->status);
 			inst->fields["body"] = Value::String(res->body);
@@ -18240,39 +21261,80 @@ void Interpreter::registerStdLib() {
 			v.ref = inst;
 			return v;
 		};
+
 		define("Get", [=](const vector<Value> &args, int l, int c) {
-			if (args.size() != 2)
-				throw ArgumentError("Http.Get(host, path)", l, c);
-			httplib::Client cli(args[0].asString());
-			return ResultToValue(cli.Get(args[1].asString()));
+			if (args.size() != 2) throw ArgumentError("Http.Get(url, path)", l, c);
+			string url = args[0].asString();
+			if (url.find("https://") == 0) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+				string host = url.substr(8);
+				httplib::SSLClient cli(host);
+				cli.enable_server_certificate_verification(false);
+				return ResultToValue(cli.Get(args[1].asString()));
+#else
+				throw RuntimeError("HTTPS not supported (OpenSSL not enabled)", l, c);
+#endif
+			} else {
+				httplib::Client cli(url);
+				return ResultToValue(cli.Get(args[1].asString()));
+			}
 		});
+
 		define("Post", [=](const vector<Value> &args, int l, int c) {
-			if (args.size() != 4)
-				throw ArgumentError("Http.Post(host, path, body, contentType)", l,
-					c);
-			httplib::Client cli(args[0].asString());
-			return ResultToValue(cli.Post(args[1].asString(), args[2].asString(),
-				args[3].asString()));
+			if (args.size() != 4) throw ArgumentError("Http.Post(url, path, body, contentType)", l, c);
+			string url = args[0].asString();
+			if (url.find("https://") == 0) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+				string host = url.substr(8);
+				httplib::SSLClient cli(host);
+				cli.enable_server_certificate_verification(false);
+				return ResultToValue(cli.Post(args[1].asString(), args[2].asString(), args[3].asString()));
+#else
+				throw RuntimeError("HTTPS not supported", l, c);
+#endif
+			} else {
+				httplib::Client cli(url);
+				return ResultToValue(cli.Post(args[1].asString(), args[2].asString(), args[3].asString()));
+			}
 		});
+
 		define("Put", [=](const vector<Value> &args, int l, int c) {
-			if (args.size() != 4)
-				throw ArgumentError("Http.Put(host, path, body, contentType)", l,
-					c);
-			httplib::Client cli(args[0].asString());
-			return ResultToValue(cli.Put(args[1].asString(), args[2].asString(),
-				args[3].asString()));
+			if (args.size() != 4) throw ArgumentError("Http.Put(url, path, body, contentType)", l, c);
+			string url = args[0].asString();
+			if (url.find("https://") == 0) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+				httplib::SSLClient cli(url);
+				return ResultToValue(cli.Put(args[1].asString(), args[2].asString(), args[3].asString()));
+#else
+				throw RuntimeError("HTTPS not supported", l, c);
+#endif
+			} else {
+				httplib::Client cli(url);
+				return ResultToValue(cli.Put(args[1].asString(), args[2].asString(), args[3].asString()));
+			}
 		});
+
 		define("Delete", [=](const vector<Value> &args, int l, int c) {
-			if (args.size() != 2)
-				throw ArgumentError("Http.Delete(host, path)", l, c);
-			httplib::Client cli(args[0].asString());
-			return ResultToValue(cli.Delete(args[1].asString()));
+			if (args.size() != 2) throw ArgumentError("Http.Delete(url, path)", l, c);
+			string url = args[0].asString();
+			if (url.find("https://") == 0) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+				httplib::SSLClient cli(url);
+				return ResultToValue(cli.Delete(args[1].asString()));
+#else
+				throw RuntimeError("HTTPS not supported", l, c);
+#endif
+			} else {
+				httplib::Client cli(url);
+				return ResultToValue(cli.Delete(args[1].asString()));
+			}
 		});
-		static httplib::Server svr;
-		auto bindRoute = [this, env](const string &method, const string &path,
-								  Value lambda, int l, int c) {
-			auto handler = [=](const httplib::Request &req,
-									httplib::Response &res) {
+
+		static auto httpServerClass = std::make_shared<ClassObject>("HttpServerObj");
+		static auto httpsServerClass = std::make_shared<ClassObject>("HttpsServerObj");
+
+		auto bindRouteMethod = [this, env](httplib::Server* svr, const string &method, const string &path, Value lambda, int l, int c) {
+			auto handler = [=](const httplib::Request &req, httplib::Response &res) {
 				Chunk tempChunk;
 				int lambdaIdx = tempChunk.addConstant(lambda);
 				int bodyIdx = tempChunk.addConstant(Value::String(req.body));
@@ -18285,13 +21347,10 @@ void Interpreter::registerStdLib() {
 				tempChunk.write(OpCode::OP_RETURN, l, c);
 				VM tempVM;
 				tempVM.globals = env;
-				tempVM.methodResolver = [&](MethodCallExpr *m) {
-					return this->Resolve_methods(m);
-				};
+				tempVM.methodResolver = [&](MethodCallExpr *m) { return this->Resolve_methods(m); };
 				try {
 					tempVM.run(tempChunk);
-					Value ret =
-						tempVM.stack.empty() ? Value::None() : tempVM.stack.back();
+					Value ret = tempVM.stack.empty() ? Value::None() : tempVM.stack.back();
 					if (ret.type == ValueType::STRING) {
 						res.set_content(ret.asString(), "application/json");
 					} else {
@@ -18299,42 +21358,188 @@ void Interpreter::registerStdLib() {
 					}
 				} catch (...) {
 					res.status = 500;
-					res.set_content("Internal Server Error in y_lang VM",
-						"text/plain");
+					res.set_content("Internal Server Error in y_lang VM", "text/plain");
 				}
 			};
-			if (method == "GET")
-				svr.Get(path, handler);
-			else if (method == "POST")
-				svr.Post(path, handler);
+			if (method == "GET") svr->Get(path, handler);
+			else if (method == "POST") svr->Post(path, handler);
 		};
-		define("ServerGet", [=](const vector<Value> &args, int l, int c) {
-			if (args.size() != 2 || args[1].type != ValueType::FUNCTION)
-				throw ArgumentError("Http.ServerGet(path, lambda)", l, c);
-			bindRoute("GET", args[0].asString(), args[1], l, c);
-			return Value::None();
+
+		httpServerClass->methods["Get"] = ClassObject::MethodInfo{
+			.func = Value::Native([=](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("Server.Get(path, lambda)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *svr = (httplib::Server *)self->fields["ptr"].aspInt();
+				bindRouteMethod(svr, "GET", args[2].asString(), args[3], l, c);
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		httpServerClass->methods["Post"] = ClassObject::MethodInfo{
+			.func = Value::Native([=](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("Server.Post(path, lambda)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *svr = (httplib::Server *)self->fields["ptr"].aspInt();
+				bindRouteMethod(svr, "POST", args[2].asString(), args[3], l, c);
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		httpServerClass->methods["set_mount_point"] = ClassObject::MethodInfo{
+			.func = Value::Native([=](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("Server.set_mount_point(mount, dir)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *svr = (httplib::Server *)self->fields["ptr"].aspInt();
+				svr->set_mount_point(args[2].asString(), args[3].asString());
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+		httpServerClass->methods["listen"] = ClassObject::MethodInfo{
+			.func = Value::Native([=](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() < 4) throw ArgumentError("Server.listen(host, port)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *svr = (httplib::Server *)self->fields["ptr"].aspInt();
+				string host = args[2].asString();
+				int port = (int)args[3].asInt();
+				std::cout << "[ymm Http] Listening on " << host << ":" << port << "...\n";
+				svr->listen(host.c_str(), port);
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+
+		httpsServerClass->methods = httpServerClass->methods;
+
+		moduleNamespace->staticFields["Server"] = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+			auto *svr = new httplib::Server();
+			auto inst = std::make_shared<InstanceObject>(httpServerClass.get());
+			inst->fields["ptr"] = Value::pInt(svr);
+			Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+			return v;
 		});
-		define("ServerPost", [=](const vector<Value> &args, int l, int c) {
-			if (args.size() != 2 || args[1].type != ValueType::FUNCTION)
-				throw ArgumentError("Http.ServerPost(path, lambda)", l, c);
-			bindRoute("POST", args[0].asString(), args[1], l, c);
-			return Value::None();
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+		moduleNamespace->staticFields["SSLServer"] = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+			if (args.size() < 2) throw ArgumentError("Http.SSLServer(cert_path, key_path)", l, c);
+			auto *svr = new httplib::SSLServer(args[0].asString().c_str(), args[1].asString().c_str());
+			auto inst = std::make_shared<InstanceObject>(httpsServerClass.get());
+			inst->fields["ptr"] = Value::pInt(svr);
+			Value v; v.type = ValueType::INSTANCE; v.ref = inst;
+			return v;
 		});
-		define("Listen", [=](const vector<Value> &args, int l, int c) {
-			if (args.size() != 2)
-				throw ArgumentError("Http.Listen(host, port)", l, c);
-			string host = args[0].asString();
-			int port = (int)args[1].asInt();
-			std::cout << "[ymm Server] Listening on " << host << ":" << port
-						 << "...\n";
-			svr.listen(host.c_str(), port);
-			return Value::None();
-		});
+#endif
+
 		Value modVal;
 		modVal.type = ValueType::CLASS;
 		modVal.ref = moduleNamespace;
 		env->set("Http", modVal, false, false);
 	};
+
+	modules["Regex"] = [this](std::shared_ptr<Env> env, const vector<string> &symbols) {
+		auto moduleNamespace = std::make_shared<ClassObject>("Regex");
+		moduleNamespace->mro.push_back(moduleNamespace.get());
+
+		auto define = [&](string name, NativeFunc f) {
+			moduleNamespace->staticFields[name] = Value::Native(f);
+			if (symbols.size() == 1 && symbols[0] == "*") {
+				env->set(name, Value::Native(f), true);
+				return;
+			}
+			for (const auto &s : symbols)
+				if (s == name) {
+					env->set(name, Value::Native(f), true);
+					break;
+				}
+		};
+
+		auto getSubject = [&](const Value& arg, int l, int c) -> string {
+			if (arg.type == ValueType::STRING) {
+				return arg.asString();
+			} else if (arg.type == ValueType::FILE) {
+				auto *fileObj = static_cast<FileObject *>(arg.ref.get());
+				if (!fileObj->isOpen) throw RuntimeError("File is closed", l, c);
+				fileObj->stream.clear();
+				fileObj->stream.seekg(0, std::ios::beg);
+				std::stringstream buffer;
+				buffer << fileObj->stream.rdbuf();
+				return buffer.str();
+			}
+			throw ArgumentError("Regex subject must be a String or a File", l, c);
+		};
+
+		define("match", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("Regex.match(pattern, string/file)", l, c);
+			string pattern = args[0].asString();
+			string subject = getSubject(args[1], l, c);
+			try {
+				std::regex re(pattern);
+				return Value::Bool(std::regex_match(subject, re));
+			} catch (const std::regex_error& e) {
+				throw RuntimeError(string("Regex error: ") + e.what(), l, c);
+			}
+		});
+
+		define("search", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("Regex.search(pattern, string/file)", l, c);
+			string pattern = args[0].asString();
+			string subject = getSubject(args[1], l, c);
+			try {
+				std::regex re(pattern);
+				std::smatch m;
+				if (std::regex_search(subject, m, re)) {
+					std::vector<Value> results;
+					for (auto& match : m) {
+						results.push_back(Value::String(match.str()));
+					}
+					return Value::List(results);
+				}
+				return Value::List({});
+			} catch (const std::regex_error& e) {
+				throw RuntimeError(string("Regex error: ") + e.what(), l, c);
+			}
+		});
+
+		define("find_all", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 2) throw ArgumentError("Regex.find_all(pattern, string/file)", l, c);
+			string pattern = args[0].asString();
+			string subject = getSubject(args[1], l, c);
+			try {
+				std::regex re(pattern);
+				std::sregex_iterator next(subject.begin(), subject.end(), re);
+				std::sregex_iterator end;
+				std::vector<Value> results;
+				while (next != end) {
+					std::smatch match = *next;
+					results.push_back(Value::String(match.str()));
+					next++;
+				}
+				return Value::List(results);
+			} catch (const std::regex_error& e) {
+				throw RuntimeError(string("Regex error: ") + e.what(), l, c);
+			}
+		});
+
+		define("replace", [=](const vector<Value> &args, int l, int c) {
+			if (args.size() != 3) throw ArgumentError("Regex.replace(pattern, string/file, replacement)", l, c);
+			string pattern = args[0].asString();
+			string subject = getSubject(args[1], l, c);
+			string repl = args[2].asString();
+			try {
+				std::regex re(pattern);
+				string result = std::regex_replace(subject, re, repl);
+				return Value::String(result);
+			} catch (const std::regex_error& e) {
+				throw RuntimeError(string("Regex error: ") + e.what(), l, c);
+			}
+		});
+
+		Value modVal;
+		modVal.type = ValueType::CLASS;
+		modVal.ref = moduleNamespace;
+		env->set("Regex", modVal, false, false);
+	};
+
 	modules["OpenNN"] = [](std::shared_ptr<Env> env, const vector<string> &symbols) {
 		auto moduleNamespace = std::make_shared<ClassObject>("OpenNN");
 		moduleNamespace->mro.push_back(moduleNamespace.get());
@@ -18355,15 +21560,21 @@ void Interpreter::registerStdLib() {
 			}
 		};
 		static auto nnClass = std::make_shared<ClassObject>("NeuralNetwork");
+      nnClass->staticFields["APPROXIMATION"] = Value::Int(0);
+      nnClass->staticFields["CLASSIFICATION"] = Value::Int(1);
 		nnClass->methods["__construct__"] = ClassObject::MethodInfo{
 			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
-				if (args.size() < 4) throw ArgumentError("NeuralNetwork(inputs, outputs)", l, c);
+				if (args.size() < 5) throw ArgumentError("NeuralNetwork(inputs, outputs, hidden, [mode])", l, c);
 				long inputs = (long)args[2].asInt();
 				long outputs = (long)args[3].asInt();
-				long hidden = (inputs + outputs) / 2 + 1;
-				auto *net = new opennn::ApproximationNetwork({inputs}, {hidden}, {outputs});
-				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
-				self->fields["ptr"] = Value::pInt(net);
+				long hidden = (long)args[4].asInt();
+            int mode = 0;
+            if (args.size() >= 6) mode = (int)args[5].asInt();
+            opennn::NeuralNetwork* net = nullptr;
+            if (mode == 1) net = new opennn::ClassificationNetwork({inputs}, {hidden}, {outputs});
+            else net = new opennn::ApproximationNetwork({inputs}, {hidden}, {outputs});
+            auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+            self->fields["ptr"] = Value::pInt(net);
 				return args[0];
 			}),
 			.access = AccessLevel::PUBLIC
@@ -18383,7 +21594,7 @@ void Interpreter::registerStdLib() {
          .func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
             if (args.size() < 3) throw ArgumentError("predict() requires 1 argument", l, c);
             auto *self = static_cast<InstanceObject *>(args[0].ref.get());
-            auto *net = (opennn::ApproximationNetwork *)self->fields["ptr"].aspInt();
+            auto *net = (opennn::NeuralNetwork *)self->fields["ptr"].aspInt();
             std::vector<Value>* elements_ptr = nullptr;
             if (args[2].type == ValueType::VECTOR) elements_ptr = &static_cast<VectorObject *>(args[2].ref.get())->elements;
 				else if (args[2].type == ValueType::LIST) elements_ptr = &static_cast<ListObject *>(args[2].ref.get())->elements;
@@ -18400,7 +21611,33 @@ void Interpreter::registerStdLib() {
          }),
          .access = AccessLevel::PUBLIC
       };
-		nnClass->methods["save"] = ClassObject::MethodInfo{
+		nnClass->methods["get_weights"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() > 2) throw ArgumentError("get_weights()", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *net = (opennn::NeuralNetwork *)self->fields["ptr"].aspInt();
+				auto arr = net->get_parameters();
+            std::vector<Value> vec(arr.size());
+            for (const auto& element : arr) vec.push_back(Value::Float(element));
+            Value resArr = Value::Vector(vec);
+				return resArr;
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+      nnClass->methods["set_weights"] = ClassObject::MethodInfo{
+			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+				if (args.size() != 3) throw ArgumentError("set_weights(vector)", l, c);
+				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+				auto *net = (opennn::NeuralNetwork *)self->fields["ptr"].aspInt();
+				auto *weights = static_cast<VectorObject *>(args[2].ref.get());
+            VectorR w(weights->elements.size());
+            for (size_t i = 0; i < w.size(); i++) w[i] = weights->elements[i].asFloat();
+            net->set_parameters(w);
+				return Value::None();
+			}),
+			.access = AccessLevel::PUBLIC
+		};
+      nnClass->methods["save"] = ClassObject::MethodInfo{
 			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
 				if (args.size() < 3) throw ArgumentError("save(filepath)", l, c);
 				auto *self = static_cast<InstanceObject *>(args[0].ref.get());
@@ -18443,6 +21680,25 @@ void Interpreter::registerStdLib() {
 			}),
 			.access = AccessLevel::PUBLIC
 		};
+      dataClass->methods["split"] = ClassObject::MethodInfo{
+         .func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+            if (args.size() < 5) throw ArgumentError("split(train_pct, val_pct, test_pct)", l, c);
+            auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+            auto *ds = (opennn::Dataset *)self->fields["ptr"].aspInt();
+            ds->split_samples_random(args[2].asFloat(), args[3].asFloat(), args[4].asFloat());
+            return Value::None();
+         }),
+         .access = AccessLevel::PUBLIC
+      };
+      dataClass->methods["scale_inputs"] = ClassObject::MethodInfo{
+         .func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+            auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+            auto *ds = (opennn::Dataset *)self->fields["ptr"].aspInt();
+            ds->scale_features("Input");
+            return Value::None();
+         }),
+         .access = AccessLevel::PUBLIC
+      };
 		dataClass->methods["set_columns"] = ClassObject::MethodInfo{
 			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
 				if (args.size() < 4) throw ArgumentError("set_columns(input_count, target_count)", l, c);
@@ -18461,10 +21717,13 @@ void Interpreter::registerStdLib() {
 			.access = AccessLevel::PUBLIC
 		};
 		static auto optClass = std::make_shared<ClassObject>("Optimizer");
-		optClass->staticFields["GRADIENT_DESCENT"] = Value::String("GradientDescent");
+		optClass->staticFields["GRADIENT_DESCENT"] = Value::String("StochasticGradientDescent");
 		optClass->staticFields["QUASI_NEWTON"] = Value::String("QuasiNewtonMethod");
 		optClass->staticFields["LEVENBERG_MARQUARDT"] = Value::String("LevenbergMarquardtAlgorithm");
 		optClass->staticFields["ADAM"] = Value::String("AdaptiveMomentEstimation");
+      optClass->staticFields["MEAN_SQUARED_ERROR"] = Value::String("MeanSquaredError");
+      optClass->staticFields["NORMALIZED_SQUARED_ERROR"] = Value::String("NormalizedSquaredError");
+      optClass->staticFields["CROSS_ENTROPY_ERROR"] = Value::String("CrossEntropyError");
 		optClass->methods["__construct__"] = ClassObject::MethodInfo{
 			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
 				if (args.size() < 4) throw ArgumentError("Optimizer(network_instance, dataset_instance)", l, c);
@@ -18479,6 +21738,36 @@ void Interpreter::registerStdLib() {
 			}),
 			.access = AccessLevel::PUBLIC
 		};
+      optClass->methods["set_learning_rate"] = ClassObject::MethodInfo{
+         .func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+            if (args.size() < 3) throw ArgumentError("set_learning_rate(float)", l, c);
+            auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+            auto *strategy = (opennn::TrainingStrategy *)self->fields["ptr"].aspInt();
+            opennn::Optimizer* opt = strategy->get_optimization_algorithm();
+            double lr = args[2].asFloat();
+            if (auto adam = dynamic_cast<opennn::AdaptiveMomentEstimation *>(opt)) {
+                  adam->set_learning_rate(lr);
+            }
+            else if (auto gd = dynamic_cast<opennn::StochasticGradientDescent *>(opt)) {
+                  gd->set_initial_learning_rate(lr);
+            }
+            else {
+                  throw RuntimeError("Current optimizer does not support manual learning rates!", l, c);
+            }
+            return Value::None();
+         }),
+         .access = AccessLevel::PUBLIC
+      };
+      optClass->methods["set_loss"] = ClassObject::MethodInfo{
+         .func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+            if (args.size() < 3 || args[2].type != ValueType::STRING) throw ArgumentError("set_loss(string)", l, c);
+            auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+            auto *strategy = (opennn::TrainingStrategy *)self->fields["ptr"].aspInt();
+            strategy->set_loss(args[2].asString());
+            return Value::None();
+         }),
+         .access = AccessLevel::PUBLIC
+      };
 		optClass->methods["set_epochs"] = ClassObject::MethodInfo{
 			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
 				if (args.size() < 3) throw ArgumentError("set_epochs(int)", l, c);
@@ -18499,6 +21788,18 @@ void Interpreter::registerStdLib() {
 			}),
 			.access = AccessLevel::PUBLIC
 		};
+      optClass->methods["train_with_history"] = ClassObject::MethodInfo{
+         .func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
+            auto *self = static_cast<InstanceObject *>(args[0].ref.get());
+            auto *strategy = (opennn::TrainingStrategy *)self->fields["ptr"].aspInt();
+            auto results = strategy->train();
+            std::vector<Value> history_vec;
+            long hist_size = (long)results.training_error_history.size();
+            for (long i = 0; i < hist_size; i++) history_vec.push_back(Value::Float((double)results.training_error_history[i]));
+            return Value::Vector(history_vec);
+         }),
+         .access = AccessLevel::PUBLIC
+      };
 		optClass->methods["set_algorithm"] = ClassObject::MethodInfo{
 			.func = Value::Native([](const std::vector<Value> &args, int l, int c) -> Value {
 				if (args.size() < 3 || args[2].type != ValueType::STRING) throw ArgumentError("set_algorithm(string)", l, c);
@@ -18539,9 +21840,9 @@ void Interpreter::registerStdLib() {
 		auto mRes = [this](MethodCallExpr *m) {
 			return this->Resolve_methods(m);
 		};
-		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 			if (this->modules.count(lib)) {
-				this->modules[lib](this->env, sym);
+				this->modules[lib](targetEnv, sym);
 			} else {
 				throw ImportError("Unknown module '" + lib + "'", 0, 0);
 			}
@@ -18607,9 +21908,9 @@ void Interpreter::registerStdLib() {
 		auto mRes = [this](MethodCallExpr *m) {
 			return this->Resolve_methods(m);
 		};
-		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 			if (this->modules.count(lib)) {
-				this->modules[lib](this->env, sym);
+				this->modules[lib](targetEnv, sym);
 			} else {
 				throw ImportError("Unknown module '" + lib + "'", 0, 0);
 			}
@@ -18642,9 +21943,9 @@ void Interpreter::registerStdLib() {
 		auto mRes = [this](MethodCallExpr *m) {
 			return this->Resolve_methods(m);
 		};
-		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 			if (this->modules.count(lib)) {
-				this->modules[lib](this->env, sym);
+				this->modules[lib](targetEnv, sym);
 			} else {
 				throw ImportError("Unknown module '" + lib + "'", 0, 0);
 			}
@@ -18662,9 +21963,9 @@ void Interpreter::registerStdLib() {
 		auto mRes = [this](MethodCallExpr *m) {
 			return this->Resolve_methods(m);
 		};
-		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 			if (this->modules.count(lib)) {
-				this->modules[lib](this->env, sym);
+				this->modules[lib](targetEnv, sym);
 			} else {
 				throw ImportError("Unknown module '" + lib + "'", 0, 0);
 			}
@@ -18708,9 +22009,9 @@ void Interpreter::registerStdLib() {
 			auto mRes = [this](MethodCallExpr *m) {
 				return this->Resolve_methods(m);
 			};
-			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 				if (this->modules.count(lib)) {
-					this->modules[lib](this->env, sym);
+					this->modules[lib](targetEnv, sym);
 				} else {
 					throw ImportError("Unknown module '" + lib + "'", 0, 0);
 				}
@@ -18751,9 +22052,9 @@ void Interpreter::registerStdLib() {
 			auto mRes = [this](MethodCallExpr *m) {
 				return this->Resolve_methods(m);
 			};
-			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 				if (this->modules.count(lib)) {
-					this->modules[lib](this->env, sym);
+					this->modules[lib](targetEnv, sym);
 				} else {
 					throw ImportError("Unknown module '" + lib + "'", 0, 0);
 				}
@@ -18809,9 +22110,9 @@ void Interpreter::registerStdLib() {
 			auto mRes = [this](MethodCallExpr *m) {
 				return this->Resolve_methods(m);
 			};
-			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 				if (this->modules.count(lib)) {
-					this->modules[lib](this->env, sym);
+					this->modules[lib](targetEnv, sym);
 				} else {
 					throw ImportError("Unknown module '" + lib + "'", 0, 0);
 				}
@@ -18866,9 +22167,9 @@ void Interpreter::registerStdLib() {
 			auto mRes = [this](MethodCallExpr *m) {
 				return this->Resolve_methods(m);
 			};
-			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 				if (this->modules.count(lib)) {
-					this->modules[lib](this->env, sym);
+					this->modules[lib](targetEnv, sym);
 				} else {
 					throw ImportError("Unknown module '" + lib + "'", 0, 0);
 				}
@@ -18919,9 +22220,9 @@ void Interpreter::registerStdLib() {
 			auto mRes = [this](MethodCallExpr *m) {
 				return this->Resolve_methods(m);
 			};
-			auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+			auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 				if (this->modules.count(lib)) {
-					this->modules[lib](this->env, sym);
+					this->modules[lib](targetEnv, sym);
 				} else {
 					throw ImportError("Unknown module '" + lib + "'", 0, 0);
 				}
@@ -18934,9 +22235,9 @@ void Interpreter::registerStdLib() {
 		for (size_t i = 0; i < args.size(); i++) {
 			Value v = args[i];
 			while (v.type == ValueType::REFERENCE) {
-				if (!v.ptr)
+				if (!v.get_ptr_safe())
 					throw RuntimeError("Null reference in dict()", l, c);
-				v = *v.ptr;
+				v = *(v.get_ptr_safe());
 			}
 			if (v.type != ValueType::PAIRED) {
 				throw TypeError("dict() requires 'key : value' arguments or 'pair()' objects", l, c);
@@ -19031,9 +22332,9 @@ void Interpreter::registerStdLib() {
 		if (args.size() > 1)
 			throw ArgumentError("length() takes exactly one argument", l, c);
 		auto mRes = [this](MethodCallExpr *m) { return this->Resolve_methods(m); };
-		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 			if (this->modules.count(lib))
-				this->modules[lib](this->env, sym);
+				this->modules[lib](targetEnv, sym);
 			else
 				throw ImportError("Unknown module '" + lib + "'", 0, 0);
 		};
@@ -19218,8 +22519,8 @@ void Interpreter::registerStdLib() {
 			 args[1].type != ValueType::REFERENCE) {
 			throw TypeError("swap requires refrences. use swap(@a, @b)", l, c);
 		}
-		auto *val1 = args[0].ptr;
-		auto *val2 = args[1].ptr;
+		auto *val1 = args[0].get_ptr_safe();
+		auto *val2 = args[1].get_ptr_safe();
 		if (!val1 || !val2)
 			throw RuntimeError("cannot swap null refrences", l, c);
 		if (val1->isConst || val2->isConst)
@@ -19238,9 +22539,9 @@ void Interpreter::registerStdLib() {
 			return this->Resolve_methods(m);
 		};
 
-		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 			if (this->modules.count(lib)) {
-				this->modules[lib](this->env, sym);
+				this->modules[lib](targetEnv, sym);
 			} else {
 				throw ImportError("Unknown module '" + lib + "'", 0, 0);
 			}
@@ -19259,9 +22560,9 @@ void Interpreter::registerStdLib() {
 			return this->Resolve_methods(m);
 		};
 
-		auto iRes = [this](std::string lib, std::vector<std::string> sym) {
+		auto iRes = [this](std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv) {
 			if (this->modules.count(lib)) {
-				this->modules[lib](this->env, sym);
+				this->modules[lib](targetEnv, sym);
 			} else {
 				throw ImportError("Unknown module '" + lib + "'", 0, 0);
 			}
@@ -19382,7 +22683,7 @@ void Interpreter::registerStdLib() {
 			// --- NOT CACHED: MUST COMPILE ---
 			std::stringstream cpp;
 			cpp << "#include <"<< args[3].asString() <<">\n";
-			cpp << "#include <string>\n";
+			cpp << "#include <string>\\n";
 			cpp << "#include <type_traits>\n\n";
 			cpp << includes << "\n";
 			// 1. Unpackers: y-- Value -> Raw C++ (Using Struct Specialization for safe recursion)
@@ -19566,11 +22867,11 @@ void Interpreter::registerStdLib() {
 	}),
 		false);
 }
-inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver) {
+inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver) {
 	while (v.type == ValueType::REFERENCE) {
-		if (!v.ptr)
+		if (!v.get_ptr_safe())
 			throw RuntimeError("Attempted to dereference a null pointer!", l, c);
-		v = *v.ptr;
+		v = *(v.get_ptr_safe());
 	}
 
 	if (v.type == ValueType::INSTANCE) {
@@ -19633,15 +22934,15 @@ inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderNa
 	}
 	return {false, v};
 }
-inline bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>)> importResolver) {
+inline bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver) {
 	if (a.type == ValueType::REFERENCE) {
 		if (b.type == ValueType::REFERENCE) {
-			return lessValue(*a.ptr, *b.ptr, globals, methodResolver, importResolver);
+			return lessValue(*(a.get_ptr_safe()), *(b.get_ptr_safe()), globals, methodResolver, importResolver);
 		} else {
-			return lessValue(*a.ptr, b, globals, methodResolver, importResolver);
+			return lessValue(*(a.get_ptr_safe()), b, globals, methodResolver, importResolver);
 		}
 	} else if (b.type == ValueType::REFERENCE) {
-		return lessValue(a, *b.ptr, globals, methodResolver, importResolver);
+		return lessValue(a, *(b.get_ptr_safe()), globals, methodResolver, importResolver);
 	}
 	if (a.type == ValueType::INSTANCE) {
 		auto *instA = static_cast<InstanceObject *>(a.ref.get());
@@ -20011,18 +23312,39 @@ inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 		}
 	} else if (op == TokenType::MOD) {
 		if (a.type == ValueType::INT && b.type == ValueType::INT) {
-			if (b.iVal == 0)
-				throw std::runtime_error("Modulo by zero");
+			if (b.iVal == 0) throw std::runtime_error("Modulo by zero");
 			return Value::Int(a.iVal % b.iVal);
 		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
-			if (b.asFloat() == 0.0)
-				throw std::runtime_error("Modulo by zero");
 			return BigIntObject::mod(a, b);
 		} else if (a.isNumber() && b.isNumber()) {
-			if (b.asFloat() == 0.0)
-				throw std::runtime_error("Modulo by zero");
+			if (b.asFloat() == 0) throw std::runtime_error("Modulo by zero");
 			return Value::Float(std::fmod(a.asFloat(), b.asFloat()));
 		}
+	} else if (op == TokenType::BITWISE_AND) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Int(a.iVal & b.iVal);
+		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT)
+			return BigIntObject::bit_and(a, b);
+	} else if (op == TokenType::BITWISE_OR) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Int(a.iVal | b.iVal);
+		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT)
+			return BigIntObject::bit_or(a, b);
+	} else if (op == TokenType::BITWISE_XOR) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Int(a.iVal ^ b.iVal);
+		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT)
+			return BigIntObject::bit_xor(a, b);
+	} else if (op == TokenType::BITWISE_SHL) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Int(a.iVal << b.iVal);
+		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT)
+			return BigIntObject::bit_shl(a, b);
+	} else if (op == TokenType::BITWISE_SHR) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Int(a.iVal >> b.iVal);
+		else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT)
+			return BigIntObject::bit_shr(a, b);
 	} else if (op == TokenType::POW) {
 		if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			return BigIntObject::pow(a, b);
