@@ -1,0 +1,59 @@
+.TH HTTP 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Http \- HTTP client and server
+.SH DESCRIPTION
+The
+.B Http
+module provides HTTP client functions (Get, Post, Put, Delete) and an
+HTTP/HTTPS server.  Uses the cpp-httplib library.
+.PP
+HTTP responses are HttpResponse instances with fields
+.B status (int)
+and
+.B body (string).
+A completely failed request returns
+.B none().
+.PP
+HTTPS requires OpenSSL support compiled in; otherwise RuntimeError is raised.
+.SH "CLIENT FUNCTIONS"
+.SS Get
+HttpResponse() Get(url: string(), path: string())
+.br
+HTTP GET request.  url = base URL, path = resource path.
+.SS Post
+HttpResponse() Post(url, path, body: string(), contentType: string())
+.br
+HTTP POST with body and content type.
+.SS Put
+HttpResponse() Put(url, path, body: string(), contentType: string())
+.br
+HTTP PUT with body and content type.
+.SS Delete
+HttpResponse() Delete(url: string(), path: string())
+.br
+HTTP DELETE request.
+.SH "SERVER FUNCTIONS"
+.SS Server
+HttpServerObj() Server()
+.br
+Creates an HTTP server.  Methods:
+.RS
+.TP
+Get(path, lambda)
+Register a GET route handler.
+.TP
+Post(path, lambda)
+Register a POST route handler.
+.TP
+set_mount_point(mount, dir)
+Serve static files from dir at mount path.
+.TP
+listen(host, port)
+Start the server (blocks).
+.RE
+.SS SSLServer
+HttpsServerObj() SSLServer(certPath, keyPath)
+.br
+Creates an HTTPS server (requires OpenSSL).  Same methods as Server.
+.SH "SEE ALSO"
+Socket(3), Json(3)

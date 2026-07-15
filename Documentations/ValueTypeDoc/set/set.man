@@ -1,0 +1,62 @@
+.TH SET 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+set \- built-in set value type methods
+.SH DESCRIPTION
+Sets in y-- are unordered collections of unique elements. They are highly optimized
+for membership testing and mathematical set operations.
+.SH "CORE METHODS"
+.TP
+\fBadd(val)\fR -> set()
+Adds \fBval\fR to the set. If it already exists, the set remains unchanged.
+.TP
+\fBremove(val)\fR -> set()
+Removes \fBval\fR from the set. Throws KeyError if \fBval\fR is not in the set.
+.TP
+\fBdiscard(val)\fR -> set()
+Removes \fBval\fR from the set if it is present. Does not throw an error if missing.
+.TP
+\fBpop()\fR -> any
+Removes and returns an arbitrary element from the set. Throws if empty.
+.TP
+\fBclear()\fR -> set()
+Removes all elements from the set.
+.TP
+\fBreserve(size)\fR -> none()
+Pre-allocates bucket capacity to avoid reallocations when growing the set.
+.SH "SET OPERATIONS"
+.TP
+\fBunion(other_set)\fR -> set()
+Returns a new set containing all unique elements from both sets.
+.TP
+\fBintersection(other_set)\fR -> set()
+Returns a new set containing only the elements that exist in both sets.
+.TP
+\fBdifference(other_set)\fR -> set()
+Returns a new set with elements that are in this set but not in \fBother_set\fR.
+.TP
+\fBsymmetric_difference(other_set)\fR -> set()
+Returns a new set containing elements that are in one set or the other, but not both.
+.TP
+\fBissubset(other_set)\fR -> bool()
+Returns true if every element in this set is also in \fBother_set\fR.
+.TP
+\fBissuperset(other_set)\fR -> bool()
+Returns true if every element in \fBother_set\fR is also in this set.
+.TP
+\fBisdisjoint(other_set)\fR -> bool()
+Returns true if the two sets share no elements.
+.SH "UTILITIES"
+.TP
+\fBjoin([sep=""])\fR -> string()
+Concatenates string representations of the elements. (Order is arbitrary).
+.SH "FUNCTIONAL METHODS"
+.TP
+\fBAll_Of / Any_Of / None_Of / One_Of (lambda)\fR -> bool()
+.TP
+\fBselect / reject (lambda)\fR -> set()
+Filters the set, keeping only elements that match (or don't match) the lambda.
+.TP
+\fBmap(lambda)\fR -> set()
+Maps each element and returns a new set of the results.
+.SH "SEE ALSO"
+list(3), dict(3)

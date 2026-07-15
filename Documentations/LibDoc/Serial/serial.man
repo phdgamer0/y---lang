@@ -1,0 +1,45 @@
+.TH SERIAL 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Serial \- serial port (UART) communication
+.SH DESCRIPTION
+The
+.B Serial
+module opens serial ports (UART) for reading and writing.
+.SH FUNCTIONS
+.SS open
+.TP
+\fBSYNOPSIS\fR
+SerialObj() open(port: string(), baud: int())
+.TP
+\fBDESCRIPTION\fR
+Opens the serial port at
+.I port
+with baud rate
+.IR baud .
+On POSIX configures 8N1 via tcsetattr with 0.5s read timeout.
+On Windows configures via DCB with 50ms timeouts.
+Returns a SerialObj handle with methods:
+.RS
+.TP
+read(n: int()) -> string()
+Reads up to n bytes.
+.TP
+write(data: string()) -> int()
+Writes data, returns bytes written.
+.TP
+close() -> none()
+Closes the port.
+.RE
+.TP
+\fBERRORS\fR
+\fBRuntimeError\fR \- port cannot be opened.
+.TP
+\fBEXAMPLES\fR
+.EX
+s = Serial.open("/dev/ttyUSB0", 9600)
+s.write("hello")
+data = s.read(64)
+s.close()
+.EE
+.SH "SEE ALSO"
+Socket(3)

@@ -1,0 +1,56 @@
+.TH EVENTS 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Events \- synthetic keyboard and mouse input injection
+.SH DESCRIPTION
+The
+.B Events
+module simulates OS-level keyboard and mouse events.
+On POSIX requires X11 with the XTest extension.
+On Windows uses the Win32 SendInput / SetCursorPos APIs.
+.PP
+Key codes on POSIX are X11 keysyms; on Windows they are VK_* virtual key codes.
+Mouse button codes: 0=left, 1=right, 2=middle.
+.SH FUNCTIONS
+.SS key_down
+none() key_down(key: int())
+.br
+Press (but do not release) a keyboard key.
+.SS key_up
+none() key_up(key: int())
+.br
+Release a keyboard key.
+.SS key_press
+none() key_press(key: int())
+.br
+Press and immediately release a keyboard key.
+.SS mouse_move
+none() mouse_move(x: int(), y: int())
+.br
+Move the mouse cursor to screen coordinates (x, y).
+.SS mouse_down
+none() mouse_down(button: int())
+.br
+Press (but do not release) a mouse button (0=left, 1=right, 2=middle).
+.SS mouse_up
+none() mouse_up(button: int())
+.br
+Release a mouse button.
+.SS mouse_click
+none() mouse_click(button: int())
+.br
+Press and immediately release a mouse button.
+.SS mouse_click_every
+none() mouse_click_every(button: int(), interval: int(), escape_key: int())
+.br
+Repeatedly clicks
+.I button
+every
+.I interval
+milliseconds until
+.I escape_key
+is held down.
+This call
+.B blocks
+until the escape key is detected.
+.SH "SEE ALSO"
+System(3)

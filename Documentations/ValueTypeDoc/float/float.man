@@ -1,0 +1,14 @@
+.TH FLOAT 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+float \- built-in floating-point value type methods
+.SH DESCRIPTION
+Floats in y-- represent IEEE 754 double-precision floating-point numbers.
+.SH METHODS
+.TP
+\fBbase(n)\fR -> string()
+Converts the floating-point number into a string representation in base \fBn\fR.
+The target base \fBn\fR must be between 2 and 36 inclusive.
+Negative numbers will be prefixed with a minus sign. The fractional part is evaluated
+and appended up to a precision of 8 fractional digits.
+.SH "SEE ALSO"
+int(3), Math(3)

@@ -1,0 +1,76 @@
+.TH FILESTREAM 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+FileStream \- file I/O module
+.SH DESCRIPTION
+Opens files for reading and writing.
+A file handle returned by \fBOpen\fR or \fBSafeOpen\fR exposes the methods
+\fBRead\fR, \fBReadLines\fR, \fBWrite\fR, \fBClear\fR, \fBClose\fR, and \fBIsOpen\fR
+(documented in the \fBfile\fR value-type reference).
+.SH FUNCTIONS
+.SS Open
+.TP
+\fBSYNOPSIS\fR
+.br
+file() Open(path: string())
+.TP
+\fBDESCRIPTION\fR
+Opens the file at
+.I path
+for reading and writing.
+Returns a file handle.
+Raises \fBFileNotFoundError\fR if the file cannot be opened.
+.TP
+\fBARGUMENTS\fR
+.TP
+path (string())
+Filesystem path to open.
+.TP
+\fBRETURN VALUE\fR
+file() \- an open file handle.
+.TP
+\fBERRORS\fR
+.br
+\fBArgumentError\fR \- wrong number of arguments (must be 1).
+.br
+\fBFileNotFoundError\fR \- file not found or permission denied.
+.TP
+\fBEXAMPLES\fR
+.EX
+Open("data.txt")       -> <file handle>
+.EE
+.SS SafeOpen
+.TP
+\fBSYNOPSIS\fR
+.br
+file() SafeOpen(path: string(), fallback: any() = none())
+.TP
+\fBDESCRIPTION\fR
+Tries to open the file at
+.I path .
+Returns
+.I fallback
+(default: none()) instead of throwing if the file cannot be opened.
+.TP
+\fBARGUMENTS\fR
+.TP
+path (string())
+Filesystem path to open.
+.TP
+fallback (any())
+Returned on failure; defaults to none().
+.TP
+\fBRETURN VALUE\fR
+file() on success, or
+.I fallback
+on failure.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR \- if called with 0 or more than 2 arguments.
+.TP
+\fBEXAMPLES\fR
+.EX
+SafeOpen("maybe.txt")            -> <file handle> or none()
+SafeOpen("missing.txt", false)   -> false
+.EE
+.SH "SEE ALSO"
+file(3), Os(3)

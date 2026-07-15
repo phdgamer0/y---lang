@@ -1,0 +1,76 @@
+.TH SYSTEM 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+System \- process-level utilities
+.SH DESCRIPTION
+The
+.B System
+module provides process-level operations: exiting, reading command-line
+arguments, detecting the current platform, colorising terminal output,
+emitting a beep, and reading a single keypress.
+.SH FUNCTIONS
+.SS Exit
+.TP
+\fBSYNOPSIS\fR
+none() Exit(code: int() = 0)
+.TP
+\fBDESCRIPTION\fR
+Terminates the process immediately with the given exit code.
+Never returns.
+Defaults to code 0 when called with no arguments.
+.SS Args
+.TP
+\fBSYNOPSIS\fR
+list() Args()
+.TP
+\fBDESCRIPTION\fR
+Returns command-line arguments as a list of strings.
+The first element is the interpreter executable (argv[0]).
+.SS ProcessId
+.TP
+\fBSYNOPSIS\fR
+int() ProcessId()
+.TP
+\fBDESCRIPTION\fR
+Returns the current process ID.
+.SS Platform
+.TP
+\fBSYNOPSIS\fR
+string() Platform()
+.TP
+\fBDESCRIPTION\fR
+Returns one of: "windows", "macos", "linux", "unknown".
+.SS Color
+.TP
+\fBSYNOPSIS\fR
+string() Color(text: string(), colorName: string())
+.TP
+\fBDESCRIPTION\fR
+Wraps text in ANSI colour escape codes.
+Valid colourName values: "red", "green", "yellow", "blue",
+"magenta", "cyan", "white", "reset".
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBValueError\fR (invalid colour name)
+.SS Beep
+.TP
+\fBSYNOPSIS\fR
+none() Beep(frequency: float(), duration: float())
+.TP
+\fBDESCRIPTION\fR
+Emits an audible beep.
+On Windows uses the Win32 Beep API (frequency in Hz, duration in ms).
+On POSIX writes '\\a' to stdout (frequency/duration ignored).
+Both must be > 0.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBValueError\fR
+.SS ReadKey
+.TP
+\fBSYNOPSIS\fR
+string() ReadKey()
+.TP
+\fBDESCRIPTION\fR
+Reads one character from stdin without echo and without requiring Enter.
+Returns a single-character string.
+.SH "SEE ALSO"
+Os(3), Time(3)

@@ -1,0 +1,87 @@
+.TH TIME 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Time \- time utilities (sleep, timestamps, formatting)
+.SH DESCRIPTION
+The
+.B Time
+module provides functions for sleeping, obtaining the current time, formatting
+timestamps, and decomposing timestamps into calendar components.
+.SH FUNCTIONS
+.SS Sleep
+.TP
+\fBSYNOPSIS\fR
+none() Sleep(milliseconds: int())
+.TP
+\fBDESCRIPTION\fR
+Blocks the current thread for the given number of milliseconds.
+Uses \fBstd::this_thread::sleep_for\fR.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR \- if not exactly 1 argument.
+.SS Now
+.TP
+\fBSYNOPSIS\fR
+float() Now()
+.TP
+\fBDESCRIPTION\fR
+Returns seconds since the Unix epoch (1970-01-01 UTC) as a float.
+Uses \fBstd::chrono::system_clock\fR.
+.TP
+\fBRETURN VALUE\fR
+float() \- seconds with sub-second precision.
+.SS Clock
+.TP
+\fBSYNOPSIS\fR
+float() Clock()
+.TP
+\fBDESCRIPTION\fR
+Returns milliseconds since the high-resolution clock's epoch.
+Suitable for benchmarking elapsed time; epoch is implementation-defined.
+.SS Format
+.TP
+\fBSYNOPSIS\fR
+string() Format(timestamp: float(), formatStr: string())
+.TP
+\fBDESCRIPTION\fR
+Formats a Unix timestamp as a local-time string using
+.BR strftime (3)
+conventions.
+.TP
+\fBARGUMENTS\fR
+.TP
+timestamp (float())
+Unix timestamp in seconds.
+.TP
+formatStr (string())
+strftime format string, e.g. "%Y-%m-%d %H:%M:%S".
+.TP
+\fBRETURN VALUE\fR
+string() \- formatted date/time, up to 79 characters.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.TP
+\fBEXAMPLES\fR
+.EX
+Format(Now(), "%Y-%m-%d")   -> "2026-07-15"
+.EE
+.SS Local
+.TP
+\fBSYNOPSIS\fR
+dict() Local(timestamp: float())
+.TP
+\fBDESCRIPTION\fR
+Decomposes a Unix timestamp into local-time calendar components.
+Returns a dict with keys:
+.B year, month, day, weekday, hour, min, sec
+(all int()).
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.TP
+\fBEXAMPLES\fR
+.EX
+Local(0.0)  -> {"year": 1970, "month": 1, ...}
+.EE
+.SH "SEE ALSO"
+System(3)

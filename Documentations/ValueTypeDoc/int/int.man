@@ -1,0 +1,14 @@
+.TH INT 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+int \- built-in integer value type methods
+.SH DESCRIPTION
+Integers in y-- represent whole numbers. They seamlessly scale to arbitrary
+precision (BigInt) when necessary.
+.SH METHODS
+.TP
+\fBbase(n)\fR -> string()
+Converts the integer into a string representation in base \fBn\fR.
+The target base \fBn\fR must be between 2 and 36 inclusive.
+Negative numbers will be prefixed with a minus sign.
+.SH "SEE ALSO"
+float(3), Math(3)

@@ -1,0 +1,89 @@
+.TH LIST 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+list \- built-in list value type methods
+.SH DESCRIPTION
+Lists in y-- are ordered, mutable sequences that can hold elements of any type.
+.SH "CORE METHODS"
+.TP
+\fBappend(val)\fR -> list()
+Appends \fBval\fR to the end of the list.
+.TP
+\fBget(index, [default_return])\fR -> any
+Returns the element at \fBindex\fR. Supports negative indices (e.g., -1 is the last element).
+If out of bounds, returns \fBdefault_return\fR if provided, else None.
+.TP
+\fBinsert(index, val)\fR -> list()
+Inserts \fBval\fR before the element at \fBindex\fR.
+.TP
+\fBpop([index])\fR -> any
+Removes and returns the element at \fBindex\fR. If no index is provided, pops the last element.
+.TP
+\fBremove(val)\fR -> none()
+Removes the first occurrence of \fBval\fR. Throws ValueError if not found.
+.TP
+\fBclear()\fR -> list()
+Removes all elements from the list.
+.TP
+\fBextend(iterable)\fR -> list()
+Appends all elements from another list, set, or range.
+.SH "SEARCHING & SORTING"
+.TP
+\fBcount(val)\fR -> int()
+Returns the number of occurrences of \fBval\fR.
+.TP
+\fBindex(val)\fR -> int()
+Returns the first index of \fBval\fR, or -1 if not found.
+.TP
+\fBreverse([modify_original, custom_lambda])\fR -> list()
+Reverses the list in place.
+.TP
+\fBsort([reverse_sort, modify_original, custom_lambda])\fR -> list()
+Sorts the list.
+.TP
+\fBshuffle()\fR -> list()
+Randomly shuffles the elements in place.
+.SH "MATH & AGGREGATION"
+.TP
+\fBsum() / min() / max() / average()\fR
+Performs mathematical aggregations on numeric lists. min() and max() work on strings too.
+.SH "UTILITIES"
+.TP
+\fBflatten()\fR -> list()
+Recursively flattens nested lists.
+.TP
+\fBchunk(size)\fR -> list()
+Splits the list into smaller sub-lists of \fBsize\fR.
+.TP
+\fBrotate(n)\fR -> list()
+Rotates elements by \fBn\fR positions.
+.TP
+\fBunique()\fR -> list()
+Removes duplicates.
+.TP
+\fBjoin([sep=""])\fR -> string()
+Joins elements into a string.
+.TP
+\fBfill(val, [count])\fR -> list()
+Fills the list with copies of \fBval\fR.
+.SH "HEAP OPERATIONS"
+.TP
+\fBMaxHeapify() / MinHeapify()\fR -> list()
+Converts the list into a max-heap or min-heap.
+.TP
+\fBMaxHeapPop() / MinHeapPop()\fR -> any
+Pops the root element of the heap.
+.TP
+\fBMaxHeapPush(val) / MinHeapPush(val)\fR -> list()
+Pushes \fBval\fR onto the heap.
+.SH "FUNCTIONAL METHODS"
+.TP
+\fBAll_Of / Any_Of / None_Of / One_Of (lambda)\fR -> bool()
+Boolean aggregations.
+.TP
+\fBselect / reject (lambda)\fR -> list()
+Filters elements.
+.TP
+\fBmap(lambda)\fR -> list()
+Maps elements.
+.SH "SEE ALSO"
+tuple(3), set(3)

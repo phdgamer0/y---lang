@@ -1,0 +1,81 @@
+.TH STRING 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+string \- built-in string value type methods
+.SH DESCRIPTION
+Strings in y-- are mutable sequences of characters. They support a wide range of
+built-in methods for manipulation, searching, formatting, and functional programming.
+.SH "CORE METHODS"
+.TP
+\fBappend(str)\fR -> string()
+Appends the contents of \fBstr\fR to the end of the string in-place.
+.TP
+\fBreserve(size)\fR -> none()
+Pre-allocates memory for the string up to \fBsize\fR characters to avoid reallocations.
+.TP
+\fBresize(size)\fR -> none()
+Resizes the string buffer to \fBsize\fR.
+.TP
+\fBreverse([modify_original=true, custom_lambda=None])\fR -> string()
+Reverses the string. If \fBmodify_original\fR is true, modifies the string in-place.
+If a \fBcustom_lambda\fR is provided, it is applied to each character before reversing.
+.TP
+\fBsort([reverse_sort=false, modify_original=true, custom_lambda=None])\fR -> string()
+Sorts the characters in the string based on ASCII values, or by using a \fBcustom_lambda\fR.
+.SH "TRANSFORMATIONS & FORMATTING"
+.TP
+\fBcapitalize([modify_original=true])\fR -> string()
+Capitalizes the first character of the string.
+.TP
+\fBcasefold([modify_original=true])\fR -> string()
+Converts to a lowercase form suitable for caseless matching.
+.TP
+\fBcenter(width, [fillchar=' ', modify_original=true])\fR -> string()
+Centers the string within a given \fBwidth\fR using \fBfillchar\fR.
+.TP
+\fBchars([start=0, end=-1])\fR -> list()
+Returns a list of single-character strings.
+.TP
+\fBsplit([delimiter=" "])\fR -> list()
+Splits the string into a list of strings by the specified \fBdelimiter\fR.
+.TP
+\fBljust(width, [fillchar, modify_original])\fR, \fBrjust(...)\fR -> string()
+Left-justifies or right-justifies the string within a field of size \fBwidth\fR.
+.TP
+\fBlower([modify_original=true])\fR, \fBupper([modify_original=true])\fR -> string()
+Converts the string to entirely lowercase or uppercase characters.
+.SH "WHITESPACE & STRIPPING"
+.TP
+\fBstrip([chars=" \\t\\n\\r\\v\\f", modify_original=true])\fR -> string()
+Removes leading and trailing characters that match \fBchars\fR.
+.TP
+\fBlstrip(...)\fR, \fBrstrip(...)\fR -> string()
+Removes leading or trailing characters, respectively.
+.SH "SEARCHING & QUERYING"
+.TP
+\fBascii()\fR -> int()
+Returns the ASCII integer value for a string of length 1.
+.TP
+\fBcount(sub, [start=0, end=-1])\fR -> int()
+Returns the number of non-overlapping occurrences of \fBsub\fR.
+.TP
+\fBendswith(suffix)\fR -> bool()
+Returns true if the string ends with \fBsuffix\fR.
+.TP
+\fBindex(sub)\fR -> int()
+Returns the starting index of the first occurrence of \fBsub\fR.
+.TP
+\fBisalnum()\fR, \fBisalpha()\fR, \fBisdecimal()\fR, \fBislower()\fR, \fBisupper()\fR -> bool()
+Returns true if all characters in the string match the respective property.
+.SH "FUNCTIONAL METHODS"
+Strings can be iterated over as collections of single characters.
+.TP
+\fBAll_Of / Any_Of / None_Of / One_Of (lambda)\fR -> bool()
+Evaluates a boolean condition over all characters.
+.TP
+\fBselect / reject (lambda)\fR -> string()
+Filters characters keeping those that return true/false, re-joining them into a string.
+.TP
+\fBmap(lambda)\fR -> string()|list()
+Maps each character. Returns a string if all mapped elements are strings, otherwise a list.
+.SH "SEE ALSO"
+list(3), Math(3)

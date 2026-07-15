@@ -1,0 +1,57 @@
+.TH SOCKET 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Socket \- low-level Berkeley socket networking
+.SH DESCRIPTION
+The
+.B Socket
+module provides low-level TCP/UDP socket programming via the POSIX Berkeley
+socket API.
+.PP
+Constants: AF_INET, AF_INET6, SOCK_STREAM, SOCK_DGRAM, SOCK_RAW,
+IPPROTO_TCP, IPPROTO_UDP, SOL_SOCKET, SO_REUSEADDR, SO_BROADCAST.
+.SH FUNCTIONS
+.SS create
+.TP
+\fBSYNOPSIS\fR
+SocketObj() Socket.create(domain: int(), type: int(), protocol: int())
+.TP
+\fBDESCRIPTION\fR
+Creates a socket.  Returns a SocketObj instance.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBRuntimeError\fR
+.SH "SOCKETOBJ METHODS"
+.TP
+\fBbind(host, port)\fR
+Bind to host:port (AF_INET/dotted-decimal).
+Raises \fBRuntimeError\fR on failure.
+.TP
+\fBlisten(backlog)\fR
+Mark as passive server socket with given backlog.
+Raises \fBRuntimeError\fR on failure.
+.TP
+\fBaccept()\fR -> SocketObj()
+Accept a pending connection; blocks until a client connects.
+Raises \fBRuntimeError\fR on failure.
+.TP
+\fBconnect(host, port)\fR
+Connect to remote host:port.
+Raises \fBRuntimeError\fR on failure.
+.TP
+\fBsend(data)\fR -> int()
+Send data string; returns bytes sent.
+.TP
+\fBrecv(size)\fR -> string()
+Receive up to size bytes; returns empty string on closed connection.
+.TP
+\fBclose()\fR
+Close the socket.
+.TP
+\fBsetblocking(bool)\fR
+Set blocking (true) or non-blocking (false) mode.
+.TP
+\fBsetsockopt(level, optname, value)\fR
+Set a socket option.
+Raises \fBRuntimeError\fR on failure.
+.SH "SEE ALSO"
+Http(3), Serial(3)

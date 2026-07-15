@@ -1,0 +1,52 @@
+.TH JSON 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Json \- JSON serialisation and deserialisation
+.SH DESCRIPTION
+The
+.B Json
+module provides JSON parsing, serialisation, and validation using the
+nlohmann/json C++ library.
+.SH FUNCTIONS
+.SS ParseJson
+.TP
+\fBSYNOPSIS\fR
+any() ParseJson(jsonString: string())
+.TP
+\fBDESCRIPTION\fR
+Parses
+.I jsonString
+as JSON and returns a y-- value tree.
+Mapping: null->none, bool->bool, integer->int, float->float,
+string->string, array->list, object->instance (fields = JSON keys).
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBParseError\fR (with byte offset)
+.SS StringifyJson
+.TP
+\fBSYNOPSIS\fR
+string() StringifyJson(value: any(), indent: int() = -1)
+.TP
+\fBDESCRIPTION\fR
+Serialises
+.I value
+to a JSON string.
+Cyclic references are replaced with "[Cyclic Reference]".
+Indent -1 (default) = compact; positive = pretty-printed.
+Unsupported field types in instances are silently skipped.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.SS IsValidJson
+.TP
+\fBSYNOPSIS\fR
+bool() IsValidJson(jsonString: string())
+.TP
+\fBDESCRIPTION\fR
+Returns true if
+.I jsonString
+is valid JSON.  Does not throw on invalid input.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.SH "SEE ALSO"
+Regex(3), Http(3)

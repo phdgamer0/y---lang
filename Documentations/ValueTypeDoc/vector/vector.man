@@ -1,0 +1,47 @@
+.TH VECTOR 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+vector \- built-in mathematical vector value type methods
+.SH DESCRIPTION
+Vectors in y-- are specialized arrays for numeric values (ints and floats)
+designed to support linear algebra operations.
+.SH "PROPERTIES"
+.TP
+\fBdimension()\fR -> int()
+Returns the dimensionality (number of elements) of the vector.
+.TP
+\fBmagnitude()\fR -> float()
+Calculates and returns the Euclidean magnitude (length) of the vector.
+.TP
+\fBunitVec()\fR -> vector()
+Returns a normalized copy of the vector (scaled so its magnitude is exactly 1). Throws MathError if the vector is the zero vector.
+.SH "LINEAR ALGEBRA"
+.TP
+\fBdot(other_vec)\fR -> int()|float()
+Returns the dot product (scalar product) of this vector and \fBother_vec\fR. Throws ValueError if dimensions do not match.
+.TP
+\fBcross(other_vec)\fR -> vector()
+Returns the cross product of this vector and \fBother_vec\fR. Only defined for vectors of dimension 2 or 3. Throws ValueError otherwise.
+.TP
+\fBprojectOnto(other_vec)\fR -> vector()
+Calculates the vector projection of this vector onto \fBother_vec\fR. Throws MathError if \fBother_vec\fR is the zero vector.
+.SH "MANIPULATION"
+.TP
+\fBvector_reversal()\fR -> vector()
+Reverses the elements of the vector in place.
+.TP
+\fBexpand(n)\fR -> vector()
+Increases the dimensionality of the vector by appending \fBn\fR zeroes to the end.
+.TP
+\fBshrink(n)\fR -> vector()
+Decreases the dimensionality of the vector by popping \fBn\fR elements from the end. Throws ValueError if the result would have a dimension less than 1.
+.SH "FUNCTIONAL METHODS"
+.TP
+\fBAll_Of / Any_Of / None_Of / One_Of (lambda)\fR -> bool()
+.TP
+\fBselect / reject (lambda)\fR -> vector()|list()
+Filters the vector. If the resulting elements are all numeric, returns a vector. Otherwise, falls back to a list.
+.TP
+\fBmap(lambda)\fR -> vector()|list()
+Maps the elements. If the lambda returns all numeric values, returns a vector, otherwise a list.
+.SH "SEE ALSO"
+Math(3), list(3)

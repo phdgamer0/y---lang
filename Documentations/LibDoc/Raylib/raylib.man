@@ -1,0 +1,159 @@
+.TH RAYLIB 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Raylib \- 2D/3D graphics, audio, input, and windowing
+.SH DESCRIPTION
+The
+.B Raylib
+module wraps the Raylib game development library.
+Types are represented as instances (Color, Image, Texture2D, RenderTexture, Font, Sound, Music).
+Vectors are native vector() instances (2-element numeric).
+.PP
+.B NOTE:
+Only available on platforms where the interpreter was compiled with Raylib support.
+.SH TYPES
+.TP
+\fBColor(r, g, b, a)\fR
+RGBA color where components are integers from 0 to 255.
+.TP
+\fBRectangle(x, y, w, h)\fR
+Rectangle with fields x, y, width, height.
+.SH "COLOR CONSTANTS"
+LIGHTGRAY, GRAY, DARKGRAY, YELLOW, GOLD, ORANGE, PINK, RED, MAROON, GREEN,
+LIME, DARKGREEN, SKYBLUE, BLUE, DARKBLUE, PURPLE, VIOLET, DARKPURPLE, BEIGE,
+BROWN, DARKBROWN, WHITE, BLACK, BLANK, MAGENTA, CYAN, RAYWHITE
+.SH "KEY CONSTANTS"
+KEY_A-Z (65-90), KEY_ZERO-NINE (48-57), KEY_SPACE (32), KEY_ESCAPE (256),
+KEY_ENTER (257), KEY_TAB (258), KEY_BACKSPACE (259), KEY_DELETE (261),
+KEY_RIGHT/LEFT/DOWN/UP (262-265), KEY_F1-F12 (290-301),
+KEY_LEFT_SHIFT (340), KEY_LEFT_CONTROL (341), KEY_LEFT_ALT (342),
+KEY_RIGHT_SHIFT (344), KEY_RIGHT_CONTROL (345), KEY_RIGHT_ALT (346),
+KEY_KP_0-9 (320-329), KEY_KP_ENTER (335)
+.SH "WINDOW FLAG CONSTANTS"
+FLAG_VSYNC_HINT=64, FLAG_FULLSCREEN_MODE=2, FLAG_WINDOW_RESIZABLE=4,
+FLAG_MSAA_4X_HINT=32, FLAG_WINDOW_TOPMOST=4096, FLAG_WINDOW_TRANSPARENT=16,
+FLAG_WINDOW_HIDDEN=128, FLAG_WINDOW_HIGHDPI=8192
+.SH "BLEND MODE CONSTANTS"
+BLEND_ALPHA=0, BLEND_ADDITIVE=1, BLEND_MULTIPLIED=2, BLEND_ADD_COLORS=3,
+BLEND_SUBTRACT_COLORS=4, BLEND_ALPHA_PREMULTIPLY=5, BLEND_CUSTOM=6,
+BLEND_CUSTOM_SEPARATE=7
+.SH "CORE FUNCTIONS"
+.SS "Window and Setup"
+.TP
+\fBInitWindow(width, height, title)\fR
+Initializes the window and OpenGL context. Must be called before drawing.
+.TP
+\fBCloseWindow()\fR
+Closes the window and unloads the OpenGL context.
+.TP
+\fBWindowShouldClose()\fR -> bool()
+Returns true if the user pressed the close button or ESC key.
+.TP
+\fBSetTargetFPS(fps)\fR
+Sets the target frame rate (maximum FPS).
+.TP
+\fBGetFrameTime()\fR -> float()
+Returns the time in seconds for the last frame drawn.
+.TP
+\fBGetTime()\fR -> float()
+Returns the total elapsed time in seconds since InitWindow.
+.SS "Drawing Context"
+.TP
+\fBBeginDrawing()\fR
+Setup canvas (framebuffer) to start drawing.
+.TP
+\fBEndDrawing()\fR
+End canvas drawing and swap buffers.
+.TP
+\fBClearBackground(color)\fR
+Sets the background to the specified \fBcolor\fR.
+.TP
+\fBBeginMode2D(camera)\fR / \fBEndMode2D()\fR
+Initializes/Ends 2D mode with a custom camera. (Note: Camera2D type may require custom initialization).
+.SH "GRAPHICS FUNCTIONS"
+.SS "Basic Shapes"
+.TP
+\fBDrawLine(x1, y1, x2, y2, color)\fR
+Draws a line between the two points.
+.TP
+\fBDrawCircle(x, y, radius, color)\fR
+Draws a color-filled circle.
+.TP
+\fBDrawRectangle(x, y, w, h, color)\fR
+Draws a color-filled rectangle.
+.TP
+\fBDrawRectangleLines(x, y, w, h, color)\fR
+Draws the outline of a rectangle.
+.TP
+\fBDrawTriangle(v1, v2, v3, color)\fR
+Draws a color-filled triangle given three vector points.
+.SS "Text"
+.TP
+\fBDrawText(str, x, y, size, color)\fR
+Draws text using the default font.
+.TP
+\fBDrawTextEx(font, text, posVec, fontSize, spacing, tintColor)\fR
+Draws text using a custom \fBfont\fR at the specified position.
+.SS "Textures & Images"
+.TP
+\fBLoadImage(fileName)\fR -> Image()
+Loads image data into CPU memory (RAM).
+.TP
+\fBUnloadImage(img)\fR
+Unloads the image from CPU memory.
+.TP
+\fBLoadTexture(fileName)\fR -> Texture2D()
+Loads texture data directly into GPU memory (VRAM).
+.TP
+\fBLoadTextureFromImage(image)\fR -> Texture2D()
+Uploads an image from CPU to GPU.
+.TP
+\fBUnloadTexture(tex)\fR
+Unloads texture from GPU memory.
+.TP
+\fBDrawTexture(texture, x, y, tintColor)\fR
+Draws a texture at the given position, tinted by \fBtintColor\fR.
+.TP
+\fBDrawTexturePro(texture, sourceRect, destRect, originVec, rotation, tintColor)\fR
+Draws a part of a texture (sourceRect) mapped to a destination rectangle with rotation.
+.SH "INPUT FUNCTIONS"
+.SS "Keyboard"
+.TP
+\fBIsKeyPressed(key)\fR -> bool()
+Returns true once on the frame the key is pressed.
+.TP
+\fBIsKeyDown(key)\fR -> bool()
+Returns true every frame the key is held down.
+.TP
+\fBIsKeyReleased(key)\fR -> bool()
+Returns true once on the frame the key is released.
+.SS "Mouse"
+.TP
+\fBIsMouseButtonPressed(button)\fR -> bool()
+Returns true once when mouse button is pressed. (0 = Left, 1 = Right, 2 = Middle).
+.TP
+\fBIsMouseButtonDown(button)\fR -> bool()
+Returns true while mouse button is held down.
+.TP
+\fBGetMousePosition()\fR -> vector()
+Returns the mouse position as a vector [x, y].
+.TP
+\fBGetMouseWheelMove()\fR -> float()
+Returns the mouse wheel movement Y-axis.
+.SH "AUDIO FUNCTIONS"
+.TP
+\fBInitAudioDevice()\fR / \fBCloseAudioDevice()\fR
+Initializes and closes the audio device/context.
+.TP
+\fBLoadSound(fileName)\fR -> Sound()
+Loads sound data for playing. Unload with \fBUnloadSound(sound)\fR.
+.TP
+\fBPlaySound(sound)\fR
+Plays the loaded sound.
+.TP
+\fBLoadMusicStream(fileName)\fR -> Music()
+Loads streaming music. Unload with \fBUnloadMusicStream(music)\fR.
+.TP
+\fBPlayMusicStream(music)\fR / \fBUpdateMusicStream(music)\fR
+Plays the music stream. \fBUpdateMusicStream\fR MUST be called every frame to keep the buffers filled.
+.SH "SEE ALSO"
+Math(3), Vector(3)

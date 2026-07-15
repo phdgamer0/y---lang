@@ -1,0 +1,47 @@
+.TH DICT 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+dict \- built-in dictionary value type methods
+.SH DESCRIPTION
+Dictionaries in y-- provide key-value mappings. Keys can be of almost any type,
+including numbers, strings, and other hashable objects.
+.SH METHODS
+.TP
+\fBget(key, [default_return])\fR -> any
+Returns the value for \fBkey\fR, or \fBdefault_return\fR if the key does not exist.
+.TP
+\fBget_default(key, [default_value])\fR -> any
+Returns the value for \fBkey\fR. If it does not exist, inserts \fBkey\fR mapped to \fBdefault_value\fR and returns it.
+.TP
+\fBclear()\fR -> none()
+Removes all elements from the dictionary.
+.TP
+\fBupdate(other_dict)\fR -> none()
+Updates the dictionary with key-value pairs from \fBother_dict\fR.
+.TP
+\fBpop([key])\fR -> any
+Removes the specified \fBkey\fR and returns its value. Throws KeyError if not found.
+If no key is given, removes and returns an arbitrary value.
+.TP
+\fBkeys()\fR -> list()
+Returns a list of all keys.
+.TP
+\fBvalues()\fR -> list()
+Returns a list of all values.
+.TP
+\fBitems()\fR -> list()
+Returns a list of 2-element tuples, each containing a key and its value.
+.TP
+\fBreserve(size)\fR -> none()
+Pre-allocates bucket capacity.
+.SH "FUNCTIONAL METHODS"
+Functional methods iterate over the dictionary's \fBkeys\fR.
+.TP
+\fBAll_Of / Any_Of / None_Of / One_Of (lambda)\fR -> bool()
+.TP
+\fBselect / reject (lambda)\fR -> dict()
+Filters the keys and returns a new dictionary containing only the matching key-value pairs.
+.TP
+\fBmap(lambda)\fR -> list()
+Maps the keys and returns a list of the mapped results.
+.SH "SEE ALSO"
+list(3), set(3)

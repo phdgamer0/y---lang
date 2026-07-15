@@ -1,0 +1,27 @@
+.TH FILE 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+file \- built-in file value type methods
+.SH DESCRIPTION
+File objects represent open file handles for reading and writing data on the filesystem.
+They are typically instantiated using functions from the \fBFileStream\fR module.
+.SH METHODS
+.TP
+\fBIsOpen()\fR -> bool()
+Returns true if the file is currently open and accessible. Calling most other methods on a closed file will throw a FileClosedError.
+.TP
+\fBWrite(message, [replace=false])\fR -> none()
+Writes the string representation of \fBmessage\fR to the file. If \fBreplace\fR is false (default), the text is appended to the end. If true, the file is overwritten from the beginning.
+.TP
+\fBClear()\fR -> none()
+Resets and clears the entire contents of the file, making it empty.
+.TP
+\fBRead()\fR -> string()
+Reads the entire contents of the file into a single string and returns it.
+.TP
+\fBReadLines([include_newline=false])\fR -> list()
+Reads the file line by line, returning a list of strings. By default, trailing newline characters are stripped from each line unless \fBinclude_newline\fR is true.
+.TP
+\fBClose()\fR -> none()
+Closes the file handle, flushing any pending writes and releasing operating system resources.
+.SH "SEE ALSO"
+FileStream(3)

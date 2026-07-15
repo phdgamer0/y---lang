@@ -1,0 +1,141 @@
+.TH MATH 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Math \- mathematical functions and physical constants
+.SH DESCRIPTION
+The
+.B Math
+module provides mathematical functions (arithmetic, trigonometry, logarithms)
+and physical/mathematical constants.
+All angle arguments and return values are in
+.B radians
+unless noted otherwise.
+.PP
+.B Constants
+.TP
+PI = 3.141592653589793
+.TP
+E = 2.718281828459045
+.TP
+PHI = 1.618033988749894  (golden ratio)
+.TP
+G = 6.6743e-11  (gravitational constant, m\[u00B3] kg\[u207B]\[u00B9] s\[u207B]\[u00B2])
+.TP
+G_EARTH = 9.80665  (standard gravity, m/s\[u00B2])
+.TP
+EPSILON_0 = 8.8541878128e-12  (vacuum permittivity, F/m)
+.TP
+PLANCK_H = 6.62607015e-34  (Planck constant, J\[u00B7]s)
+.SH FUNCTIONS
+.SS Abs
+float()|int()|bigint() Abs(num)
+.br
+Absolute value.  Return type matches input type.
+.SS Floor
+int() Floor(num)
+.br
+Largest integer <= num.  int/bigint input returned unchanged.
+.SS Ceil
+int() Ceil(num)
+.br
+Smallest integer >= num.  int/bigint input returned unchanged.
+.SS Sqrt
+float() Sqrt(num)
+.br
+Square root.  Raises \fBValueError\fR if num < 0.
+.SS Cbrt
+float() Cbrt(num)
+.br
+Cube root.  Supports negative values.
+.SS Sgn
+int() Sgn(num)
+.br
+Sign function: 1 if num > 0, -1 if num < 0, 0 if num == 0.
+.SS RadToDeg
+float() RadToDeg(num)
+.br
+Converts radians to degrees (num * 180 / PI).
+.SS DegToRad
+float() DegToRad(num)
+.br
+Converts degrees to radians (num * PI / 180).
+.SS MapRange
+float() MapRange(num, in_min, in_max, out_min, out_max)
+.br
+Linearly maps num from [in_min, in_max] to [out_min, out_max].
+Returns out_min if in_min == in_max.
+.SS RoundToPower
+int()|float() RoundToPower(number, power)
+.br
+Rounds number to the nearest 10^power.
+Positive power = round to larger units; negative = decimal places.
+.SS ConvertToBase
+string() ConvertToBase(num_str, curr_base, target_base)
+.br
+Converts the string num_str from base curr_base to target_base (2-36).
+Returns the result as an uppercase string.
+.SS Sin
+float() Sin(num)
+.br
+Sine of num (radians).
+.SS Cos
+float() Cos(num)
+.br
+Cosine of num (radians).
+.SS Tan
+float() Tan(num)
+.br
+Tangent of num (radians).
+.SS Sinh
+float() Sinh(num)
+.br
+Hyperbolic sine.
+.SS Cosh
+float() Cosh(num)
+.br
+Hyperbolic cosine.
+.SS Tanh
+float() Tanh(num)
+.br
+Hyperbolic tangent.
+.SS Arcsin
+float() Arcsin(num)
+.br
+Arc sine in radians.  Domain: [-1, 1].
+.SS Arccos
+float() Arccos(num)
+.br
+Arc cosine in radians.  Domain: [-1, 1].
+.SS Arctan
+float() Arctan(num)
+.br
+Arc tangent in radians.  Output: (-PI/2, PI/2).
+.SS Atan2
+float() Atan2(y, x)
+.br
+Four-quadrant arc tangent.  Output: (-PI, PI].
+.SS Arcsinh
+float() Arcsinh(num)
+.br
+Inverse hyperbolic sine.
+.SS Arccosh
+float() Arccosh(num)
+.br
+Inverse hyperbolic cosine.  Domain: [1, inf).
+.SS Arctanh
+float() Arctanh(num)
+.br
+Inverse hyperbolic tangent.  Domain: (-1, 1).
+.SS Log
+float() Log(num)
+.br
+Natural logarithm (base e).  Raises \fBValueError\fR if num < 0.
+.SS Log2
+float() Log2(num)
+.br
+Base-2 logarithm.  Raises \fBValueError\fR if num < 0.
+.SS Log10
+float() Log10(num)
+.br
+Base-10 logarithm.  Raises \fBValueError\fR if num < 0.
+.SH "SEE ALSO"
+Random(3)

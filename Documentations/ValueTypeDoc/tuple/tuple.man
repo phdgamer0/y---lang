@@ -1,0 +1,36 @@
+.TH TUPLE 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+tuple \- built-in tuple value type methods
+.SH DESCRIPTION
+Tuples in y-- are ordered, immutable sequences of elements. Their structure and contents
+cannot be changed after creation, making them useful for fixed data collections or as dictionary keys.
+.SH "CORE METHODS"
+.TP
+\fBcount(val)\fR -> int()
+Returns the number of occurrences of \fBval\fR in the tuple.
+.TP
+\fBindex(val)\fR -> int()
+Returns the first index of \fBval\fR, or -1 if it is not found.
+.SH "MATH & AGGREGATION"
+.TP
+\fBsum() / min() / max() / average()\fR
+Performs mathematical aggregations on the tuple. The \fBsum\fR and \fBaverage\fR methods
+require all elements to be numeric. \fBmin\fR and \fBmax\fR can also compare strings.
+.SH "UTILITIES"
+.TP
+\fBjoin([sep=""])\fR -> string()
+Concatenates the string representations of all elements, separated by \fBsep\fR.
+.TP
+\fBsample(k)\fR -> tuple()
+Returns a new tuple containing \fBk\fR randomly sampled distinct elements from the tuple.
+.SH "FUNCTIONAL METHODS"
+.TP
+\fBAll_Of / Any_Of / None_Of / One_Of (lambda)\fR -> bool()
+.TP
+\fBselect / reject (lambda)\fR -> tuple()
+Filters the tuple based on the lambda condition.
+.TP
+\fBmap(lambda)\fR -> tuple()
+Returns a new tuple containing the mapped results.
+.SH "SEE ALSO"
+list(3)

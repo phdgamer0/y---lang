@@ -1,0 +1,53 @@
+.TH RANDOM 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Random \- pseudo-random number generation
+.SH DESCRIPTION
+The
+.B Random
+module uses a Mersenne Twister (std::mt19937) seeded from std::random_device.
+The generator is shared (static) across all calls within one process run.
+.SH FUNCTIONS
+.SS RandFloat
+.TP
+\fBSYNOPSIS\fR
+float() RandFloat()
+.TP
+\fBDESCRIPTION\fR
+Returns a uniformly distributed random float in [0.0, 1.0).
+.SS RandChoice
+.TP
+\fBSYNOPSIS\fR
+any() RandChoice(container: list()|tuple()|string()|set()|range())
+.TP
+\fBDESCRIPTION\fR
+Returns a randomly selected element from container.
+Supported: list, tuple, string (returns single-char string), set, range.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBTypeError\fR, \fBEmptyContainerError\fR
+.SS Shuffle
+.TP
+\fBSYNOPSIS\fR
+list()|tuple()|string() Shuffle(container)
+.TP
+\fBDESCRIPTION\fR
+Returns a new shuffled copy of container (list, tuple, or string).
+Sets and ranges raise \fBTypeError\fR.
+Original is NOT mutated.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBTypeError\fR
+.SS Sample
+.TP
+\fBSYNOPSIS\fR
+list()|tuple()|set()|string() Sample(container, k: int())
+.TP
+\fBDESCRIPTION\fR
+Returns k unique randomly selected deep-copy elements from container,
+additionally shuffled.
+Supported: list, tuple, set, range, string.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBTypeError\fR, \fBValueError\fR (k out of range)
+.SH "SEE ALSO"
+Math(3)

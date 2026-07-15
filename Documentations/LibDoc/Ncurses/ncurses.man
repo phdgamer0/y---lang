@@ -1,0 +1,131 @@
+.TH NCURSES 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Ncurses \- Terminal UI, screen management, and keyboard handling
+.SH DESCRIPTION
+The
+.B Ncurses
+module provides a direct mapping of the standard C ncurses API to the y-- language.
+This allows developers to build complex text-based user interfaces and handle terminal
+input/output in a platform-independent way (on systems where ncurses is supported).
+.PP
+Functions that return or accept WINDOW pointers in C represent them as integers
+in y--. The stdscr is implicitly used by many functions, but for specific windows,
+store the integer returned by \fBinitscr()\fR or \fBnewwin()\fR and pass it to functions
+prefixed with 'w' or 'mvw'.
+.PP
+Import examples:
+    import Ncurses
+.SH "INITIALIZATION & CLEANUP"
+.TP
+\fBinitscr()\fR -> int()
+Initializes the ncurses system, sets up the standard screen (stdscr), configures
+cbreak, noecho, and keypad modes, and returns the stdscr pointer cast to an integer.
+.TP
+\fBendwin()\fR -> none()
+Ends ncurses mode, tears down the active windows, and restores the terminal to its
+normal state. Must be called before the program exits.
+.TP
+\fBisendwin()\fR -> bool()
+Returns true if endwin() has been called without a subsequent refresh().
+.SH "COLORS AND ATTRIBUTES"
+.PP
+.B Constants (Attributes):
+.br
+A_NORMAL, A_BOLD, A_UNDERLINE, A_REVERSE, A_BLINK
+.PP
+.B Constants (Colors):
+.br
+COLOR_BLACK, COLOR_RED, COLOR_GREEN, COLOR_YELLOW, COLOR_BLUE, COLOR_MAGENTA,
+COLOR_CYAN, COLOR_WHITE
+.TP
+\fBstart_color()\fR -> int()
+Initializes color support in the terminal. Must be called before color functions.
+.TP
+\fBhas_colors()\fR -> bool()
+Returns true if the terminal supports colors.
+.TP
+\fBinit_pair(pair, f, b)\fR -> int()
+Initializes a color pair with ID `pair` using foreground `f` and background `b`.
+.TP
+\fBCOLOR_PAIR(n)\fR -> int()
+Returns the attribute value for the specified color pair n.
+.TP
+\fBattron(attr)\fR, \fBattroff(attr)\fR, \fBattrset(attr)\fR -> int()
+Turns on, turns off, or sets the current text attributes.
+.SH "OUTPUT / PRINTING"
+.TP
+\fBprintw(str)\fR -> none()
+Prints the string \fBstr\fR to the standard screen at the current cursor position.
+.TP
+\fBmvprintw(y, x, str)\fR -> none()
+Moves the cursor to row \fBy\fR and column \fBx\fR, then prints \fBstr\fR.
+.TP
+\fBwprintw(win, str)\fR -> none()
+Prints \fBstr\fR to the specified window \fBwin\fR.
+.TP
+\fBmvwprintw(win, y, x, str)\fR -> none()
+Moves the cursor in window \fBwin\fR and prints \fBstr\fR.
+.TP
+\fBaddnstr/mvaddnstr/waddnstr/mvwaddnstr\fR -> int()
+Writes at most n characters of a string.
+.TP
+\fBhline/vline\fR (and mv/w/mvw variants) -> int()
+Draws a horizontal or vertical line using the specified character for a given length.
+.TP
+\fBbox(win, verch, horch)\fR -> int()
+Draws a box around the edges of the window \fBwin\fR.
+.SH "INPUT"
+.TP
+\fBgetch()\fR -> int()
+Reads a single character or key code (like KEY_UP) from the standard screen.
+.TP
+\fBmvgetch(y, x)\fR, \fBwgetch(win)\fR, \fBmvwgetch(win, y, x)\fR -> int()
+Variants of getch for specific positions and windows.
+.TP
+\fBtimeout(delay)\fR -> none()
+Sets the blocking delay for getch(). Positive values delay for `delay` milliseconds.
+Zero makes it non-blocking. Negative makes it infinitely blocking.
+.TP
+\fBkeypad(win, bf)\fR -> int()
+Enables (bf=true) or disables (bf=false) the keypad of the user's terminal for \fBwin\fR.
+.SH "SCREEN, WINDOW, AND CURSOR MANAGEMENT"
+.TP
+\fBrefresh()\fR, \fBwrefresh(win)\fR -> int()
+Updates the physical terminal screen to match the internal ncurses buffer.
+.TP
+\fBclear()\fR, \fBerase()\fR, \fBwclear(win)\fR, \fBwerase(win)\fR -> int()
+Clears the screen or window. clear() also forces a full redraw on the next refresh.
+.TP
+\fBmove(y, x)\fR, \fBwmove(win, y, x)\fR -> int()
+Moves the logical cursor to the given coordinates.
+.TP
+\fBgetmaxy()\fR, \fBgetmaxx()\fR -> int()
+Returns the maximum Y (height) and X (width) of the standard screen.
+.TP
+\fBgetyx()\fR -> list()
+Returns a list [y, x] containing the current cursor position on stdscr.
+.TP
+\fBcurs_set(visibility)\fR -> int()
+Sets cursor visibility: 0 (invisible), 1 (normal), or 2 (very visible).
+.TP
+\fBnewwin(nlines, ncols, begin_y, begin_x)\fR -> int()
+Creates and returns a new window with the specified dimensions and position.
+.TP
+\fBdelwin(win)\fR -> int()
+Deletes the window \fBwin\fR, freeing its memory.
+.SH "TERMINAL MODES"
+.TP
+\fBcbreak() / nocbreak()\fR -> int()
+Enables or disables cbreak mode (characters are passed immediately to the program).
+.TP
+\fBecho() / noecho()\fR -> int()
+Enables or disables echoing of typed characters.
+.SH "MISCELLANEOUS"
+.TP
+\fBbeep()\fR, \fBflash()\fR -> int()
+Sounds the terminal bell or flashes the screen.
+.TP
+\fBnapms(ms)\fR -> int()
+Sleeps for \fBms\fR milliseconds.
+.SH "SEE ALSO"
+Raylib(3), System(3)

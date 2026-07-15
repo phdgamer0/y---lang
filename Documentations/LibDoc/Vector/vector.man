@@ -1,0 +1,43 @@
+.TH VECTOR 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Vector \- mathematical vector type and constructor
+.SH DESCRIPTION
+The
+.B Vector
+module enables the
+.B vector()
+value type and exposes a global
+.B vector
+constructor function.
+Importing this module sets a flag in the interpreter that allows vector
+literals and vector operator overloading.
+.PP
+For methods on vector values (dot, cross, magnitude, unitVec, projectOnto,
+dimension, vector_reversal, expand, shrink), see
+.BR vector (3)
+in the ValueTypeDoc reference.
+.SH FUNCTIONS
+.SS vector
+.TP
+\fBSYNOPSIS\fR
+vector() vector(x: float(), y: float(), z: float(), ...)
+.TP
+\fBDESCRIPTION\fR
+Creates an n-dimensional vector from its numeric arguments.
+If called with no arguments, returns a 3D zero vector <0.0, 0.0, 0.0>.
+Each argument must be a numeric value; non-numeric arguments raise
+.BR TypeError .
+.TP
+\fBRETURN VALUE\fR
+vector()
+.TP
+\fBERRORS\fR
+\fBTypeError\fR \- if any argument is non-numeric.
+.TP
+\fBEXAMPLES\fR
+.EX
+vector()            -> <0.0, 0.0, 0.0>
+vector(1.0, 2.0)    -> <1.0, 2.0>
+.EE
+.SH "SEE ALSO"
+vector(3), Math(3)

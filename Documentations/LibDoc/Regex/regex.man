@@ -1,0 +1,60 @@
+.TH REGEX 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Regex \- regular expression matching, search, and replacement
+.SH DESCRIPTION
+The
+.B Regex
+module provides ECMAScript-syntax regular expressions via C++ std::regex.
+The subject argument may be a
+.B string()
+or an open
+.B file()
+(the whole file is read).
+.SH FUNCTIONS
+.SS match
+.TP
+\fBSYNOPSIS\fR
+bool() match(pattern: string(), subject: string()|file())
+.TP
+\fBDESCRIPTION\fR
+Returns true if the
+.I entire
+subject matches the pattern (std::regex_match).
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBRuntimeError\fR (bad regex)
+.SS search
+.TP
+\fBSYNOPSIS\fR
+list() search(pattern: string(), subject: string()|file())
+.TP
+\fBDESCRIPTION\fR
+Finds the first match.  Returns a list: [full_match, group1, group2, ...].
+Returns [] if no match.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBRuntimeError\fR (bad regex)
+.SS find_all
+.TP
+\fBSYNOPSIS\fR
+list() find_all(pattern: string(), subject: string()|file())
+.TP
+\fBDESCRIPTION\fR
+Returns a list of all non-overlapping full matches.  Capture groups are not
+included in the result list.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBRuntimeError\fR (bad regex)
+.SS replace
+.TP
+\fBSYNOPSIS\fR
+string() replace(pattern, subject, replacement: string())
+.TP
+\fBDESCRIPTION\fR
+Replaces all occurrences of pattern in subject with replacement.
+ECMAScript replacement syntax ($1, $2, ...) is supported.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBRuntimeError\fR (bad regex)
+.SH "SEE ALSO"
+Json(3), FileStream(3)

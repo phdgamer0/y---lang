@@ -1,0 +1,182 @@
+.TH OS 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+Os \- filesystem and process utilities
+.SH DESCRIPTION
+The
+.B Os
+module provides filesystem operations (create, remove, rename, copy,
+inspect files and directories), process utilities (current directory,
+environment variables), and shell command execution.
+.SH FUNCTIONS
+.SS Make
+.TP
+\fBSYNOPSIS\fR
+none() Make(directory: string(), filename: string())
+.TP
+\fBDESCRIPTION\fR
+Creates an empty file at directory/filename.
+Raises \fBPermissionError\fR if the file cannot be created.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBPermissionError\fR
+.SS Remove
+.TP
+\fBSYNOPSIS\fR
+none() Remove(path: string())
+.TP
+\fBDESCRIPTION\fR
+Deletes the file at path using C \fBstd::remove\fR.
+Raises \fBPermissionError\fR on failure.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBPermissionError\fR
+.SS Exists
+.TP
+\fBSYNOPSIS\fR
+bool() Exists(directory: string(), filename: string())
+.TP
+\fBDESCRIPTION\fR
+Returns true if directory/filename is a readable file, false otherwise.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.SS ListNames
+.TP
+\fBSYNOPSIS\fR
+list() ListNames(path: string())
+.TP
+\fBDESCRIPTION\fR
+If path is a directory: returns a list of entry names.
+If path is a regular file: returns a list of lines.
+Raises \fBFileNotFoundError\fR if path does not exist.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBFileNotFoundError\fR
+.SS MkDir
+.TP
+\fBSYNOPSIS\fR
+none() MkDir(path: string())
+.TP
+\fBDESCRIPTION\fR
+Creates path and any missing parent directories.
+Silently succeeds if directory already exists.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.SS RmDir
+.TP
+\fBSYNOPSIS\fR
+none() RmDir(path: string(), recursive: bool() = false)
+.TP
+\fBDESCRIPTION\fR
+Removes directory at path.
+When recursive is true, removes directory and all contents.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR (0 or >2 args)
+.SS Cwd
+.TP
+\fBSYNOPSIS\fR
+string() Cwd()
+.TP
+\fBDESCRIPTION\fR
+Returns the current working directory as an absolute path string.
+.SS Cd
+.TP
+\fBSYNOPSIS\fR
+none() Cd(path: string())
+.TP
+\fBDESCRIPTION\fR
+Changes the working directory to path.
+Raises \fBFileNotFoundError\fR if path does not exist.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBFileNotFoundError\fR
+.SS Rename
+.TP
+\fBSYNOPSIS\fR
+none() Rename(old: string(), new: string())
+.TP
+\fBDESCRIPTION\fR
+Renames or moves the file/directory at old to new.
+Raises \fBPermissionError\fR on failure.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBPermissionError\fR
+.SS Env
+.TP
+\fBSYNOPSIS\fR
+string() Env(name: string())
+.TP
+\fBDESCRIPTION\fR
+Returns the value of the named environment variable, or none() if not set.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.SS SetEnv
+.TP
+\fBSYNOPSIS\fR
+none() SetEnv(name: string(), value: string())
+.TP
+\fBDESCRIPTION\fR
+Sets environment variable name to value (overwriting any existing value).
+.SS Copy
+.TP
+\fBSYNOPSIS\fR
+none() Copy(src: string(), dst: string())
+.TP
+\fBDESCRIPTION\fR
+Copies src to dst, overwriting dst if it exists.
+.SS FileSize
+.TP
+\fBSYNOPSIS\fR
+int() FileSize(path: string())
+.TP
+\fBDESCRIPTION\fR
+Returns the size of the file at path in bytes.
+.SS IsDir
+.TP
+\fBSYNOPSIS\fR
+bool() IsDir(path: string())
+.TP
+\fBDESCRIPTION\fR
+Returns true if path is an existing directory.
+.SS IsFile
+.TP
+\fBSYNOPSIS\fR
+bool() IsFile(path: string())
+.TP
+\fBDESCRIPTION\fR
+Returns true if path is an existing regular file.
+.SS Direct
+.TP
+\fBSYNOPSIS\fR
+int() Direct(command: string(), file: string())
+.TP
+\fBDESCRIPTION\fR
+Runs command in the shell, redirecting stdout and stderr to file.
+Returns the exit status code.
+.SS Console
+.TP
+\fBSYNOPSIS\fR
+int() Console(command: string())
+.TP
+\fBDESCRIPTION\fR
+Runs command via std::system, output goes to the terminal.
+Returns exit status code.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR
+.SS Exec
+.TP
+\fBSYNOPSIS\fR
+string() Exec(command: string())
+.TP
+\fBDESCRIPTION\fR
+Runs command via popen and captures stdout as a string.
+Raises \fBRuntimeError\fR if popen fails.
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR, \fBRuntimeError\fR
+.SH "SEE ALSO"
+FileStream(3), System(3)

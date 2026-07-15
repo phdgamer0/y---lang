@@ -1,0 +1,104 @@
+.TH OPENNN 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+OpenNN \- Neural network training and inference
+.SH DESCRIPTION
+The
+.B OpenNN
+module exposes three core classes for building and training neural networks:
+.B NeuralNetwork
+(the model),
+.B Dataset
+(data handling), and
+.B Optimizer
+(the training algorithm). It serves as a wrapper around the OpenNN C++ library.
+.SH CLASSES
+.SS NeuralNetwork
+.TP
+\fBCONSTRUCTOR\fR
+.B NeuralNetwork(inputs, outputs, hidden, [mode = 0])
+.br
+Creates a multi-layer perceptron (feed-forward network) with one hidden layer.
+\fBinputs\fR, \fBoutputs\fR, and \fBhidden\fR define the layer sizes. \fBmode\fR determines
+the final layer activation and loss calculation internally: 0 is APPROXIMATION (linear output)
+and 1 is CLASSIFICATION (softmax output). The network memory is managed automatically.
+.TP
+\fBCLASS CONSTANTS\fR
+NeuralNetwork.APPROXIMATION (0), NeuralNetwork.CLASSIFICATION (1)
+.TP
+\fBMETHODS\fR
+.RS
+.TP
+\fBpredict(inputs)\fR -> vector()
+Executes a forward pass through the network. \fBinputs\fR can be a vector, list, or tuple
+of numbers whose length matches the input size. Returns a vector containing the network's output.
+.TP
+\fBget_weights()\fR -> vector()
+Returns all weights and biases of the network flattened into a single 1D vector. Useful for saving state manually or doing external weight updates.
+.TP
+\fBset_weights(weights)\fR -> none()
+Overwrites all weights and biases of the network from the provided 1D \fBweights\fR vector. The vector size must exactly match the number of parameters in the network.
+.TP
+\fBsave(filepath)\fR -> none()
+Serializes the network architecture and weights to an XML file at \fBfilepath\fR.
+.TP
+\fBload(filepath)\fR -> none()
+Deserializes and loads a network from the given XML \fBfilepath\fR. Note: currently assumes the loaded network is an ApproximationNetwork. Loading classification networks requires verification.
+.RE
+
+.SS Dataset
+.TP
+\fBCONSTRUCTOR\fR
+.B Dataset(csv_filepath, has_header)
+.br
+Loads data from a comma-separated values (CSV) file. \fBhas_header\fR should be true if the first row contains column names.
+.TP
+\fBMETHODS\fR
+.RS
+.TP
+\fBsplit(train_pct, val_pct, test_pct)\fR -> none()
+Randomly partitions the dataset into training, validation, and testing sets using the given percentages (e.g., 0.7, 0.15, 0.15). The percentages must sum to 1.0.
+.TP
+\fBscale_inputs()\fR -> none()
+Normalizes the input features (columns marked as 'Input') to have a mean of 0 and a standard deviation of 1.
+.TP
+\fBset_columns(input_count, target_count)\fR -> none()
+Configures the roles of the columns in the dataset. The first \fBinput_count\fR columns are set as 'Input', the next \fBtarget_count\fR columns are set as 'Target', and any remaining columns are set to 'Unused'.
+.RE
+
+.SS Optimizer
+.TP
+\fBCONSTRUCTOR\fR
+.B Optimizer(network, dataset)
+.br
+Creates a training algorithm that will optimize the parameters of the given \fBnetwork\fR using the data in \fBdataset\fR.
+.TP
+\fBCLASS CONSTANTS (Algorithms)\fR
+GRADIENT_DESCENT, QUASI_NEWTON, LEVENBERG_MARQUARDT, ADAM
+.TP
+\fBCLASS CONSTANTS (Loss Functions)\fR
+MEAN_SQUARED_ERROR, NORMALIZED_SQUARED_ERROR, CROSS_ENTROPY_ERROR
+.TP
+\fBMETHODS\fR
+.RS
+.TP
+\fBset_algorithm(algo)\fR -> none()
+Sets the optimization algorithm. Pass one of the Optimizer class string constants (e.g., Optimizer.ADAM).
+.TP
+\fBset_loss(loss_func)\fR -> none()
+Sets the error/loss function. Pass one of the Optimizer loss string constants (e.g., Optimizer.CROSS_ENTROPY_ERROR).
+.TP
+\fBset_epochs(epochs)\fR -> none()
+Sets the maximum number of training epochs (iterations over the dataset).
+.TP
+\fBset_learning_rate(lr)\fR -> none()
+Sets the learning rate for algorithms that use it (ADAM and GRADIENT_DESCENT). If called when using an algorithm that does not use a learning rate (like QUASI_NEWTON), it will throw a RuntimeError.
+.TP
+\fBtrain()\fR -> float()
+Executes the training process. Returns the final evaluation error (loss) after training completes.
+.TP
+\fBtrain_with_history()\fR -> vector()
+Executes the training process and tracks the error at the end of each epoch. Returns a vector containing the historical error values, useful for plotting learning curves.
+.RE
+
+.SH "SEE ALSO"
+Vector(3), Math(3)

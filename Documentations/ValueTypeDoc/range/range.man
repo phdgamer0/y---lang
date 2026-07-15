@@ -1,0 +1,22 @@
+.TH RANGE 3 "2026" "y-- standard library" "y-- Value Types"
+.SH NAME
+range \- built-in range value type methods
+.SH DESCRIPTION
+Ranges in y-- represent a mathematical sequence of numbers from a start to an end
+with a specified step. They are evaluated lazily but can be converted to lists.
+.SH METHODS
+.TP
+\fBmin()\fR -> int()|float()
+Returns the minimum value achievable within the range bounds.
+.TP
+\fBmax()\fR -> int()|float()
+Returns the maximum value achievable within the range bounds.
+.TP
+\fBstep()\fR -> int()|float()
+Returns the step size of the range.
+.TP
+\fBreverse([modify_original=true])\fR -> range()
+Reverses the direction of the range. For example, a range from 1 to 10 with step 1
+becomes 10 to 1 with step -1.
+.SH "SEE ALSO"
+list(3)

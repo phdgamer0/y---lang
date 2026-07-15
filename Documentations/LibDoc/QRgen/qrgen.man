@@ -1,0 +1,52 @@
+.TH QRGEN 3 "2026" "y-- standard library" "y-- Library Reference"
+.SH NAME
+QRgen \- QR code generation
+.SH DESCRIPTION
+The
+.B QRgen
+module generates QR codes from text strings.
+On import, the following global constants are set:
+.B ECC_LEVEL_LOW, ECC_LEVEL_MEDIUM, ECC_LEVEL_QUARTILE, ECC_LEVEL_HIGH.
+.PP
+.B NOTE:
+Due to a suspected bug in the source (line 20802: env->set("Math", ...)),
+the module may be accessible under the name "Math" at the language level
+rather than "QRgen".
+.B NEEDS VERIFICATION.
+.SH FUNCTIONS
+.SS GenerateQRcode
+.TP
+\fBSYNOPSIS\fR
+QRcodeObj() GenerateQRcode(text: string(), eccLevel: int())
+.TP
+\fBDESCRIPTION\fR
+Generates a QR code for
+.I text
+at error-correction level
+.IR eccLevel .
+Returns a QRcodeObj instance with fields:
+.RS
+.TP
+Version (int())
+QR version (1-40).
+.TP
+Size (int())
+Modules per side.
+.TP
+BoolArray (tuple())
+Size x Size tuple of tuples of bool(); BoolArray[x][y] is true for a dark module.
+.TP
+CorrectionLevel (int())
+ECC level used.
+.RE
+.TP
+\fBERRORS\fR
+\fBArgumentError\fR (not 2 args); C++ exceptions for unencodable input (NEEDS VERIFICATION).
+.TP
+\fBEXAMPLES\fR
+.EX
+qr = GenerateQRcode("hello", ECC_LEVEL_LOW)
+qr.Size  -> 21
+.EE
+.SH "SEE ALSO"
+Json(3)
