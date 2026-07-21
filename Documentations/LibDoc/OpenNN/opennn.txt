@@ -1,0 +1,331 @@
+MODULE: OpenNN
+PURPOSE: Neural network training and inference using the OpenNN library.
+
+The module exposes three classes: NeuralNetwork, Dataset, and Optimizer.
+
+Import examples:
+    import OpenNN
+    from OpenNN import NeuralNetwork, Dataset, Optimizer
+
+────────────────────────────────────────────────────────────────────────────
+CLASS: NeuralNetwork
+
+CLASS CONSTANTS
+    NeuralNetwork.APPROXIMATION   = 0   (regression mode)
+    NeuralNetwork.CLASSIFICATION  = 1   (classification mode)
+
+CONSTRUCTOR
+    NeuralNetwork(inputs, outputs, hidden, [mode])
+
+DESCRIPTION
+    Constructs a new feed-forward neural network.
+
+    When mode is 0 (APPROXIMATION, the default), creates an
+    opennn::ApproximationNetwork with architecture {inputs} -> {hidden} ->
+    {outputs}.  When mode is 1 (CLASSIFICATION), creates an
+    opennn::ClassificationNetwork with the same layout.
+
+    The network is allocated on the heap and automatically freed by the
+    destructor (__destruct__).
+
+ARGUMENTS
+    inputs  (int()) - Number of input neurons.
+    outputs (int()) - Number of output neurons.
+    hidden  (int()) - Number of hidden neurons.
+    mode    (int()) - Optional.  0 = APPROXIMATION (default), 1 = CLASSIFICATION.
+
+RETURN VALUE
+    NeuralNetwork instance.
+
+ERRORS
+    ArgumentError - if called with fewer than 3 positional arguments.
+
+EXAMPLES
+    nn = NeuralNetwork(3, 1, 10)
+    nn = NeuralNetwork(4, 3, 16, NeuralNetwork.CLASSIFICATION)
+
+────────────────────────────────────────────────────────────────────────────
+NeuralNetwork METHODS
+
+NAME
+    predict - NeuralNetwork method
+
+SYNOPSIS
+    vector() nn.predict(inputs: vector()|list()|tuple())
+
+DESCRIPTION
+    Runs a forward pass of the network and returns the output values.
+    Accepts a vector, list, or tuple of numeric inputs.  Each element is
+    converted to float.
+
+    Returns a vector() with one element per output neuron.
+
+ARGUMENTS
+    inputs (vector()|list()|tuple()) - Input values.
+
+RETURN VALUE
+    vector() - Network output values.
+
+ERRORS
+    ArgumentError - fewer than 3 total args, or inputs not vector/list/tuple.
+
+EXAMPLES
+    result = nn.predict([0.5, 0.2, 0.8])
+    result[0]  -> 0.73 (example output)
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    get_weights - NeuralNetwork method
+
+SYNOPSIS
+    vector() nn.get_weights()
+
+DESCRIPTION
+    Returns all network parameters (weights and biases) as a flat vector.
+
+RETURN VALUE
+    vector() - All network parameters.
+
+ERRORS
+    ArgumentError - if called with more than 2 total args (self + dummy).
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    set_weights - NeuralNetwork method
+
+SYNOPSIS
+    none() nn.set_weights(weights: vector())
+
+DESCRIPTION
+    Sets all network parameters from the given vector.  The vector must
+    have the same number of elements as the network's parameter count.
+
+ARGUMENTS
+    weights (vector()) - Flat vector of parameters.
+
+ERRORS
+    ArgumentError - if called with any number of total args other than 3.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    save - NeuralNetwork method
+
+SYNOPSIS
+    none() nn.save(filepath: string())
+
+DESCRIPTION
+    Saves the network to a file using OpenNN's native save format.
+
+ARGUMENTS
+    filepath (string()) - Path to save to.
+
+ERRORS
+    ArgumentError - fewer than 3 total args.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    load - NeuralNetwork method
+
+SYNOPSIS
+    none() nn.load(filepath: string())
+
+DESCRIPTION
+    Loads network parameters from a previously saved file.
+    Note: internally casts to ApproximationNetwork; loading a
+    ClassificationNetwork this way may produce incorrect behavior.
+    (NEEDS VERIFICATION)
+
+ARGUMENTS
+    filepath (string()) - Path to load from.
+
+ERRORS
+    ArgumentError - fewer than 3 total args, or filepath not a string.
+
+────────────────────────────────────────────────────────────────────────────
+CLASS: Dataset
+
+CONSTRUCTOR
+    Dataset(csv_filepath: string(), has_header: bool())
+
+DESCRIPTION
+    Loads a CSV dataset from the given file path.  The separator is always
+    comma (",").  has_header controls whether the first row is treated as
+    a column header.
+
+ARGUMENTS
+    csv_filepath (string()) - Path to the CSV file.
+    has_header   (bool())   - True if the first row contains column names.
+
+ERRORS
+    ArgumentError - if called with fewer than 4 total args, or csv_filepath
+                    is not a string.
+
+────────────────────────────────────────────────────────────────────────────
+Dataset METHODS
+
+NAME
+    split - Dataset method
+
+SYNOPSIS
+    none() ds.split(train_pct: float(), val_pct: float(), test_pct: float())
+
+DESCRIPTION
+    Randomly assigns samples to training, validation, and test sets.
+    Percentages should sum to approximately 1.0.
+
+ARGUMENTS
+    train_pct (float()) - Fraction of samples for training.
+    val_pct   (float()) - Fraction for validation.
+    test_pct  (float()) - Fraction for testing.
+
+ERRORS
+    ArgumentError - fewer than 5 total args.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    scale_inputs - Dataset method
+
+SYNOPSIS
+    none() ds.scale_inputs()
+
+DESCRIPTION
+    Scales all input columns using OpenNN's default scaling method
+    (calls scale_features("Input") internally).
+
+ERRORS
+    None.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    set_columns - Dataset method
+
+SYNOPSIS
+    none() ds.set_columns(input_count: int(), target_count: int())
+
+DESCRIPTION
+    Assigns the first input_count columns the role "Input", the next
+    target_count columns the role "Target", and marks the rest "Unused".
+
+ARGUMENTS
+    input_count  (int()) - Number of input columns.
+    target_count (int()) - Number of target (output) columns.
+
+ERRORS
+    ArgumentError - fewer than 4 total args.
+
+────────────────────────────────────────────────────────────────────────────
+CLASS: Optimizer
+
+CLASS CONSTANTS (algorithm strings for set_algorithm)
+    Optimizer.GRADIENT_DESCENT        = "StochasticGradientDescent"
+    Optimizer.QUASI_NEWTON            = "QuasiNewtonMethod"
+    Optimizer.LEVENBERG_MARQUARDT     = "LevenbergMarquardtAlgorithm"
+    Optimizer.ADAM                    = "AdaptiveMomentEstimation"
+
+CLASS CONSTANTS (loss function strings for set_loss)
+    Optimizer.MEAN_SQUARED_ERROR       = "MeanSquaredError"
+    Optimizer.NORMALIZED_SQUARED_ERROR = "NormalizedSquaredError"
+    Optimizer.CROSS_ENTROPY_ERROR      = "CrossEntropyError"
+
+CONSTRUCTOR
+    Optimizer(network: NeuralNetwork instance, dataset: Dataset instance)
+
+DESCRIPTION
+    Creates a training strategy wrapping the network and dataset.
+
+ARGUMENTS
+    network (NeuralNetwork instance) - The network to train.
+    dataset (Dataset instance)       - The dataset to train on.
+
+ERRORS
+    ArgumentError - fewer than 4 total args.
+
+────────────────────────────────────────────────────────────────────────────
+Optimizer METHODS
+
+NAME
+    set_algorithm - Optimizer method
+
+SYNOPSIS
+    none() opt.set_algorithm(algorithm: string())
+
+DESCRIPTION
+    Sets the training algorithm.  Use one of the Optimizer class constants
+    (e.g. Optimizer.ADAM) or a raw string name.
+
+ERRORS
+    ArgumentError - fewer than 3 total args, or algorithm not a string.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    set_loss - Optimizer method
+
+SYNOPSIS
+    none() opt.set_loss(lossFunction: string())
+
+DESCRIPTION
+    Sets the loss function.  Use one of the Optimizer loss constants.
+
+ERRORS
+    ArgumentError - fewer than 3 total args, or lossFunction not a string.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    set_epochs - Optimizer method
+
+SYNOPSIS
+    none() opt.set_epochs(epochs: int())
+
+DESCRIPTION
+    Sets the maximum number of training epochs.  Uses OptimizerHack
+    to set the epoch count on the underlying algorithm object.
+
+ERRORS
+    ArgumentError - fewer than 3 total args.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    set_learning_rate - Optimizer method
+
+SYNOPSIS
+    none() opt.set_learning_rate(rate: float())
+
+DESCRIPTION
+    Sets the learning rate for ADAM or StochasticGradientDescent
+    optimizers only.  Raises RuntimeError for other algorithms that
+    do not support manual learning rates.
+
+ARGUMENTS
+    rate (float()) - Learning rate value.
+
+ERRORS
+    ArgumentError - fewer than 3 total args.
+    RuntimeError  - if the current algorithm does not support a manual
+                    learning rate.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    train - Optimizer method
+
+SYNOPSIS
+    float() opt.train()
+
+DESCRIPTION
+    Runs the training strategy and returns the final training error.
+
+RETURN VALUE
+    float() - The final training error value.
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    train_with_history - Optimizer method
+
+SYNOPSIS
+    vector() opt.train_with_history()
+
+DESCRIPTION
+    Runs the training strategy and returns a vector of training error
+    values, one per epoch.
+
+RETURN VALUE
+    vector() - Training error history.

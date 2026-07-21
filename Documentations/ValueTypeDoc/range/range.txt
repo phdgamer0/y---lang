@@ -1,0 +1,14 @@
+VALUE TYPE: Range
+PURPOSE: Represents a sequence of numbers defined by a start, end, and step.
+
+────────────────────────────────────────────────────────────────────────────
+METHODS
+────────────────────────────────────────────────────────────────────────────
+min() -> int()/float()            - Returns the minimum value in the range.
+max() -> int()/float()            - Returns the maximum value in the range.
+step() -> int()/float()           - Returns the step size of the range.
+reverse([modify_original=true]) -> range()
+                                  - Reverses the range in place or returns a reversed copy.
+                                    (e.g., a range from 1 to 5 with step 1 becomes a range from 5 to 1 with step -1).
+
+Note: Functional methods (like map, select) cannot be applied directly to a reversed range. You must cast the range to a list first.

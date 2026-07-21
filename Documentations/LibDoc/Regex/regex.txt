@@ -1,0 +1,138 @@
+MODULE: Regex
+PURPOSE: Regular expression matching, searching, finding all matches, and
+         replacement using C++ std::regex (ECMAScript syntax by default).
+
+The subject argument to all functions may be either:
+  - string()  - the string is used directly.
+  - file()    - the file is read from beginning to end and its full text
+                is used as the subject.  The file must be open.
+
+Import examples:
+    import Regex
+    from Regex import match, search, find_all, replace
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    match - Regex module
+
+SYNOPSIS
+    bool() match(pattern: string(), subject: string()|file())
+
+DESCRIPTION
+    Returns true if the entire subject matches the regular expression
+    pattern, false otherwise.  Uses std::regex_match, which requires the
+    whole string to match (not just a substring).
+
+ARGUMENTS
+    pattern (string())       - ECMAScript regular expression pattern.
+    subject (string()|file()) - Text to match against.
+
+RETURN VALUE
+    bool()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    RuntimeError  - if the pattern is invalid regex syntax (std::regex_error).
+
+EXAMPLES
+    match("\\d+", "123")      -> true
+    match("\\d+", "abc")      -> false
+    match("\\d+", "12abc")    -> false  (not a full match)
+
+SEE ALSO
+    search, find_all, replace
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    search - Regex module
+
+SYNOPSIS
+    list() search(pattern: string(), subject: string()|file())
+
+DESCRIPTION
+    Finds the first match of pattern in subject and returns a list of all
+    capture groups.  The first element (index 0) is the full match; subsequent
+    elements are capture groups in order.
+
+    Returns an empty list() if no match is found.
+
+ARGUMENTS
+    pattern (string())       - ECMAScript regular expression pattern.
+    subject (string()|file()) - Text to search.
+
+RETURN VALUE
+    list() - List of string() values (full match + capture groups), or
+             empty list if no match.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    RuntimeError  - if the pattern is invalid regex syntax.
+
+EXAMPLES
+    search("(\\w+)@(\\w+)", "user@host.com")  -> ["user@host", "user", "host"]
+    search("\\d+", "no digits")               -> []
+
+SEE ALSO
+    match, find_all, replace
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    find_all - Regex module
+
+SYNOPSIS
+    list() find_all(pattern: string(), subject: string()|file())
+
+DESCRIPTION
+    Finds all non-overlapping matches of pattern in subject and returns
+    each match as a string in a list.  Only the full match is returned
+    per match (capture groups are not separately listed).
+
+ARGUMENTS
+    pattern (string())       - ECMAScript regular expression pattern.
+    subject (string()|file()) - Text to search.
+
+RETURN VALUE
+    list() - List of string() values, one per match.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    RuntimeError  - if the pattern is invalid regex syntax.
+
+EXAMPLES
+    find_all("\\d+", "a1 b22 c333")  -> ["1", "22", "333"]
+    find_all("x", "no match")         -> []
+
+SEE ALSO
+    match, search, replace
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    replace - Regex module
+
+SYNOPSIS
+    string() replace(pattern: string(), subject: string()|file(),
+                     replacement: string())
+
+DESCRIPTION
+    Replaces all occurrences of pattern in subject with replacement using
+    std::regex_replace.  The replacement string may use ECMAScript
+    replacement syntax (e.g. $1 for capture group 1).
+
+ARGUMENTS
+    pattern     (string())       - ECMAScript regular expression pattern.
+    subject     (string()|file()) - Text to operate on.
+    replacement (string())       - Replacement string.
+
+RETURN VALUE
+    string() - The modified text.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 3.
+    RuntimeError  - if the pattern is invalid regex syntax.
+
+EXAMPLES
+    replace("\\d+", "abc 123 def 456", "NUM")  -> "abc NUM def NUM"
+    replace("(\\w+)", "hello", "[$1]")          -> "[hello]"
+
+SEE ALSO
+    match, search, find_all

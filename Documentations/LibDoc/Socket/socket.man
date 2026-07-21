@@ -1,14 +1,19 @@
 .TH SOCKET 3 "2026" "y-- standard library" "y-- Library Reference"
 .SH NAME
-Socket \- low-level Berkeley socket networking
+Socket \- low-level Berkeley socket API for TCP/UDP networking
 .SH DESCRIPTION
-The
-.B Socket
-module provides low-level TCP/UDP socket programming via the POSIX Berkeley
-socket API.
+The \fBSocket\fR module provides low-level TCP/UDP socket programming via the POSIX Berkeley socket API.
 .PP
-Constants: AF_INET, AF_INET6, SOCK_STREAM, SOCK_DGRAM, SOCK_RAW,
-IPPROTO_TCP, IPPROTO_UDP, SOL_SOCKET, SO_REUSEADDR, SO_BROADCAST.
+The module exposes the following socket-type and protocol constants: 
+AF_INET, AF_INET6, SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, IPPROTO_TCP, IPPROTO_UDP, SOL_SOCKET, SO_REUSEADDR, SO_BROADCAST. 
+These are numeric constants matching the platform's socket.h values.
+.PP
+Socket objects returned by \fBSocket.create()\fR are \fBSocketObj\fR instances with the following methods: bind, listen, accept, connect, send, recv, close, setblocking, setsockopt.
+.SH EXAMPLES
+Import examples:
+.nf
+import Socket
+.fi
 .SH FUNCTIONS
 .SS create
 .TP
@@ -16,42 +21,77 @@ IPPROTO_TCP, IPPROTO_UDP, SOL_SOCKET, SO_REUSEADDR, SO_BROADCAST.
 SocketObj() Socket.create(domain: int(), type: int(), protocol: int())
 .TP
 \fBDESCRIPTION\fR
-Creates a socket.  Returns a SocketObj instance.
+Creates a socket using the POSIX socket() syscall (::socket on POSIX, ::socket on Windows).
+.TP
+\fBARGUMENTS\fR
+\fBdomain\fR (int()) \- Address family (AF_INET, AF_INET6, etc.).
+.br
+\fBtype\fR (int()) \- Socket type (SOCK_STREAM, SOCK_DGRAM, SOCK_RAW).
+.br
+\fBprotocol\fR (int()) \- Protocol (IPPROTO_TCP, IPPROTO_UDP, or 0 for auto).
+.TP
+\fBRETURN VALUE\fR
+SocketObj() \- A socket instance.
 .TP
 \fBERRORS\fR
-\fBArgumentError\fR, \fBRuntimeError\fR
+\fBArgumentError\fR \- if called with fewer than 3 arguments.
+.br
+\fBRuntimeError\fR \- if socket creation fails.
+.TP
+\fBEXAMPLES\fR
+.nf
+s = Socket.create(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+s.connect("127.0.0.1", 8080)
+s.send("GET / HTTP/1.0\\r\\n\\r\\n")
+resp = s.recv(4096)
+s.close()
+.fi
 .SH "SOCKETOBJ METHODS"
 .TP
-\fBbind(host, port)\fR
-Bind to host:port (AF_INET/dotted-decimal).
-Raises \fBRuntimeError\fR on failure.
+\fBbind(host: string(), port: int())\fR
+Binds the socket to the given host and port using AF_INET/sockaddr_in. 
+The host is converted via inet_addr (dotted-decimal string).
+.br
+\fBErrors:\fR \fBArgumentError\fR \- fewer than 4 total args (self + dummy + host + port).
 .TP
-\fBlisten(backlog)\fR
-Mark as passive server socket with given backlog.
-Raises \fBRuntimeError\fR on failure.
+\fBlisten(backlog: int())\fR
+Marks the socket as a passive server socket willing to accept up to backlog queued connections.
+.br
+\fBErrors:\fR \fBArgumentError\fR \- fewer than 3 total args (self + dummy + backlog).
 .TP
 \fBaccept()\fR -> SocketObj()
-Accept a pending connection; blocks until a client connects.
-Raises \fBRuntimeError\fR on failure.
+Accepts a pending connection on a listening socket.
+.br
+\fBErrors:\fR \fBRuntimeError\fR \- if ::accept() fails.
 .TP
-\fBconnect(host, port)\fR
-Connect to remote host:port.
-Raises \fBRuntimeError\fR on failure.
+\fBconnect(host: string(), port: int())\fR
+Connects the socket to the remote address host:port.
+.br
+\fBErrors:\fR \fBArgumentError\fR \- fewer than 4 total args.
 .TP
-\fBsend(data)\fR -> int()
-Send data string; returns bytes sent.
+\fBsend(data: string())\fR -> int()
+Sends data over the socket.
+.br
+\fBErrors:\fR \fBArgumentError\fR \- fewer than 3 total args.
 .TP
-\fBrecv(size)\fR -> string()
-Receive up to size bytes; returns empty string on closed connection.
+\fBrecv(size: int())\fR -> string()
+Receives up to size bytes from the socket.
+.br
+\fBErrors:\fR \fBArgumentError\fR \- fewer than 3 total args.
 .TP
 \fBclose()\fR
-Close the socket.
+Closes the socket.
 .TP
-\fBsetblocking(bool)\fR
-Set blocking (true) or non-blocking (false) mode.
+\fBsetblocking(blocking: bool())\fR
+Sets the socket to blocking (true) or non-blocking (false) mode. 
+On POSIX uses fcntl F_GETFL/F_SETFL with O_NONBLOCK. 
+On Windows uses ioctlsocket with FIONBIO.
+.br
+\fBErrors:\fR \fBArgumentError\fR \- fewer than 3 total args.
 .TP
-\fBsetsockopt(level, optname, value)\fR
-Set a socket option.
-Raises \fBRuntimeError\fR on failure.
+\fBsetsockopt(level: int(), optname: int(), value: int())\fR
+Sets a socket option.
+.br
+\fBErrors:\fR \fBArgumentError\fR \- fewer than 5 total args (self + dummy + level + optname + value).
 .SH "SEE ALSO"
 Http(3), Serial(3)

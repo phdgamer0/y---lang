@@ -1,0 +1,210 @@
+MODULE: Http
+PURPOSE: HTTP client functions (GET, POST, PUT, DELETE) and an HTTP/HTTPS
+         server using the cpp-httplib library.
+
+HTTP responses are returned as HttpResponse instances with fields:
+    status (int())   - HTTP status code (e.g. 200, 404).
+    body   (string())- Response body text.
+
+When the request fails entirely (network error), none() is returned
+instead of an HttpResponse.
+
+HTTPS support requires the library to be compiled with OpenSSL
+(CPPHTTPLIB_OPENSSL_SUPPORT).  Attempting HTTPS without OpenSSL raises
+RuntimeError.
+
+Import examples:
+    import Http
+    from Http import Get, Post
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Get - Http module
+
+SYNOPSIS
+    HttpResponse() Get(url: string(), path: string())
+
+DESCRIPTION
+    Performs an HTTP GET request.  url is the server base URL (including
+    protocol, host, and optional port), path is the resource path on the
+    server.
+
+    For HTTPS URLs (starting with "https://"), the host is extracted by
+    stripping the "https://" prefix and used to create an SSLClient with
+    server certificate verification disabled.
+
+    For HTTP, a plain Client is used with url as the base.
+
+ARGUMENTS
+    url  (string()) - Server base URL, e.g. "http://example.com" or
+                      "https://api.example.com".
+    path (string()) - Request path, e.g. "/index.html" or "/api/data".
+
+RETURN VALUE
+    HttpResponse() - Instance with fields status (int) and body (string).
+    none()         - If the request fails entirely.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    RuntimeError  - if HTTPS is requested but OpenSSL is not compiled in.
+
+EXAMPLES
+    res = Get("http://example.com", "/")
+    res.status  -> 200
+    res.body    -> "<!DOCTYPE html>..."
+
+SEE ALSO
+    Post, Put, Delete, Server
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Post - Http module
+
+SYNOPSIS
+    HttpResponse() Post(url: string(), path: string(), body: string(),
+                        contentType: string())
+
+DESCRIPTION
+    Performs an HTTP POST request with the given body and content type.
+
+ARGUMENTS
+    url         (string()) - Server base URL.
+    path        (string()) - Request path.
+    body        (string()) - Request body.
+    contentType (string()) - MIME type, e.g. "application/json".
+
+RETURN VALUE
+    HttpResponse() or none() on total failure.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 4.
+    RuntimeError  - for HTTPS without OpenSSL.
+
+EXAMPLES
+    res = Post("http://api.example.com", "/data",
+               "{\"key\": 1}", "application/json")
+
+SEE ALSO
+    Get, Put, Delete
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Put - Http module
+
+SYNOPSIS
+    HttpResponse() Put(url: string(), path: string(), body: string(),
+                       contentType: string())
+
+DESCRIPTION
+    Performs an HTTP PUT request.  Arguments and return value are identical
+    to Post.
+
+ARGUMENTS
+    url         (string()) - Server base URL.
+    path        (string()) - Request path.
+    body        (string()) - Request body.
+    contentType (string()) - MIME type.
+
+RETURN VALUE
+    HttpResponse() or none() on total failure.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 4.
+    RuntimeError  - for HTTPS without OpenSSL.
+
+EXAMPLES
+    Put("http://api.example.com", "/item/1", "data", "text/plain")
+
+SEE ALSO
+    Get, Post, Delete
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Delete - Http module
+
+SYNOPSIS
+    HttpResponse() Delete(url: string(), path: string())
+
+DESCRIPTION
+    Performs an HTTP DELETE request.
+
+ARGUMENTS
+    url  (string()) - Server base URL.
+    path (string()) - Request path.
+
+RETURN VALUE
+    HttpResponse() or none() on total failure.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    RuntimeError  - for HTTPS without OpenSSL.
+
+EXAMPLES
+    Delete("http://api.example.com", "/item/1")
+
+SEE ALSO
+    Get, Post, Put
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Server - Http module
+
+SYNOPSIS
+    HttpServerObj() Server()
+
+DESCRIPTION
+    Creates a new HTTP server object wrapping a httplib::Server instance
+    allocated on the heap.  The returned HttpServerObj has the following
+    methods:
+        Get(path, lambda)              - Register a GET route handler.
+        Post(path, lambda)             - Register a POST route handler.
+        set_mount_point(mount, dir)    - Serve static files from dir at mount.
+        listen(host, port)             - Start listening (blocks).
+
+    Route handlers (Get/Post) receive the request body as a string argument
+    via the lambda.  If the lambda returns a string, it is sent as the
+    response body with content type "application/json".  Otherwise "Success"
+    is sent.  Exceptions in the handler result in a 500 response.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    HttpServerObj() - An HTTP server instance.
+
+ERRORS
+    None.
+
+EXAMPLES
+    svr = Http.Server()
+    svr.Get("/hello", fn(body) { return "\"hello world\"" })
+    svr.listen("0.0.0.0", 8080)
+
+SEE ALSO
+    Get, Post, Put, Delete
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    SSLServer - Http module
+
+SYNOPSIS
+    HttpsServerObj() SSLServer(certPath: string(), keyPath: string())
+
+DESCRIPTION
+    Creates an HTTPS server object.  Only available when the library is
+    compiled with CPPHTTPLIB_OPENSSL_SUPPORT.  Has the same methods as
+    the plain Server.
+
+ARGUMENTS
+    certPath (string()) - Path to the SSL certificate file.
+    keyPath  (string()) - Path to the SSL private key file.
+
+RETURN VALUE
+    HttpsServerObj() - An HTTPS server instance.
+
+ERRORS
+    ArgumentError - if called with fewer than 2 arguments.
+    (Not available unless OpenSSL support is compiled in.)
+
+SEE ALSO
+    Server

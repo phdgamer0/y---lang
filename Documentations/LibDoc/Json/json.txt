@@ -1,0 +1,122 @@
+MODULE: Json
+PURPOSE: JSON serialisation and deserialisation using the nlohmann/json library.
+
+Import examples:
+    import Json
+    from Json import ParseJson, StringifyJson, IsValidJson
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    ParseJson - Json module
+
+SYNOPSIS
+    any() ParseJson(jsonString: string())
+
+DESCRIPTION
+    Parses jsonString as JSON and converts it to a y-- value tree.
+
+    JSON type mapping:
+      null          -> none()
+      boolean       -> bool()
+      integer       -> int()  (long long)
+      float         -> float()
+      string        -> string()
+      array         -> list()  (elements recursively converted)
+      object        -> instance() with fields named by the JSON keys
+                       (values recursively converted)
+
+    JSON objects are turned into "JsonObject" class instances, so fields
+    are accessed with dot notation: obj.fieldName.
+
+ARGUMENTS
+    jsonString (string()) - A valid JSON string.
+
+RETURN VALUE
+    any() - The parsed value tree.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    ParseError    - if jsonString is not valid JSON.  The error message
+                    includes the byte offset of the parse failure.
+
+EXAMPLES
+    ParseJson("[1, 2, 3]")          -> [1, 2, 3]
+    ParseJson("{\"key\": \"val\"}")  -> instance (obj.key == "val")
+    ParseJson("invalid")            -> ParseError
+
+SEE ALSO
+    StringifyJson, IsValidJson
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    StringifyJson - Json module
+
+SYNOPSIS
+    string() StringifyJson(value: any(), indent: int() = -1)
+
+DESCRIPTION
+    Serialises value to a JSON string.
+
+    Supported value types:
+      none()     -> null
+      bool()     -> boolean
+      int()      -> number (integer)
+      float()    -> number (float)
+      string()   -> string
+      list()     -> array (elements recursively serialised)
+      instance() -> object (public fields recursively serialised; only
+                    fields whose values are int, float, string, bool,
+                    list, instance, or none are included; others are
+                    silently skipped)
+
+    Cyclic references are detected (via pointer comparison) and replaced
+    with the string "[Cyclic Reference]".
+
+    When indent is -1 (the default), the output is compact (no whitespace).
+    A positive indent value produces pretty-printed JSON indented by that
+    many spaces.
+
+ARGUMENTS
+    value  (any()) - Value to serialise.
+    indent (int()) - Indentation spaces.  Default -1 = compact.
+
+RETURN VALUE
+    string() - The JSON representation.
+
+ERRORS
+    ArgumentError - if called with 0 arguments or more than 2 arguments.
+
+EXAMPLES
+    StringifyJson([1, 2, 3])           -> "[1,2,3]"
+    StringifyJson([1, 2, 3], 2)        -> "[\n  1,\n  2,\n  3\n]"
+    StringifyJson(none())              -> "null"
+
+SEE ALSO
+    ParseJson, IsValidJson
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    IsValidJson - Json module
+
+SYNOPSIS
+    bool() IsValidJson(jsonString: string())
+
+DESCRIPTION
+    Returns true if jsonString is valid JSON, false otherwise.  Uses
+    nlohmann::json::accept, which does not throw on invalid input.
+
+ARGUMENTS
+    jsonString (string()) - The string to validate.
+
+RETURN VALUE
+    bool() - true if valid JSON, false otherwise.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    IsValidJson("[1, 2]")     -> true
+    IsValidJson("{bad}")      -> false
+
+SEE ALSO
+    ParseJson, StringifyJson

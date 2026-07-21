@@ -1,0 +1,166 @@
+MODULE: Time
+PURPOSE: Time utilities — sleep, get current timestamps, format timestamps,
+         and decompose timestamps into calendar components.
+
+Import examples:
+    import Time
+    from Time import Now, Sleep, Format
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Sleep - Time module
+
+SYNOPSIS
+    none() Sleep(milliseconds: int())
+
+DESCRIPTION
+    Blocks the current thread for the given number of milliseconds.
+    Uses std::this_thread::sleep_for with a std::chrono::milliseconds
+    duration.
+
+ARGUMENTS
+    milliseconds (int()) - Number of milliseconds to sleep.  Negative values
+                           are passed through without error but will likely
+                           return immediately.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Sleep(500)   -> none()   (pauses for 0.5 seconds)
+    Sleep(1000)  -> none()   (pauses for 1 second)
+
+SEE ALSO
+    Now, Clock
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Now - Time module
+
+SYNOPSIS
+    float() Now()
+
+DESCRIPTION
+    Returns the number of seconds elapsed since the Unix epoch
+    (1970-01-01T00:00:00 UTC) as a floating-point value.  Uses
+    std::chrono::system_clock.
+
+    The returned value can be passed to Format or Local for further
+    processing.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    float() - Seconds since the Unix epoch (with sub-second precision).
+
+ERRORS
+    None.
+
+EXAMPLES
+    Now()  -> 1721043600.123456
+
+SEE ALSO
+    Clock, Format, Local
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Clock - Time module
+
+SYNOPSIS
+    float() Clock()
+
+DESCRIPTION
+    Returns the number of milliseconds since an unspecified epoch using
+    std::chrono::high_resolution_clock.  The epoch is implementation-defined
+    and is not guaranteed to be the Unix epoch.  Use this for measuring
+    elapsed time (benchmarking), not for wall-clock time.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    float() - Milliseconds since the high-resolution clock's epoch.
+
+ERRORS
+    None.
+
+EXAMPLES
+    Clock()  -> 1234567890.456  (milliseconds, not seconds)
+
+SEE ALSO
+    Now, Sleep
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Format - Time module
+
+SYNOPSIS
+    string() Format(timestamp: float(), formatStr: string())
+
+DESCRIPTION
+    Converts a Unix timestamp (seconds since the epoch) to a formatted local-
+    time string using strftime.  The format string follows standard strftime
+    conventions (e.g., "%Y-%m-%d %H:%M:%S" for ISO-8601 style).
+
+    The timestamp is cast to time_t (truncating fractional seconds) and
+    localtime is used, so the result is in the local timezone.
+
+ARGUMENTS
+    timestamp (float()) - Unix timestamp in seconds (e.g., from Now()).
+    formatStr (string()) - strftime format string.
+
+RETURN VALUE
+    string() - The formatted date/time string, up to 79 characters.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+
+EXAMPLES
+    Format(Now(), "%Y-%m-%d")         -> "2026-07-15"
+    Format(Now(), "%H:%M:%S")         -> "19:53:55"
+    Format(0.0,   "%Y")               -> "1970"
+
+SEE ALSO
+    Now, Local
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Local - Time module
+
+SYNOPSIS
+    dict() Local(timestamp: float())
+
+DESCRIPTION
+    Decomposes a Unix timestamp (seconds since epoch) into local-time
+    calendar components and returns them as a dictionary.  Uses std::localtime
+    internally, so the result is in the local timezone.
+
+    The returned dict has the following keys (all int() values):
+      "year"    - Full year (e.g. 2026)
+      "month"   - Month of year, 1–12
+      "day"     - Day of month, 1–31
+      "weekday" - Day of week, 0 (Sunday) – 6 (Saturday)
+      "hour"    - Hour, 0–23
+      "min"     - Minute, 0–59
+      "sec"     - Second, 0–60 (60 for a leap second)
+
+ARGUMENTS
+    timestamp (float()) - Unix timestamp in seconds.
+
+RETURN VALUE
+    dict() - Dictionary with keys "year", "month", "day", "weekday",
+             "hour", "min", "sec" and int() values.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Local(0.0)   -> {"year": 1970, "month": 1, "day": 1, "weekday": 4,
+                     "hour": 0, "min": 0, "sec": 0}
+
+SEE ALSO
+    Now, Format

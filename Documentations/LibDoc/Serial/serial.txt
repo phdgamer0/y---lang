@@ -1,0 +1,51 @@
+MODULE: Serial
+PURPOSE: Serial port (UART) communication.  Opens a serial port at a given
+         baud rate and returns a handle object with read, write, and close
+         methods.
+
+Import examples:
+    import Serial
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    open - Serial module
+
+SYNOPSIS
+    SerialObj() open(port: string(), baud: int())
+
+DESCRIPTION
+    Opens the serial port at path port with the given baud rate and returns
+    a SerialObj handle.
+
+    On POSIX the port is opened with O_RDWR | O_NOCTTY | O_SYNC flags and
+    tcsetattr is used to configure 8N1 (8 data bits, no parity, 1 stop bit)
+    at the requested baud rate, with no hardware flow control and a 0.5-second
+    read timeout (VTIME=5, VMIN=0).
+
+    On Windows, CreateFileA is used followed by DCB configuration for 8N1,
+    with 50 ms read/write timeouts.
+
+    If the port cannot be opened, RuntimeError is raised.
+
+ARGUMENTS
+    port (string()) - Device path, e.g. "/dev/ttyUSB0" on Linux or "COM3"
+                      on Windows.
+    baud (int())    - Baud rate (e.g. 9600, 115200).
+
+RETURN VALUE
+    SerialObj() - An open serial port handle with the following methods:
+        read(n: int())  -> string()  — reads up to n bytes.
+        write(data: string()) -> int()  — writes data, returns bytes written.
+        close() -> none()  — closes the port.
+
+ERRORS
+    RuntimeError - if the port cannot be opened.
+
+EXAMPLES
+    s = Serial.open("/dev/ttyUSB0", 9600)
+    s.write("hello")    -> 5
+    s.read(64)          -> "response"
+    s.close()           -> none()
+
+SEE ALSO
+    (none in this module)

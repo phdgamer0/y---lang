@@ -1,0 +1,67 @@
+MODULE: QRgen
+PURPOSE: QR code generation using the nayuki/QR-Code-generator library.
+
+When imported, this module also sets four global error-correction level
+constants in the environment:
+    ECC_LEVEL_LOW       -> int (QrCode::Ecc::LOW)
+    ECC_LEVEL_MEDIUM    -> int (QrCode::Ecc::MEDIUM)
+    ECC_LEVEL_QUARTILE  -> int (QrCode::Ecc::QUARTILE)
+    ECC_LEVEL_HIGH      -> int (QrCode::Ecc::HIGH)
+
+Note: the module is registered under "QRgen" in the modules map but the
+final env->set call binds it under the name "Math" (apparent bug in the
+source — NEEDS VERIFICATION whether QRgen or Math is the correct import
+key at the language level).
+
+Import examples:
+    import QRgen
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    GenerateQRcode - QRgen module
+
+SYNOPSIS
+    QRcodeObj() GenerateQRcode(text: string(), eccLevel: int())
+
+DESCRIPTION
+    Generates a QR code for the given text string at the specified
+    error-correction level and returns a QRcodeObj instance.
+
+    The returned object has the following fields:
+        Version (int())      - QR version number (1–40).
+        Size    (int())      - Module count per side (size * size grid).
+        BoolArray (tuple())  - A Size×Size tuple of tuples, where each
+                               inner tuple contains bool() values.
+                               BoolArray[x][y] is true if the QR module
+                               at column x, row y is dark.
+        CorrectionLevel (int()) - The error correction level used (matches
+                                  one of the ECC_LEVEL_* constants).
+
+    Error-correction levels (use the module constants):
+        ECC_LEVEL_LOW       (~7% correction)
+        ECC_LEVEL_MEDIUM    (~15% correction)
+        ECC_LEVEL_QUARTILE  (~25% correction)
+        ECC_LEVEL_HIGH      (~30% correction)
+
+ARGUMENTS
+    text     (string()) - The text to encode.
+    eccLevel (int())    - Error correction level.  Use one of the
+                          ECC_LEVEL_* constants exported by this module.
+
+RETURN VALUE
+    QRcodeObj() - An instance with fields Version, Size, BoolArray,
+                  CorrectionLevel.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    (May raise C++ exceptions for input that cannot be encoded — NEEDS
+    VERIFICATION.)
+
+EXAMPLES
+    qr = GenerateQRcode("https://example.com", ECC_LEVEL_MEDIUM)
+    qr.Size       -> 25
+    qr.Version    -> 2
+    qr.BoolArray  -> ((true, false, ...), ...)
+
+SEE ALSO
+    (none in this module)

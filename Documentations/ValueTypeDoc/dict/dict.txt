@@ -1,0 +1,34 @@
+VALUE TYPE: Dictionary (dict)
+PURPOSE: Represents a key-value mapping.
+
+────────────────────────────────────────────────────────────────────────────
+METHODS
+────────────────────────────────────────────────────────────────────────────
+get(key, [default_return]) -> any
+                                  - Returns the value associated with the key. Returns default_return (or None) if key not found.
+get_default(key, [default_value]) -> any
+                                  - Returns the value if the key exists. Otherwise, inserts key with default_value and returns default_value.
+clear() -> none()                 - Removes all items from the dictionary.
+update(other_dict) -> none()      - Updates the dictionary with key-value pairs from other_dict, overwriting existing keys.
+pop([key]) -> any                 - Removes and returns the value for the key. If no key is provided, pops an arbitrary key-value pair's value.
+keys() -> list()                  - Returns a list of all keys.
+values() -> list()                - Returns a list of all values.
+items() -> list(tuple(key, val))  - Returns a list of key-value tuples.
+reserve(size) -> none()           - Pre-allocates bucket capacity for the dictionary.
+
+Note: if a string key matches a method name (like 'get'), the method takes precedence unless accessed via indexing `dict["get"]`.
+Alternatively, if a string key exists in the dict and matches a method call name that is NOT a built-in dict method, it invokes the value as a function.
+
+────────────────────────────────────────────────────────────────────────────
+FUNCTIONAL METHODS
+────────────────────────────────────────────────────────────────────────────
+When applying functional methods to a dictionary, the iteration is over its KEYS.
+All_Of(lambda) -> bool()
+Any_Of(lambda) -> bool()
+None_Of(lambda) -> bool()
+One_Of(lambda) -> bool()
+find(lambda) -> any/None
+select(lambda) -> dict()
+reject(lambda) -> dict()
+partition(lambda) -> list([dict(), dict()])
+map(lambda) -> list()             - Returns a list of the mapped values.

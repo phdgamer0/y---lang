@@ -1,0 +1,769 @@
+MODULE: Math
+PURPOSE: Mathematical functions and physical constants.
+
+Constants exported by the Math module:
+    PI          = 3.141592653589793   (π)
+    E           = 2.718281828459045   (Euler's number)
+    PHI         = 1.618033988749894   (Golden ratio)
+    G           = 6.6743e-11          (Gravitational constant, m³ kg⁻¹ s⁻²)
+    G_EARTH     = 9.80665             (Standard gravity, m/s²)
+    EPSILON_0   = 8.8541878128e-12    (Vacuum permittivity, F/m)
+    PLANCK_H    = 6.62607015e-34      (Planck constant, J·s)
+
+All angle arguments and return values are in RADIANS unless otherwise noted.
+All functions accept int(), float(), bigint(), and bool() arguments; bool is
+coerced to 1.0 (true) or 0.0 (false).  bigint() is converted via std::stod,
+which may return INFINITY for values exceeding double range.
+
+Import examples:
+    import Math
+    from Math import Sin, Cos, PI
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Abs - Math module
+
+SYNOPSIS
+    int()|float()|bigint() Abs(num: int()|float()|bigint())
+
+DESCRIPTION
+    Returns the absolute value of num.  The return type matches the input
+    type: int input produces int output, float input produces float output,
+    and bigint input produces bigint output.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - The value to take the absolute value of.
+
+RETURN VALUE
+    Same type as input.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Abs(-5)    -> 5
+    Abs(-3.14) -> 3.14
+    Abs(0)     -> 0
+
+SEE ALSO
+    Sgn
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Floor - Math module
+
+SYNOPSIS
+    int() Floor(num: int()|float()|bigint())
+
+DESCRIPTION
+    Returns the largest integer less than or equal to num.  If num is
+    already an int or bigint, it is returned unchanged.  float() input
+    returns int().
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Number to floor.
+
+RETURN VALUE
+    int() or bigint() - The floored value.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Floor(3.7)   -> 3
+    Floor(-3.7)  -> -4
+    Floor(3)     -> 3
+
+SEE ALSO
+    Ceil
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Ceil - Math module
+
+SYNOPSIS
+    int() Ceil(num: int()|float()|bigint())
+
+DESCRIPTION
+    Returns the smallest integer greater than or equal to num.  If num is
+    already an int or bigint, it is returned unchanged.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Number to ceil.
+
+RETURN VALUE
+    int() or bigint() - The ceiled value.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Ceil(3.2)   -> 4
+    Ceil(-3.2)  -> -3
+    Ceil(3)     -> 3
+
+SEE ALSO
+    Floor
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Sqrt - Math module
+
+SYNOPSIS
+    float() Sqrt(num: int()|float()|bigint())
+
+DESCRIPTION
+    Returns the square root of num as a float.  Raises ValueError for
+    negative arguments (complex results are not supported).
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Non-negative number.
+
+RETURN VALUE
+    float() - Square root of num.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    ValueError    - if num < 0.
+
+EXAMPLES
+    Sqrt(4.0)   -> 2.0
+    Sqrt(2.0)   -> 1.4142135623730951
+    Sqrt(-1.0)  -> ValueError
+
+SEE ALSO
+    Cbrt
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Cbrt - Math module
+
+SYNOPSIS
+    float() Cbrt(num: int()|float()|bigint())
+
+DESCRIPTION
+    Returns the cube root of num as a float using std::cbrt.  Negative
+    values are supported.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Any number.
+
+RETURN VALUE
+    float() - Cube root of num.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Cbrt(27.0)  -> 3.0
+    Cbrt(-8.0)  -> -2.0
+
+SEE ALSO
+    Sqrt
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Sgn - Math module
+
+SYNOPSIS
+    int() Sgn(num: int()|float()|bigint())
+
+DESCRIPTION
+    Returns the sign of num: 1 if num > 0, -1 if num < 0, 0 if num == 0.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Any number.
+
+RETURN VALUE
+    int() - 1, 0, or -1.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Sgn(5.0)    -> 1
+    Sgn(-3)     -> -1
+    Sgn(0)      -> 0
+
+SEE ALSO
+    Abs
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    RadToDeg - Math module
+
+SYNOPSIS
+    float() RadToDeg(num: int()|float()|bigint())
+
+DESCRIPTION
+    Converts num from radians to degrees.  Computed as num * 180 / PI.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Angle in radians.
+
+RETURN VALUE
+    float() - Angle in degrees.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    RadToDeg(PI)            -> 180.0
+    RadToDeg(PI / 2.0)      -> 90.0
+
+SEE ALSO
+    DegToRad
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    DegToRad - Math module
+
+SYNOPSIS
+    float() DegToRad(num: int()|float()|bigint())
+
+DESCRIPTION
+    Converts num from degrees to radians.  Computed as num * PI / 180.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Angle in degrees.
+
+RETURN VALUE
+    float() - Angle in radians.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    DegToRad(180.0)  -> 3.141592653589793
+    DegToRad(90.0)   -> 1.5707963267948966
+
+SEE ALSO
+    RadToDeg
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    MapRange - Math module
+
+SYNOPSIS
+    float() MapRange(num: float(), in_min: float(), in_max: float(),
+                     out_min: float(), out_max: float())
+
+DESCRIPTION
+    Linearly maps num from the input range [in_min, in_max] to the output
+    range [out_min, out_max].  If in_min == in_max (zero-width input range),
+    out_min is returned instead of dividing by zero.
+
+ARGUMENTS
+    num     (float()) - Value to map.
+    in_min  (float()) - Minimum of the input range (inclusive).
+    in_max  (float()) - Maximum of the input range (inclusive).
+    out_min (float()) - Minimum of the output range.
+    out_max (float()) - Maximum of the output range.
+
+RETURN VALUE
+    float() - The mapped value.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 5.
+
+EXAMPLES
+    MapRange(0.5, 0.0, 1.0, 0.0, 100.0)   -> 50.0
+    MapRange(5.0, 0.0, 10.0, -1.0, 1.0)   -> 0.0
+
+SEE ALSO
+    (none in this module)
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    RoundToPower - Math module
+
+SYNOPSIS
+    int()|float() RoundToPower(number: float(), power: float())
+
+DESCRIPTION
+    Rounds number to the nearest multiple of 10^power.  For example,
+    RoundToPower(1234, 2) rounds to the nearest 100, giving 1200.
+    RoundToPower(1.2345, -2) rounds to the nearest 0.01, giving 1.23.
+
+    If power >= 0 and the original value was an int or bigint, the result is
+    returned as int(); otherwise it is returned as float().
+
+ARGUMENTS
+    number (float()) - Number to round.
+    power  (float()) - Power of 10 to round to.  Positive = round to larger
+                       units; negative = round to decimal places.
+
+RETURN VALUE
+    int() or float() depending on the input type and power.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+
+EXAMPLES
+    RoundToPower(1234, 2)       -> 1200
+    RoundToPower(1.2345, -2)    -> 1.23
+
+SEE ALSO
+    Floor, Ceil
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    ConvertToBase - Math module
+
+SYNOPSIS
+    string() ConvertToBase(num_str: string(), curr_base: int(), target_base: int())
+
+DESCRIPTION
+    Converts the string representation of a non-negative integer from
+    curr_base to target_base and returns the result as a string.
+    Both bases must be between 2 and 36 inclusive.
+    Digits above 9 are represented using uppercase letters (A=10, B=11, …).
+
+    The input string num_str must contain only valid digits for curr_base;
+    digits above 9 are accepted in both upper and lowercase.
+
+ARGUMENTS
+    num_str    (string()) - The number to convert, expressed in curr_base.
+    curr_base  (int())    - Source base, 2–36.
+    target_base (int())   - Target base, 2–36.
+
+RETURN VALUE
+    string() - The number in target_base.  Returns "0" if the value is 0.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 3.
+    ValueError    - if either base is out of range, or if a digit in num_str
+                    is invalid for curr_base.
+
+EXAMPLES
+    ConvertToBase("ff", 16, 10)   -> "255"
+    ConvertToBase("255", 10, 2)   -> "11111111"
+    ConvertToBase("0", 10, 16)    -> "0"
+
+SEE ALSO
+    (int method base())
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Sin - Math module
+
+SYNOPSIS
+    float() Sin(num: float())
+
+DESCRIPTION
+    Returns the sine of num (in radians) using std::sin.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Angle in radians.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Sin(0.0)     -> 0.0
+    Sin(PI/2.0)  -> 1.0
+
+SEE ALSO
+    Cos, Tan, Arcsin
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Cos - Math module
+
+SYNOPSIS
+    float() Cos(num: float())
+
+DESCRIPTION
+    Returns the cosine of num (in radians) using std::cos.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Angle in radians.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Cos(0.0)   -> 1.0
+    Cos(PI)    -> -1.0
+
+SEE ALSO
+    Sin, Tan, Arccos
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Tan - Math module
+
+SYNOPSIS
+    float() Tan(num: float())
+
+DESCRIPTION
+    Returns the tangent of num (in radians) using std::tan.  The result is
+    undefined (±infinity) at cos(num) == 0.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Angle in radians.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Tan(0.0)     -> 0.0
+    Tan(PI/4.0)  -> ~1.0
+
+SEE ALSO
+    Sin, Cos, Arctan
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Sinh - Math module
+
+SYNOPSIS
+    float() Sinh(num: float())
+
+DESCRIPTION
+    Returns the hyperbolic sine of num using std::sinh.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Any real number.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Sinh(0.0)  -> 0.0
+    Sinh(1.0)  -> 1.1752011936438014
+
+SEE ALSO
+    Cosh, Tanh, Arcsinh
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Cosh - Math module
+
+SYNOPSIS
+    float() Cosh(num: float())
+
+DESCRIPTION
+    Returns the hyperbolic cosine of num using std::cosh.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Any real number.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Cosh(0.0)  -> 1.0
+
+SEE ALSO
+    Sinh, Tanh, Arccosh
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Tanh - Math module
+
+SYNOPSIS
+    float() Tanh(num: float())
+
+DESCRIPTION
+    Returns the hyperbolic tangent of num using std::tanh.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Any real number.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Tanh(0.0)  -> 0.0
+
+SEE ALSO
+    Sinh, Cosh, Arctanh
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Arcsin - Math module
+
+SYNOPSIS
+    float() Arcsin(num: float())
+
+DESCRIPTION
+    Returns the arc sine of num in radians using std::asin.  The domain is
+    [-1, 1]; values outside this range produce NaN (implementation-defined
+    platform behavior).
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Value in [-1, 1].
+
+RETURN VALUE
+    float() - Arc sine in radians.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Arcsin(0.0)   -> 0.0
+    Arcsin(1.0)   -> 1.5707963267948966  (PI/2)
+
+SEE ALSO
+    Arccos, Arctan, Sin
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Arccos - Math module
+
+SYNOPSIS
+    float() Arccos(num: float())
+
+DESCRIPTION
+    Returns the arc cosine of num in radians using std::acos.  Domain: [-1, 1].
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Value in [-1, 1].
+
+RETURN VALUE
+    float() - Arc cosine in radians.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Arccos(1.0)   -> 0.0
+    Arccos(0.0)   -> 1.5707963267948966  (PI/2)
+
+SEE ALSO
+    Arcsin, Arctan, Cos
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Arctan - Math module
+
+SYNOPSIS
+    float() Arctan(num: float())
+
+DESCRIPTION
+    Returns the arc tangent of num in radians using std::atan.  Domain: all
+    reals; output range: (-PI/2, PI/2).
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Any real number.
+
+RETURN VALUE
+    float() - Arc tangent in radians.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Arctan(1.0)   -> 0.7853981633974483  (PI/4)
+
+SEE ALSO
+    Atan2, Arcsin, Arccos, Tan
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Atan2 - Math module
+
+SYNOPSIS
+    float() Atan2(y: float(), x: float())
+
+DESCRIPTION
+    Returns the arc tangent of y/x using std::atan2, preserving quadrant
+    information.  Output range: (-PI, PI].
+
+ARGUMENTS
+    y (int()|float()|bigint()) - The y-coordinate.
+    x (int()|float()|bigint()) - The x-coordinate.
+
+RETURN VALUE
+    float() - Angle in radians in (-PI, PI].
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+
+EXAMPLES
+    Atan2(1.0, 1.0)    -> 0.7853981633974483  (PI/4)
+    Atan2(0.0, -1.0)   -> 3.141592653589793    (PI)
+
+SEE ALSO
+    Arctan
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Arcsinh - Math module
+
+SYNOPSIS
+    float() Arcsinh(num: float())
+
+DESCRIPTION
+    Returns the inverse hyperbolic sine of num using std::asinh.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Any real number.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Arcsinh(0.0)   -> 0.0
+
+SEE ALSO
+    Arccosh, Arctanh, Sinh
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Arccosh - Math module
+
+SYNOPSIS
+    float() Arccosh(num: float())
+
+DESCRIPTION
+    Returns the inverse hyperbolic cosine of num using std::acosh.  Domain:
+    [1, ∞).
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Value >= 1.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Arccosh(1.0)   -> 0.0
+
+SEE ALSO
+    Arcsinh, Arctanh, Cosh
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Arctanh - Math module
+
+SYNOPSIS
+    float() Arctanh(num: float())
+
+DESCRIPTION
+    Returns the inverse hyperbolic tangent of num using std::atanh.  Domain:
+    (-1, 1).  Values at ±1 produce ±infinity.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Value in (-1, 1).
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Arctanh(0.0)   -> 0.0
+
+SEE ALSO
+    Arcsinh, Arccosh, Tanh
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Log - Math module
+
+SYNOPSIS
+    float() Log(num: float())
+
+DESCRIPTION
+    Returns the natural logarithm (base e) of num using std::log.  Raises
+    ValueError for negative arguments.  Log(0) produces -infinity (platform
+    behavior); this is not caught.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Positive number.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    ValueError    - if num < 0.
+
+EXAMPLES
+    Log(1.0)   -> 0.0
+    Log(E)     -> 1.0
+
+SEE ALSO
+    Log2, Log10
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Log2 - Math module
+
+SYNOPSIS
+    float() Log2(num: float())
+
+DESCRIPTION
+    Returns the base-2 logarithm of num using std::log2.  Raises ValueError
+    for negative arguments.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Positive number.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    ValueError    - if num < 0.
+
+EXAMPLES
+    Log2(8.0)   -> 3.0
+    Log2(1.0)   -> 0.0
+
+SEE ALSO
+    Log, Log10
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Log10 - Math module
+
+SYNOPSIS
+    float() Log10(num: float())
+
+DESCRIPTION
+    Returns the base-10 logarithm of num using std::log10.  Raises ValueError
+    for negative arguments.
+
+ARGUMENTS
+    num (int()|float()|bigint()) - Positive number.
+
+RETURN VALUE
+    float()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    ValueError    - if num < 0.
+
+EXAMPLES
+    Log10(100.0)   -> 2.0
+    Log10(1.0)     -> 0.0
+
+SEE ALSO
+    Log, Log2

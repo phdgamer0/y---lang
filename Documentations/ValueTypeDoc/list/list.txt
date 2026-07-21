@@ -1,0 +1,73 @@
+VALUE TYPE: List
+PURPOSE: Represents an ordered, mutable sequence of elements.
+
+────────────────────────────────────────────────────────────────────────────
+CORE METHODS
+────────────────────────────────────────────────────────────────────────────
+append(val) -> list()             - Appends a value to the end of the list.
+get(index, [default_return]) -> any
+                                  - Returns the element at the specified index. Supports negative indexing. Returns default_return (or None) if out of bounds.
+insert(index, val) -> list()      - Inserts a value before the specified index.
+pop([index]) -> any               - Removes and returns the element at the specified index. Defaults to the last element.
+remove(val) -> none()             - Removes the first occurrence of the specified value.
+clear() -> list()                 - Removes all elements from the list.
+extend(iterable) -> list()        - Appends all elements from another list, set, or range.
+
+────────────────────────────────────────────────────────────────────────────
+CAPACITY & MEMORY
+────────────────────────────────────────────────────────────────────────────
+reserve(size) -> none()           - Pre-allocates memory for the list.
+resize(size) -> none()            - Resizes the list (can truncate data).
+
+────────────────────────────────────────────────────────────────────────────
+SEARCHING & SORTING
+────────────────────────────────────────────────────────────────────────────
+count(val) -> int()               - Returns the number of occurrences of the value.
+index(val) -> int()               - Returns the first index of the value, or -1 if not found.
+reverse([modify_original=true, custom_lambda=None]) -> list()
+                                  - Reverses the list in place (optionally applying a lambda).
+sort([reverse_sort=false, modify_original=true, custom_lambda=None]) -> list()
+                                  - Sorts the list.
+shuffle() -> list()               - Randomly shuffles the elements in place.
+
+────────────────────────────────────────────────────────────────────────────
+MATH & AGGREGATION
+────────────────────────────────────────────────────────────────────────────
+sum() -> int()/float()            - Returns the sum of all elements (requires numeric elements).
+min() -> any                      - Returns the smallest element.
+max() -> any                      - Returns the largest element.
+average() -> float()              - Returns the arithmetic mean of all numeric elements.
+
+────────────────────────────────────────────────────────────────────────────
+UTILITIES
+────────────────────────────────────────────────────────────────────────────
+sample(k) -> list()               - Returns a list of k randomly sampled distinct elements.
+flatten() -> list()               - Recursively flattens nested lists into a single 1D list.
+chunk(size) -> list()             - Splits the list into smaller sub-lists of the given size.
+rotate(n) -> list()               - Rotates the list elements by n positions (positive = right, negative = left).
+unique() -> list()                - Removes duplicate elements from the list.
+join([sep=""]) -> string()        - Joins the string representation of all elements, separated by sep.
+fill(val, [count]) -> list()      - Fills the list with copies of val. If count is given, replaces contents with `count` copies.
+
+────────────────────────────────────────────────────────────────────────────
+HEAP OPERATIONS
+────────────────────────────────────────────────────────────────────────────
+MaxHeapify() -> list()            - Converts the list into a max-heap in place.
+MinHeapify() -> list()            - Converts the list into a min-heap in place.
+MaxHeapPop() -> any               - Pops and returns the largest element from a max-heap.
+MinHeapPop() -> any               - Pops and returns the smallest element from a min-heap.
+MaxHeapPush(val) -> list()        - Pushes a value onto a max-heap while maintaining heap property.
+MinHeapPush(val) -> list()        - Pushes a value onto a min-heap while maintaining heap property.
+
+────────────────────────────────────────────────────────────────────────────
+FUNCTIONAL METHODS
+────────────────────────────────────────────────────────────────────────────
+All_Of(lambda) -> bool()
+Any_Of(lambda) -> bool()
+None_Of(lambda) -> bool()
+One_Of(lambda) -> bool()
+find(lambda) -> any/None
+select(lambda) -> list()
+reject(lambda) -> list()
+partition(lambda) -> list([list(), list()])
+map(lambda) -> list()

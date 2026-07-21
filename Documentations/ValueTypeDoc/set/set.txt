@@ -1,0 +1,43 @@
+VALUE TYPE: Set
+PURPOSE: Represents an unordered collection of unique elements.
+
+────────────────────────────────────────────────────────────────────────────
+CORE METHODS
+────────────────────────────────────────────────────────────────────────────
+add(val) -> set()                 - Adds an element to the set.
+remove(val) -> set()              - Removes an element. Throws KeyError if not found.
+discard(val) -> set()             - Removes an element if present. Does not throw if not found.
+pop() -> any                      - Removes and returns an arbitrary element. Throws if empty.
+clear() -> set()                  - Removes all elements from the set.
+reserve(size) -> none()           - Pre-allocates bucket capacity for the set.
+
+────────────────────────────────────────────────────────────────────────────
+SET OPERATIONS
+────────────────────────────────────────────────────────────────────────────
+union(other_set) -> set()         - Returns a new set with elements from both sets.
+intersection(other_set) -> set()  - Returns a new set with elements common to both sets.
+difference(other_set) -> set()    - Returns a new set with elements in this set but not in other_set.
+symmetric_difference(other_set) -> set()
+                                  - Returns a new set with elements in either set, but not both.
+issubset(other_set) -> bool()     - Returns true if all elements of this set are in other_set.
+issuperset(other_set) -> bool()   - Returns true if all elements of other_set are in this set.
+isdisjoint(other_set) -> bool()   - Returns true if the sets have no elements in common.
+
+────────────────────────────────────────────────────────────────────────────
+UTILITIES
+────────────────────────────────────────────────────────────────────────────
+join([sep=""]) -> string()        - Joins the string representation of all elements in an arbitrary order, separated by sep.
+
+────────────────────────────────────────────────────────────────────────────
+FUNCTIONAL METHODS
+────────────────────────────────────────────────────────────────────────────
+Sets support functional iteration over their elements.
+All_Of(lambda) -> bool()
+Any_Of(lambda) -> bool()
+None_Of(lambda) -> bool()
+One_Of(lambda) -> bool()
+find(lambda) -> any/None
+select(lambda) -> set()
+reject(lambda) -> set()
+partition(lambda) -> list([set(), set()])
+map(lambda) -> set()              - Returns a set of the mapped values.

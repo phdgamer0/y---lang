@@ -1,0 +1,471 @@
+MODULE: Raylib
+PURPOSE: 2D/3D graphics, audio, input, and windowing using the Raylib game
+         development library.
+
+The module is only available when the interpreter is compiled with Raylib
+support.  All types used by Raylib functions are represented as instances
+with named fields (Color, Image, Texture2D, RenderTexture, Font, Sound, Music).
+
+NOTE: Vector positions accepted by "V"-suffixed functions and DrawTextEx use
+the language's native vector() type (a 2-element numeric vector <x, y>).
+Rectangle instances are created with the Rectangle() constructor.
+
+Import examples:
+    import Raylib
+
+────────────────────────────────────────────────────────────────────────────
+CONSTRUCTOR FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+Color(r, g, b, a)         - Create a Color instance. r/g/b/a are int (0-255).
+Rectangle(x, y, w, h)    - Create a Rectangle instance with fields x, y, width, height.
+Image(data_ptr, width, height, mipmaps, format) - Rarely used directly; prefer LoadImage.
+Texture2D(id, width, height, mipmaps, format)   - Rarely used directly; prefer LoadTexture.
+Font(baseSize, glyphCount, glyphPadding, texture, recs_ptr, glyphs_ptr) - Rarely used directly.
+
+────────────────────────────────────────────────────────────────────────────
+COLOR CONSTANTS (Color instances with isConst = true)
+────────────────────────────────────────────────────────────────────────────
+
+LIGHTGRAY  (200,200,200,255)   GRAY      (130,130,130,255)
+DARKGRAY   (80,80,80,255)      YELLOW    (253,249,0,255)
+GOLD       (255,203,0,255)     ORANGE    (255,161,0,255)
+PINK       (255,109,194,255)   RED       (230,41,55,255)
+MAROON     (190,33,55,255)     GREEN     (0,228,48,255)
+LIME       (0,158,47,255)      DARKGREEN (0,117,44,255)
+SKYBLUE    (102,191,255,255)   BLUE      (0,121,241,255)
+DARKBLUE   (0,82,172,255)      PURPLE    (200,122,255,255)
+VIOLET     (135,60,190,255)    DARKPURPLE(112,31,126,255)
+BEIGE      (211,176,131,255)   BROWN     (127,106,79,255)
+DARKBROWN  (76,63,47,255)      WHITE     (255,255,255,255)
+BLACK      (0,0,0,255)         BLANK     (0,0,0,0)
+MAGENTA    (255,0,255,255)     CYAN      (0,255,255,255)
+RAYWHITE   (245,245,245,255)
+
+────────────────────────────────────────────────────────────────────────────
+TEXTURE FILTER CONSTANTS (int)
+────────────────────────────────────────────────────────────────────────────
+
+TEXTURE_FILTER_POINT=0, TEXTURE_FILTER_BILINEAR=1, TEXTURE_FILTER_TRILINEAR=2,
+TEXTURE_FILTER_ANISOTROPIC_4X=3, TEXTURE_FILTER_ANISOTROPIC_8X=4,
+TEXTURE_FILTER_ANISOTROPIC_16X=5
+
+TEXTURE_WRAP_REPEAT=0, TEXTURE_WRAP_CLAMP=1,
+TEXTURE_WRAP_MIRROR_REPEAT=2, TEXTURE_WRAP_MIRROR_CLAMP=3
+
+────────────────────────────────────────────────────────────────────────────
+WINDOW FLAG CONSTANTS (int, bitfield for SetConfigFlags)
+────────────────────────────────────────────────────────────────────────────
+
+FLAG_VSYNC_HINT=64, FLAG_FULLSCREEN_MODE=2, FLAG_WINDOW_RESIZABLE=4,
+FLAG_WINDOW_UNDECORATED=8, FLAG_WINDOW_TRANSPARENT=16, FLAG_WINDOW_HIDDEN=128,
+FLAG_WINDOW_MINIMIZED=512, FLAG_WINDOW_MAXIMIZED=1024, FLAG_WINDOW_UNFOCUSED=2048,
+FLAG_WINDOW_TOPMOST=4096, FLAG_WINDOW_ALWAYS_RUN=256, FLAG_WINDOW_HIGHDPI=8192,
+FLAG_WINDOW_MOUSE_PASSTHROUGH=16384, FLAG_BORDERLESS_WINDOWED_MODE=32768,
+FLAG_MSAA_4X_HINT=32, FLAG_INTERLACED_HINT=65536
+
+────────────────────────────────────────────────────────────────────────────
+KEY CONSTANTS (int)
+────────────────────────────────────────────────────────────────────────────
+
+KEY_NULL=0, KEY_A=65 ... KEY_Z=90, KEY_ZERO=48 ... KEY_NINE=57,
+KEY_SPACE=32, KEY_ESCAPE=256, KEY_ENTER=257, KEY_TAB=258, KEY_BACKSPACE=259,
+KEY_INSERT=260, KEY_DELETE=261, KEY_RIGHT=262, KEY_LEFT=263, KEY_DOWN=264,
+KEY_UP=265, KEY_PAGE_UP=266, KEY_PAGE_DOWN=267, KEY_HOME=268, KEY_END=269,
+KEY_CAPS_LOCK=280, KEY_F1=290 ... KEY_F12=301,
+KEY_LEFT_SHIFT=340, KEY_LEFT_CONTROL=341, KEY_LEFT_ALT=342,
+KEY_RIGHT_SHIFT=344, KEY_RIGHT_CONTROL=345, KEY_RIGHT_ALT=346,
+KEY_KP_0=320 ... KEY_KP_9=329, KEY_KP_DECIMAL=330, KEY_KP_DIVIDE=331,
+KEY_KP_MULTIPLY=332, KEY_KP_SUBTRACT=333, KEY_KP_ADD=334, KEY_KP_ENTER=335
+
+────────────────────────────────────────────────────────────────────────────
+PIXEL FORMAT CONSTANTS (int)
+────────────────────────────────────────────────────────────────────────────
+
+PIXELFORMAT_UNCOMPRESSED_GRAYSCALE=1, ..., PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA=24
+(See source for full list of PIXELFORMAT_* constants)
+
+────────────────────────────────────────────────────────────────────────────
+BLEND MODE CONSTANTS (int)
+────────────────────────────────────────────────────────────────────────────
+
+BLEND_ALPHA=0, BLEND_ADDITIVE=1, BLEND_MULTIPLIED=2, BLEND_ADD_COLORS=3,
+BLEND_SUBTRACT_COLORS=4, BLEND_ALPHA_PREMULTIPLY=5, BLEND_CUSTOM=6,
+BLEND_CUSTOM_SEPARATE=7
+
+────────────────────────────────────────────────────────────────────────────
+GAMEPAD BUTTON CONSTANTS (int)
+────────────────────────────────────────────────────────────────────────────
+
+GAMEPAD_BUTTON_UNKNOWN=0, GAMEPAD_BUTTON_LEFT_FACE_UP=1, ...,
+GAMEPAD_BUTTON_RIGHT_THUMB=17
+
+────────────────────────────────────────────────────────────────────────────
+WINDOW AND DRAWING FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+InitWindow(width, height, title)       - Open a window.
+CloseWindow()                          - Close the window.
+WindowShouldClose() -> bool()          - True when the user requests close.
+ToggleFullscreen()                     - Toggle fullscreen mode.
+ToggleBorderlessWindowed()             - Toggle borderless window mode.
+SetConfigFlags(flags...)               - Set window config flags (OR'ed ints).
+SetWindowTitle is not directly exposed (use InitWindow for title).
+IsWindowReady() -> bool()
+IsWindowFullscreen() -> bool()
+IsWindowHidden() -> bool()
+IsWindowMinimized() -> bool()
+IsWindowMaximized() -> bool()
+IsWindowFocused() -> bool()
+IsWindowResized() -> bool()
+IsWindowState(flag) -> bool()
+SetWindowState(flag)
+ClearWindowState(flag)
+MaximizeWindow()
+MinimizeWindow()
+RestoreWindow()
+SetWindowIcon(image)
+SetWindowPosition(x, y)
+SetWindowPositionV(vec)                - vec is a 2-element vector.
+SetWindowMonitor(monitor)
+SetWindowMinSize(w, h)
+SetWindowMaxSize(w, h)
+SetWindowSize(w, h)
+SetWindowOpacity(float)
+SetWindowFocused()
+GetScreenWidth() -> int()
+GetScreenHeight() -> int()
+GetRenderWidth() -> int()
+GetRenderHeight() -> int()
+GetMonitorCount() -> int()
+GetCurrentMonitor() -> int()
+GetMonitorWidth(monitor) -> int()
+GetMonitorHeight(monitor) -> int()
+GetMonitorPhysicalWidth(monitor) -> int()
+GetMonitorPhysicalHeight(monitor) -> int()
+GetMonitorRefreshRate(monitor) -> int()
+GetMonitorPosition(monitor) -> vector()  (x, y)
+GetWindowPosition() -> vector()
+GetWindowScaleDPI() -> vector()
+GetWindowScaleV() -> vector()
+GetWindowScaleF() -> float()             (x scale component only)
+GetClipboardImage() -> Image()
+EnableEventWaiting()
+DisableEventWaiting()
+
+────────────────────────────────────────────────────────────────────────────
+DRAWING FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+BeginDrawing()
+EndDrawing()
+ClearBackground(color)
+BeginBlendMode(mode)
+EndBlendMode()
+BeginScissorMode(x, y, w, h)
+EndScissorMode()
+EndMode2D()
+EndVrStereoMode()
+
+LoadRenderTexture(width, height) -> RenderTexture()
+BeginTextureMode(renderTexture)
+EndTextureMode()
+UnloadRenderTexture(renderTexture)
+IsRenderTextureValid(renderTexture) -> bool()
+
+DrawFPS(x, y)
+SetTargetFPS(fps)
+GetFPS() -> int()
+GetFrameTime() -> float()
+GetTime() -> float()               - Total elapsed time in seconds.
+
+────────────────────────────────────────────────────────────────────────────
+COLOR UTILITY FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+FadeColor(color, fadeAmount) -> Color()
+    - fadeAmount 0.0 = transparent, 1.0 = opaque.
+ColorToGray(color) -> Color()
+    - Perceptually-correct grayscale (gamma-corrected).
+ColorToGrayFast(color) -> Color()
+    - Fast average grayscale.
+ColorIsEqual(color1, color2) -> bool()
+ColorToInt(color) -> int()
+
+────────────────────────────────────────────────────────────────────────────
+SHAPE DRAWING FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+DrawPixel(x, y, color)
+DrawPixelV(vec, color)
+DrawLine(x1, y1, x2, y2, color)
+DrawLineV(vec1, vec2, color)
+DrawLineEx(vec1, vec2, thick, color)
+DrawLineBezier(vec1, vec2, thick, color)
+DrawLineStrip(pointList, color)          - pointList is a list of vectors.
+DrawLineDashed(vec1, vec2, spacing, dash, color)
+DrawCircle(x, y, radius, color)
+DrawCircleV(center, radius, color)
+DrawCircleLines(x, y, radius, color)
+DrawCircleLinesV(center, radius, color)
+DrawCircleGradient(x, y, radius, innerColor, outerColor)
+DrawCircleSector(center, radius, startAngle, endAngle, segs, color)
+DrawCircleSectorLines(center, radius, startAngle, endAngle, segs, color)
+DrawEllipse(x, y, radH, radV, color)
+DrawEllipseV(center, radH, radV, color)
+DrawEllipseLines(x, y, radH, radV, color)
+DrawEllipseLinesV(center, radH, radV, color)
+DrawRing(center, inner, outer, startAngle, endAngle, segs, color)
+DrawRingLines(center, inner, outer, startAngle, endAngle, segs, color)
+DrawRectangle(x, y, w, h, color)
+DrawRectangleV(posVec, sizeVec, color)
+DrawRectangleRec(rect, color)
+DrawRectanglePro(rect, originVec, rotation, color)
+DrawRectangleGradientV(x, y, w, h, topColor, botColor)
+DrawRectangleGradientH(x, y, w, h, leftColor, rightColor)
+DrawRectangleGradientEx(rect, c1, c2, c3, c4)
+DrawRectangleLines(x, y, w, h, color)
+DrawRectangleLinesEx(rect, thick, color)
+DrawRectangleRounded(rect, roundness, segs, color)
+DrawRectangleRoundedLines(rect, roundness, segs, color)
+DrawRectangleRoundedLinesEx(rect, roundness, segs, thick, color)
+DrawTriangle(v1, v2, v3, color)
+DrawTriangleLines(v1, v2, v3, color)
+DrawTriangleFan(pointList, color)
+DrawPoly(center, sides, radius, rotation, color)
+DrawPolyLines(center, sides, radius, rotation, color)
+DrawPolyLinesEx(center, sides, radius, rotation, thick, color)
+DrawGrid(slices, spacing)
+
+Spline drawing:
+DrawSplineSegmentLinear(v1, v2, thick, color)
+DrawSplineSegmentBasis(v1, v2, v3, v4, thick, color)
+DrawSplineSegmentCatmullRom(v1, v2, v3, v4, thick, color)
+DrawSplineSegmentBezierQuadratic(v1, v2, v3, thick, color)
+DrawSplineSegmentBezierCubic(v1, v2, v3, v4, thick, color)
+GetSplinePointLinear(v1, v2, t) -> vector()
+GetSplinePointBasis(v1, v2, v3, v4, t) -> vector()
+GetSplinePointCatmullRom(v1, v2, v3, v4, t) -> vector()
+GetSplinePointBezierQuad(v1, v2, v3, t) -> vector()
+GetSplinePointBezierCubic(v1, v2, v3, v4, t) -> vector()
+
+SetShapesTexture(texture, sourceRect)
+GetShapesTexture() -> Texture2D()
+
+────────────────────────────────────────────────────────────────────────────
+COLLISION FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+CheckCollisionRecs(rect1, rect2) -> bool()
+CheckCollisionCircles(center1, radius1, center2, radius2) -> bool()
+CheckCollisionCircleRec(center, radius, rect) -> bool()
+CheckCollisionCircleLine(center, radius, lineStart, lineEnd) -> bool()
+CheckCollisionPointRec(point, rect) -> bool()
+CheckCollisionPointCircle(point, center, radius) -> bool()
+CheckCollisionPointTriangle(point, v1, v2, v3) -> bool()
+CheckCollisionPointLine(point, lineStart, lineEnd, threshold) -> bool()
+
+────────────────────────────────────────────────────────────────────────────
+TEXTURE AND IMAGE FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+LoadImage(fileName) -> Image()
+LoadImageFromScreen() -> Image()
+LoadImageFromTexture(texture) -> Image()
+UnloadImage(image)
+ExportImage(image, fileName) -> bool()
+IsImageValid(image) -> bool()
+LoadImageColors(image) -> list()         - List of Color instances (width*height).
+UpdateImagePixels(image, colorList)      - Update pixels in-place (warns if size mismatch).
+
+ImageResizeNN(image, newWidth, newHeight)   - Resize in-place (nearest-neighbor).
+ImageColorTint(image, color)               - Apply color tint in-place.
+ImageColorGrayscale(image)                 - Convert to grayscale in-place.
+ImageColorInvert(image)                    - Invert colors in-place.
+ImageColorContrast(image, contrastFloat)   - Adjust contrast in-place.
+ImageColorBrightness(image, brightnessInt) - Adjust brightness in-place.
+ImageBlurGaussian(image, blur)             - Gaussian blur in-place.
+ImageFlipVertical(image)                   - Flip vertically in-place.
+ImageFlipHorizontal(image)                 - Flip horizontally in-place.
+ImageDither(image, rBpp, gBpp, bBpp, aBpp) - Dither in-place.
+ImageApplyPalette(image, colorList)        - Quantize to palette in-place.
+ImageCopy(image) -> Image()
+ImageFromImage(image, rect) -> Image()
+ImageFromChannel(image, channel) -> Image()
+
+GenImageColor(w, h, color) -> Image()
+GenImageGradientLinear(w, h, angle, color1, color2) -> Image()
+GenImageGradientRadial(w, h, density, inner, outer) -> Image()
+GenImageGradientSquare(w, h, density, inner, outer) -> Image()
+GenImageChecked(w, h, checkW, checkH, color1, color2) -> Image()
+GenImageWhiteNoise(w, h, factor) -> Image()
+GenImagePerlinNoise(w, h, offX, offY, scale) -> Image()
+GenImageCellular(w, h, tileSize) -> Image()
+
+LoadTexture(fileName) -> Texture2D()
+LoadTextureFromImage(image) -> Texture2D()
+UnloadTexture(texture)
+IsTextureValid(texture) -> bool()
+SetTextureFilter(texture, filterMode)
+SetTextureWrap(texture, wrapMode)
+GetPixelDataSize(w, h, format) -> int()
+
+DrawTexture(texture, x, y, tintColor)
+DrawTextureV(texture, posVec, tintColor)
+DrawTextureEx(texture, posVec, rotation, scale, tintColor)
+DrawTextureRec(texture, sourceRect, posVec, tintColor)
+DrawTexturePro(texture, sourceRect, destRect, originVec, rotation, tintColor)
+
+LoadFontFromImage(image, keyColor, firstChar) -> Font()
+
+────────────────────────────────────────────────────────────────────────────
+FONT AND TEXT FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+GetFontDefault() -> Font()
+LoadFont(fileName) -> Font()
+LoadFontEx(fileName, fontSize, fontChars_ptr) -> Font()
+    - Pass none() as fontChars_ptr to use default ASCII set.
+UnloadFont(font)
+IsFontValid(font) -> bool()
+
+DrawText(str, x, y, size, color)
+DrawTextEx(font, text, posVec, fontSize, spacing, tintColor)
+DrawTextPro(font, text, posVec, originVec, rotation, fontSize, spacing, tintColor)
+DrawTextCodepoint(font, codepoint, posVec, fontSize, tintColor)
+MeasureTextEx(font, text, fontSize, spacing) -> vector()  (width, height)
+SetTextLineSpacing(spacing)
+GetGlyphIndex(font, codepoint) -> int()
+
+────────────────────────────────────────────────────────────────────────────
+KEYBOARD INPUT FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+IsKeyPressed(key) -> bool()          - True on the frame the key was first pressed.
+IsKeyPressedRepeat(key) -> bool()    - True on press and on repeat events.
+IsKeyDown(key) -> bool()             - True while key is held.
+IsKeyReleased(key) -> bool()         - True on the frame the key was released.
+IsKeyUp(key) -> bool()               - True while key is not held.
+GetKeyPressed() -> int()             - Get key code of most recent key press.
+GetCharPressed() -> int()            - Get character code of most recent key press.
+SetExitKey(key)                      - Change the key that closes the window.
+
+────────────────────────────────────────────────────────────────────────────
+MOUSE INPUT FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+IsMouseButtonPressed(button) -> bool()
+IsMouseButtonDown(button) -> bool()
+IsMouseButtonReleased(button) -> bool()
+IsMouseButtonUp(button) -> bool()
+GetMouseX() -> int()
+GetMouseY() -> int()
+GetMousePosition() -> vector()
+GetMouseDelta() -> vector()
+SetMousePosition(x, y)
+SetMouseOffset(x, y)
+SetMouseScale(x, y)
+GetMouseWheelMove() -> float()
+GetMouseWheelMoveV() -> vector()
+SetMouseCursor(cursor)
+ShowCursor()
+HideCursor()
+IsCursorHidden() -> bool()
+EnableCursor()
+DisableCursor()
+IsCursorOnScreen() -> bool()
+
+────────────────────────────────────────────────────────────────────────────
+GAMEPAD INPUT FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+IsGamepadAvailable(gamepad) -> bool()
+IsGamepadButtonPressed(gamepad, button) -> bool()
+IsGamepadButtonDown(gamepad, button) -> bool()
+IsGamepadButtonReleased(gamepad, button) -> bool()
+IsGamepadButtonUp(gamepad, button) -> bool()
+GetGamepadButtonPressed() -> int()
+GetGamepadAxisCount(gamepad) -> int()
+GetGamepadAxisMovement(gamepad, axis) -> float()
+SetGamepadVibration(gamepad, leftMotor, rightMotor, duration)
+
+────────────────────────────────────────────────────────────────────────────
+TOUCH INPUT FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+GetTouchX() -> int()
+GetTouchY() -> int()
+GetTouchPosition(index) -> vector()
+GetTouchPointId(index) -> int()
+GetTouchPointCount() -> int()
+
+────────────────────────────────────────────────────────────────────────────
+GESTURE FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+SetGesturesEnabled(flags)
+IsGestureDetected(gesture) -> bool()
+GetGestureDetected() -> int()
+GetGestureHoldDuration() -> float()
+GetGestureDragVector() -> vector()
+GetGestureDragAngle() -> float()
+GetGesturePinchVector() -> vector()
+GetGesturePinchAngle() -> float()
+
+────────────────────────────────────────────────────────────────────────────
+AUDIO FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+InitAudioDevice()
+CloseAudioDevice()
+IsAudioDeviceReady() -> bool()
+SetMasterVolume(float)
+GetMasterVolume() -> float()
+
+LoadSound(fileName) -> Sound()
+UnloadSound(sound)
+IsSoundValid(sound) -> bool()
+LoadSoundAlias(sound) -> Sound()
+UnloadSoundAlias(sound)
+PlaySound(sound)
+StopSound(sound)
+PauseSound(sound)
+ResumeSound(sound)
+IsSoundPlaying(sound) -> bool()
+SetSoundPitch(sound, pitch)      - 1.0 is normal, 0.5 slow/deep, 2.0 fast/high.
+SetSoundVolume(sound, volume)    - 0.0-1.0.
+SetSoundPan(sound, pan)          - 0.0 left, 0.5 center, 1.0 right.
+
+LoadMusicStream(fileName) -> Music()
+UnloadMusicStream(music)
+IsMusicValid(music) -> bool()
+PlayMusicStream(music)
+UpdateMusicStream(music)           - Must be called each frame while music plays.
+StopMusicStream(music)
+PauseMusicStream(music)
+ResumeMusicStream(music)
+IsMusicStreamPlaying(music) -> bool()
+SeekMusicStream(music, position)
+SetMusicPitch(music, pitch)
+SetMusicVolume(music, volume)
+SetMusicPan(music, pan)
+GetMusicTimeLength(music) -> float()
+GetMusicTimePlayed(music) -> float()
+SetAudioStreamBufferSizeDefault(size)
+
+────────────────────────────────────────────────────────────────────────────
+UTILITY FUNCTIONS
+────────────────────────────────────────────────────────────────────────────
+
+SetRandomSeed(seed)
+GetRandomValue(min, max) -> int()
+SetTraceLogLevel(level)               - 0=ALL, 1=TRACE, 2=DEBUG, 3=INFO, 4=WARNING, 5=ERROR, 6=FATAL, 7=NONE
+WaitTime(seconds)                     - Sleep for seconds.
+SwapScreenBuffer()                    - Swap buffers manually (advanced use).
+PollInputEvents()                     - Poll events manually (advanced use).
+IsFileDropped() -> bool()
+SetAutomationEventBaseFrame(frame)
+StartAutomationEventRecording()
+StopAutomationEventRecording()
+GetMonitorWidth(monitor) -> int()
+GetMonitorHeight(monitor) -> int()

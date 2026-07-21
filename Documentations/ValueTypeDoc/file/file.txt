@@ -1,0 +1,16 @@
+VALUE TYPE: File
+PURPOSE: Represents an open file handle, typically returned by `FileStream.Open` or `FileStream.SafeOpen`.
+
+────────────────────────────────────────────────────────────────────────────
+METHODS
+────────────────────────────────────────────────────────────────────────────
+IsOpen() -> bool()                - Returns true if the file is currently open and accessible.
+Write(message, [replace=false]) -> none()
+                                  - Writes the string representation of `message` to the file.
+                                    If `replace` is true, overwrites from the beginning; otherwise appends.
+Clear() -> none()                 - Clears the entire contents of the file, setting it to 0 bytes.
+Read() -> string()                - Reads the entire contents of the file into a single string.
+ReadLines([include_newline=false]) -> list()
+                                  - Reads the file line by line and returns a list of strings.
+                                    If `include_newline` is true, keeps the trailing '\n' on each line.
+Close() -> none()                 - Closes the file handle, flushing pending writes and releasing resources.

@@ -1,0 +1,244 @@
+MODULE: Events
+PURPOSE: Synthetic keyboard and mouse input injection.  Simulates OS-level
+         keyboard and mouse events programmatically.
+
+On Linux/POSIX this module requires X11 (XTest extension).  It opens a
+static Display at module load time via XOpenDisplay(NULL).  If no X display
+is available, functions silently do nothing.
+
+On Windows, the Win32 SendInput / SetCursorPos APIs are used.
+
+Key codes on POSIX are X11 keysyms; on Windows they are virtual key codes
+(VK_* constants).
+
+Import examples:
+    import Events
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    key_down - Events module
+
+SYNOPSIS
+    none() key_down(key: int())
+
+DESCRIPTION
+    Simulates pressing (but not releasing) a keyboard key.  On POSIX,
+    sends an XTest key press event.  On Windows, sends INPUT with type
+    INPUT_KEYBOARD without the KEYEVENTF_KEYUP flag.
+
+ARGUMENTS
+    key (int()) - Key code.  On POSIX: X11 keysym.  On Windows: VK_* code.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    key_down(0x61)  -> none()  (press 'a' on POSIX)
+
+SEE ALSO
+    key_up, key_press
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    key_up - Events module
+
+SYNOPSIS
+    none() key_up(key: int())
+
+DESCRIPTION
+    Simulates releasing a keyboard key.  On POSIX sends an XTest key release
+    event.  On Windows sends INPUT with KEYEVENTF_KEYUP.
+
+ARGUMENTS
+    key (int()) - Key code (same convention as key_down).
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    key_up(0x61)  -> none()
+
+SEE ALSO
+    key_down, key_press
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    key_press - Events module
+
+SYNOPSIS
+    none() key_press(key: int())
+
+DESCRIPTION
+    Simulates a complete key press (down then up) as a single operation.
+    On POSIX sends two XTest events.  On Windows sends two INPUT structs
+    in a single SendInput call.
+
+ARGUMENTS
+    key (int()) - Key code.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    key_press(0x61)  -> none()  (press and release 'a')
+
+SEE ALSO
+    key_down, key_up
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    mouse_move - Events module
+
+SYNOPSIS
+    none() mouse_move(x: int(), y: int())
+
+DESCRIPTION
+    Moves the mouse cursor to screen coordinates (x, y).  On Windows uses
+    SetCursorPos.  On POSIX sends XTestFakeMotionEvent with screen -1 (the
+    screen containing the pointer).
+
+ARGUMENTS
+    x (int()) - Horizontal screen coordinate in pixels.
+    y (int()) - Vertical screen coordinate in pixels.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    mouse_move(100, 200)  -> none()
+
+SEE ALSO
+    mouse_click, mouse_down, mouse_up
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    mouse_down - Events module
+
+SYNOPSIS
+    none() mouse_down(button: int())
+
+DESCRIPTION
+    Simulates pressing a mouse button without releasing it.
+
+    Button codes:
+      0 - Left button
+      1 - Right button
+      2 - Middle button
+
+    On Windows uses SendInput with MOUSEEVENTF_*DOWN flags.  On POSIX uses
+    XTestFakeButtonEvent (X button numbers are 1=left, 3=right, 2=middle).
+
+ARGUMENTS
+    button (int()) - Mouse button code (0, 1, or 2).
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    mouse_down(0)  -> none()  (hold left button)
+
+SEE ALSO
+    mouse_up, mouse_click
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    mouse_up - Events module
+
+SYNOPSIS
+    none() mouse_up(button: int())
+
+DESCRIPTION
+    Simulates releasing a mouse button.  Button codes same as mouse_down.
+
+ARGUMENTS
+    button (int()) - Mouse button code (0, 1, or 2).
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    mouse_up(0)  -> none()
+
+SEE ALSO
+    mouse_down, mouse_click
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    mouse_click - Events module
+
+SYNOPSIS
+    none() mouse_click(button: int())
+
+DESCRIPTION
+    Simulates a complete mouse click (button down immediately followed by
+    button up).
+
+    Button codes same as mouse_down (0=left, 1=right, 2=middle).
+
+ARGUMENTS
+    button (int()) - Mouse button code.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    mouse_click(0)  -> none()  (single left click)
+
+SEE ALSO
+    mouse_down, mouse_up, mouse_click_every
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    mouse_click_every - Events module
+
+SYNOPSIS
+    none() mouse_click_every(button: int(), interval: int(), escape_key: int())
+
+DESCRIPTION
+    Repeatedly clicks the given mouse button every interval milliseconds
+    in a blocking loop.  The loop continues until the key with code
+    escape_key is held down.
+
+    On POSIX, key state is checked via XQueryKeymap.  On Windows, via
+    GetAsyncKeyState.
+
+    This function blocks until escape_key is detected; it should be called
+    carefully to avoid locking up a script.
+
+ARGUMENTS
+    button     (int()) - Mouse button code (0, 1, or 2).
+    interval   (int()) - Delay between clicks in milliseconds.
+    escape_key (int()) - Key code to stop clicking.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    None.
+
+EXAMPLES
+    mouse_click_every(0, 100, 0x1B)  -> none()  (click every 100ms until Escape)
+
+SEE ALSO
+    mouse_click

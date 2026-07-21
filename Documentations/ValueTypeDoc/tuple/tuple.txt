@@ -1,0 +1,36 @@
+VALUE TYPE: Tuple
+PURPOSE: Represents an ordered, immutable sequence of elements.
+
+────────────────────────────────────────────────────────────────────────────
+CORE METHODS
+────────────────────────────────────────────────────────────────────────────
+count(val) -> int()               - Returns the number of occurrences of the value.
+index(val) -> int()               - Returns the first index of the value, or -1 if not found.
+
+────────────────────────────────────────────────────────────────────────────
+MATH & AGGREGATION
+────────────────────────────────────────────────────────────────────────────
+sum() -> int()/float()            - Returns the sum of all elements (requires numeric elements).
+min() -> any                      - Returns the smallest element.
+max() -> any                      - Returns the largest element.
+average() -> float()              - Returns the arithmetic mean of all numeric elements.
+
+────────────────────────────────────────────────────────────────────────────
+UTILITIES
+────────────────────────────────────────────────────────────────────────────
+join([sep=""]) -> string()        - Joins the string representation of all elements, separated by sep.
+sample(k) -> tuple()              - Returns a tuple of k randomly sampled distinct elements.
+
+────────────────────────────────────────────────────────────────────────────
+FUNCTIONAL METHODS
+────────────────────────────────────────────────────────────────────────────
+Tuples support functional methods. The return value is typically a tuple or a boolean.
+All_Of(lambda) -> bool()
+Any_Of(lambda) -> bool()
+None_Of(lambda) -> bool()
+One_Of(lambda) -> bool()
+find(lambda) -> any/None
+select(lambda) -> tuple()
+reject(lambda) -> tuple()
+partition(lambda) -> list([tuple(), tuple()])
+map(lambda) -> tuple()

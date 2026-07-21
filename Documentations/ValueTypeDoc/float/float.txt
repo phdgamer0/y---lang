@@ -1,0 +1,10 @@
+VALUE TYPE: Float
+PURPOSE: Represents a floating-point number (double precision).
+
+────────────────────────────────────────────────────────────────────────────
+METHODS
+────────────────────────────────────────────────────────────────────────────
+base(n) -> string()               - Converts the float to a string representation in the specified base `n`.
+                                    The base must be between 2 and 36 (inclusive).
+                                    Negative numbers are prefixed with a minus sign.
+                                    The fractional part is computed up to 8 precision digits.

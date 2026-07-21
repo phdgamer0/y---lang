@@ -1,0 +1,530 @@
+MODULE: Os
+PURPOSE: Filesystem and process utilities — create, remove, rename, copy,
+         inspect files and directories, change the working directory, read
+         and write environment variables, run shell commands.
+
+Import examples:
+    import Os
+    from Os import Cwd, Exec
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Make - Os module
+
+SYNOPSIS
+    none() Make(directory: string(), filename: string())
+
+DESCRIPTION
+    Creates an empty file at directory/filename.  The path separator is
+    appended automatically if the directory string does not end with '/'
+    or '\\'.  The resulting file is created via std::ofstream; if the
+    directory does not exist or write permission is denied, a PermissionError
+    is raised.
+
+ARGUMENTS
+    directory (string()) - Directory in which to create the file.
+    filename  (string()) - Name of the file to create.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError   - if called with any number of arguments other than 2.
+    PermissionError - if the file cannot be created at the given path.
+
+EXAMPLES
+    Make("/tmp", "notes.txt")   -> none()
+
+SEE ALSO
+    Remove, MkDir, Exists
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Remove - Os module
+
+SYNOPSIS
+    none() Remove(path: string())
+
+DESCRIPTION
+    Deletes the file at path using the C standard library std::remove.
+    Only regular files are removed.  To remove directories use RmDir.
+
+ARGUMENTS
+    path (string()) - Path to the file to delete.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError   - if called with any number of arguments other than 1.
+    PermissionError - if removal fails (e.g. file does not exist, is a
+                      directory, or write permission is denied).
+
+EXAMPLES
+    Remove("/tmp/notes.txt")  -> none()
+
+SEE ALSO
+    Make, RmDir
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Exists - Os module
+
+SYNOPSIS
+    bool() Exists(directory: string(), filename: string())
+
+DESCRIPTION
+    Checks whether directory/filename refers to an existing, readable file
+    by attempting to open it with std::ifstream.  Returns true if the file
+    opens successfully, false otherwise.
+
+ARGUMENTS
+    directory (string()) - Directory portion of the path.
+    filename  (string()) - Filename to check.
+
+RETURN VALUE
+    bool() - true if the file exists and is readable, false otherwise.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+
+EXAMPLES
+    Exists("/tmp", "notes.txt")  -> true or false
+
+SEE ALSO
+    IsFile, IsDir, ListNames
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    ListNames - Os module
+
+SYNOPSIS
+    list() ListNames(path: string())
+
+DESCRIPTION
+    If path is a directory, returns a list of filenames (not full paths) of
+    all immediate children of that directory.  If path is a regular file,
+    returns a list of lines from that file (stripping trailing carriage
+    returns on Windows-style line endings).
+
+ARGUMENTS
+    path (string()) - Path to a directory or file.
+
+RETURN VALUE
+    list() - List of string() values.  For a directory these are entry
+             names; for a file these are lines of text.
+
+ERRORS
+    ArgumentError     - if called with any number of arguments other than 1.
+    FileNotFoundError - if path does not exist or is neither a file nor a
+                        directory.
+
+EXAMPLES
+    ListNames("/tmp")          -> ["a.txt", "b.txt", ...]
+    ListNames("/tmp/file.txt") -> ["line1", "line2", ...]
+
+SEE ALSO
+    Exists, IsDir, IsFile
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    MkDir - Os module
+
+SYNOPSIS
+    none() MkDir(path: string())
+
+DESCRIPTION
+    Creates the directory (and any necessary parent directories) at path
+    using std::filesystem::create_directories.  If the directory already
+    exists the call silently succeeds.
+
+ARGUMENTS
+    path (string()) - Path of the directory to create.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    (Filesystem errors from create_directories are not currently caught and
+    may propagate as unhandled C++ exceptions — NEEDS VERIFICATION.)
+
+EXAMPLES
+    MkDir("/tmp/myapp/logs")  -> none()
+
+SEE ALSO
+    RmDir, Make
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    RmDir - Os module
+
+SYNOPSIS
+    none() RmDir(path: string(), recursive: bool() = false)
+
+DESCRIPTION
+    Removes the directory at path.  When recursive is true, uses
+    std::filesystem::remove_all (removes the directory and all its contents).
+    When recursive is false (the default), uses std::filesystem::remove
+    (succeeds only if the directory is empty).
+
+ARGUMENTS
+    path      (string()) - Path of the directory to remove.
+    recursive (bool())   - If true, remove directory and all contents.
+                           Defaults to false.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError - if called with 0 arguments or more than 2 arguments.
+    (Filesystem errors are not currently caught — NEEDS VERIFICATION.)
+
+EXAMPLES
+    RmDir("/tmp/empty_dir")             -> none()
+    RmDir("/tmp/full_dir", true)        -> none()
+
+SEE ALSO
+    MkDir, Remove
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Cwd - Os module
+
+SYNOPSIS
+    string() Cwd()
+
+DESCRIPTION
+    Returns the current working directory of the process as an absolute
+    path string.  Uses std::filesystem::current_path.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    string() - The absolute path of the current working directory.
+
+ERRORS
+    None (filesystem errors may propagate — NEEDS VERIFICATION).
+
+EXAMPLES
+    Cwd()  -> "/home/user/project"
+
+SEE ALSO
+    Cd
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Cd - Os module
+
+SYNOPSIS
+    none() Cd(path: string())
+
+DESCRIPTION
+    Changes the process's current working directory to path using
+    std::filesystem::current_path.
+
+ARGUMENTS
+    path (string()) - Path to change into.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError     - if called with any number of arguments other than 1.
+    FileNotFoundError - if the directory does not exist or is not accessible.
+
+EXAMPLES
+    Cd("/tmp")  -> none()
+
+SEE ALSO
+    Cwd
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Rename - Os module
+
+SYNOPSIS
+    none() Rename(old: string(), new: string())
+
+DESCRIPTION
+    Renames (or moves) the file or directory at old to new using
+    std::filesystem::rename.  Can be used to move files across directories
+    on the same filesystem.
+
+ARGUMENTS
+    old (string()) - Current path.
+    new (string()) - Target path.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError   - if called with any number of arguments other than 2.
+    PermissionError - if the rename operation fails for any reason.
+
+EXAMPLES
+    Rename("/tmp/a.txt", "/tmp/b.txt")  -> none()
+
+SEE ALSO
+    Copy, Remove
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Env - Os module
+
+SYNOPSIS
+    string() Env(name: string())
+
+DESCRIPTION
+    Returns the value of the environment variable name using std::getenv.
+    If the variable is not set, returns none().
+
+ARGUMENTS
+    name (string()) - The name of the environment variable.
+
+RETURN VALUE
+    string() - The value of the variable.
+    none()   - If the variable does not exist.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Env("HOME")   -> "/home/user"
+    Env("ABSENT") -> none()
+
+SEE ALSO
+    SetEnv
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    SetEnv - Os module
+
+SYNOPSIS
+    none() SetEnv(name: string(), value: string())
+
+DESCRIPTION
+    Sets the environment variable name to value for the current process.
+    On POSIX systems uses setenv with the overwrite flag set, so existing
+    variables are always replaced.  On Windows uses _putenv_s.
+
+    Note: argument count is not validated by the implementation; passing the
+    wrong number of arguments may produce an unhandled C++ exception.
+    (NEEDS VERIFICATION)
+
+ARGUMENTS
+    name  (string()) - The environment variable name.
+    value (string()) - The value to assign.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    (No explicit errors raised; OS-level failures are not caught.)
+
+EXAMPLES
+    SetEnv("MY_VAR", "hello")  -> none()
+
+SEE ALSO
+    Env
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Copy - Os module
+
+SYNOPSIS
+    none() Copy(src: string(), dst: string())
+
+DESCRIPTION
+    Copies the file or directory at src to dst using
+    std::filesystem::copy with the overwrite_existing option.  Existing
+    destinations are silently replaced.
+
+    Note: argument count is not validated. (NEEDS VERIFICATION)
+
+ARGUMENTS
+    src (string()) - Source path.
+    dst (string()) - Destination path.
+
+RETURN VALUE
+    none()
+
+ERRORS
+    (Filesystem errors may propagate as unhandled C++ exceptions.)
+
+EXAMPLES
+    Copy("/tmp/a.txt", "/tmp/b.txt")  -> none()
+
+SEE ALSO
+    Rename, Remove
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    FileSize - Os module
+
+SYNOPSIS
+    int() FileSize(path: string())
+
+DESCRIPTION
+    Returns the size of the file at path in bytes using
+    std::filesystem::file_size.
+
+    Note: argument count is not validated. (NEEDS VERIFICATION)
+
+ARGUMENTS
+    path (string()) - Path to the file.
+
+RETURN VALUE
+    int() - File size in bytes.
+
+ERRORS
+    (Filesystem errors may propagate as unhandled C++ exceptions.)
+
+EXAMPLES
+    FileSize("/tmp/data.bin")  -> 1024
+
+SEE ALSO
+    Exists, IsFile
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    IsDir - Os module
+
+SYNOPSIS
+    bool() IsDir(path: string())
+
+DESCRIPTION
+    Returns true if path refers to an existing directory, false otherwise.
+    Uses std::filesystem::is_directory.
+
+    Note: argument count is not validated. (NEEDS VERIFICATION)
+
+ARGUMENTS
+    path (string()) - Path to check.
+
+RETURN VALUE
+    bool()
+
+ERRORS
+    None expected under normal conditions.
+
+EXAMPLES
+    IsDir("/tmp")       -> true
+    IsDir("/tmp/a.txt") -> false
+
+SEE ALSO
+    IsFile, Exists
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    IsFile - Os module
+
+SYNOPSIS
+    bool() IsFile(path: string())
+
+DESCRIPTION
+    Returns true if path refers to an existing regular file, false otherwise.
+    Uses std::filesystem::is_regular_file.
+
+    Note: argument count is not validated. (NEEDS VERIFICATION)
+
+ARGUMENTS
+    path (string()) - Path to check.
+
+RETURN VALUE
+    bool()
+
+ERRORS
+    None expected under normal conditions.
+
+EXAMPLES
+    IsFile("/tmp/a.txt") -> true
+    IsFile("/tmp")       -> false
+
+SEE ALSO
+    IsDir, Exists
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Direct - Os module
+
+SYNOPSIS
+    int() Direct(command: string(), file: string())
+
+DESCRIPTION
+    Runs command in the system shell, redirecting both stdout and stderr
+    into file (using shell redirection "> file 2>&1").  Returns the exit
+    status code of the shell command.
+
+    Note: argument count is not validated. (NEEDS VERIFICATION)
+
+ARGUMENTS
+    command (string()) - Shell command to execute.
+    file    (string()) - File path to redirect output to.
+
+RETURN VALUE
+    int() - Exit status code returned by std::system.
+
+ERRORS
+    None (OS-level errors are not surfaced).
+
+EXAMPLES
+    Direct("ls -la", "/tmp/out.txt")  -> 0
+
+SEE ALSO
+    Console, Exec
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Console - Os module
+
+SYNOPSIS
+    int() Console(command: string())
+
+DESCRIPTION
+    Runs command in the system shell using std::system, sending output to
+    the process's standard output.  Returns the shell exit status code.
+
+ARGUMENTS
+    command (string()) - Shell command to execute.
+
+RETURN VALUE
+    int() - Exit status code of the command.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+
+EXAMPLES
+    Console("echo hello")  -> 0
+
+SEE ALSO
+    Exec, Direct
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Exec - Os module
+
+SYNOPSIS
+    string() Exec(command: string())
+
+DESCRIPTION
+    Runs command in the system shell via popen and captures the combined
+    stdout output as a string.  Unlike Console, output is NOT displayed to
+    the terminal.
+
+ARGUMENTS
+    command (string()) - Shell command to execute.
+
+RETURN VALUE
+    string() - All text written to stdout by the command.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    RuntimeError  - if popen() fails to start the process.
+
+EXAMPLES
+    Exec("uname -s")  -> "Linux\n"
+
+SEE ALSO
+    Console, Direct

@@ -1,0 +1,41 @@
+VALUE TYPE: Vector
+PURPOSE: Represents a mathematical vector of numeric elements. Supports n-dimensional linear algebra operations.
+
+────────────────────────────────────────────────────────────────────────────
+PROPERTIES
+────────────────────────────────────────────────────────────────────────────
+dimension() -> int()              - Returns the number of dimensions (elements) in the vector.
+magnitude() -> float()            - Returns the Euclidean norm (length) of the vector.
+unitVec() -> vector()             - Returns a normalized version of the vector (magnitude of 1). Throws if magnitude is 0.
+
+────────────────────────────────────────────────────────────────────────────
+LINEAR ALGEBRA
+────────────────────────────────────────────────────────────────────────────
+dot(other_vec) -> int()/float()   - Computes the dot product of this vector and another vector of the same dimension.
+cross(other_vec) -> vector()      - Computes the cross product of this vector and another vector.
+                                    Only defined for 2D and 3D vectors (throws on others). Returns 0 for 1D.
+projectOnto(other_vec) -> vector()
+                                  - Projects this vector onto another vector of the same dimension.
+
+────────────────────────────────────────────────────────────────────────────
+MANIPULATION
+────────────────────────────────────────────────────────────────────────────
+vector_reversal() -> vector()     - Reverses the elements of the vector in place.
+expand(n) -> vector()             - Appends n zeros to the end of the vector, increasing its dimensionality.
+shrink(n) -> vector()             - Removes the last n elements from the vector, decreasing its dimensionality.
+                                    Throws if the resulting dimension would be less than 1.
+
+────────────────────────────────────────────────────────────────────────────
+FUNCTIONAL METHODS
+────────────────────────────────────────────────────────────────────────────
+Vectors support functional iteration over their numeric elements.
+All_Of(lambda) -> bool()
+Any_Of(lambda) -> bool()
+None_Of(lambda) -> bool()
+One_Of(lambda) -> bool()
+find(lambda) -> numeric/None
+select(lambda) -> vector()/list()
+reject(lambda) -> vector()/list()
+partition(lambda) -> list([vector()/list(), vector()/list()])
+map(lambda) -> vector()/list()
+Note: if a functional method returns/filters non-numeric values, the result is implicitly cast to a List.

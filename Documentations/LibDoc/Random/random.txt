@@ -1,0 +1,159 @@
+MODULE: Random
+PURPOSE: Pseudo-random number generation.  The module uses a Mersenne
+         Twister (std::mt19937) seeded from std::random_device at first
+         use.  The generator is shared (static) across all calls within
+         one process run.
+
+Import examples:
+    import Random
+    from Random import RandFloat, RandChoice, Shuffle, Sample
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    RandFloat - Random module
+
+SYNOPSIS
+    float() RandFloat()
+
+DESCRIPTION
+    Returns a uniformly distributed random float in [0.0, 1.0) using
+    std::uniform_real_distribution<double>(0.0, 1.0) and the shared
+    Mersenne Twister generator.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    float() - A random value in [0.0, 1.0).
+
+ERRORS
+    None.
+
+EXAMPLES
+    RandFloat()  -> 0.7234156
+
+SEE ALSO
+    RandChoice, Sample
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    RandChoice - Random module
+
+SYNOPSIS
+    any() RandChoice(container: list()|tuple()|string()|set()|range())
+
+DESCRIPTION
+    Returns a randomly selected element from the container.
+
+    Supported container types:
+      list()   - picks a random element by index.
+      tuple()  - picks a random element by index.
+      string() - picks a random character, returned as a single-character
+                 string().
+      set()    - advances an iterator to a random position (order is
+                 hash-dependent and may differ across runs).
+      range()  - computes the number of steps in the range and picks a
+                 random step; returns int() or float() matching the range
+                 type.
+
+    Raises EmptyContainerError for empty containers or invalid ranges.
+
+ARGUMENTS
+    container (list()|tuple()|string()|set()|range()) - The source to pick from.
+
+RETURN VALUE
+    any() - A randomly selected element.
+
+ERRORS
+    ArgumentError       - if called with any number of arguments other than 1.
+    TypeError           - if the argument is not a supported container type.
+    EmptyContainerError - if the container is empty or the range is empty.
+
+EXAMPLES
+    RandChoice([1, 2, 3])    -> 2
+    RandChoice("hello")      -> "l"
+    RandChoice(1..10)        -> 7
+
+SEE ALSO
+    RandFloat, Shuffle, Sample
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Shuffle - Random module
+
+SYNOPSIS
+    list()|tuple()|string() Shuffle(container: list()|tuple()|string())
+
+DESCRIPTION
+    Returns a new shuffled copy of the container.  The original is not
+    mutated (uses deepCopy before shuffling).
+
+    Supported types:
+      list()   - shuffles elements, returns list().
+      tuple()  - shuffles elements, returns tuple().
+      string() - shuffles characters in place on the copy, returns string().
+
+    Sets cannot be shuffled (they are unordered) — TypeError is raised.
+    Ranges cannot be shuffled — TypeError is raised (use Sample instead).
+
+ARGUMENTS
+    container (list()|tuple()|string()) - The sequence to shuffle.
+
+RETURN VALUE
+    Same type as input (list, tuple, or string) — a new shuffled copy.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 1.
+    TypeError     - if the argument is a set or range.
+    TypeError     - if the argument is any other unsupported type.
+
+EXAMPLES
+    Shuffle([1, 2, 3, 4])   -> [3, 1, 4, 2]  (order varies)
+    Shuffle("abc")          -> "bca"           (order varies)
+
+SEE ALSO
+    Sample, RandChoice
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Sample - Random module
+
+SYNOPSIS
+    list()|tuple()|set()|string() Sample(container: list()|tuple()|set()|range()|string(), k: int())
+
+DESCRIPTION
+    Returns k unique elements drawn without replacement from container, as
+    a new collection.  The result is additionally shuffled (std::shuffle
+    after std::sample), so the output order is random.
+
+    Each element in the result is a deep copy.
+
+    Return type depends on input type:
+      list()   -> list()
+      range()  -> list()
+      tuple()  -> tuple()
+      set()    -> set()
+      string() -> string() (characters joined back)
+
+    For range() containers, a set of random indices is chosen (so the
+    result order is the iteration order of an unordered_set — not sorted).
+
+ARGUMENTS
+    container (list()|tuple()|set()|range()|string()) - Source to sample from.
+    k         (int()) - Number of elements to select.  Must be >= 0 and
+                        <= len(container).
+
+RETURN VALUE
+    Same type as input (list, tuple, set, or string).
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    TypeError     - if container is not a supported type.
+    ValueError    - if k < 0 or k > population size.
+
+EXAMPLES
+    Sample([1,2,3,4,5], 3)  -> [4, 1, 3]   (order varies)
+    Sample("abcde", 2)      -> "be"          (order varies)
+
+SEE ALSO
+    Shuffle, RandChoice

@@ -1,0 +1,79 @@
+MODULE: FileStream
+PURPOSE: File I/O — open files for reading and writing.  A FileStream object
+         exposes Read, ReadLines, Write, Clear, Close, and IsOpen methods on
+         the returned file handle.  See ValueTypeDoc/file/file.txt for the
+         full list of file-handle methods.
+
+Import examples:
+    import FileStream
+    from FileStream import Open, SafeOpen
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Open - FileStream module
+
+SYNOPSIS
+    file() Open(path: string())
+
+DESCRIPTION
+    Opens the file at the given path for reading and writing (std::fstream
+    with in|out|ate flags).  Returns a file handle value (type "file") that
+    can subsequently call the methods Read, ReadLines, Write, Clear, Close,
+    and IsOpen.
+
+    The file must already exist on disk.  If the file cannot be opened
+    (wrong path, permission denied, etc.) a FileNotFoundError is raised
+    immediately.
+
+ARGUMENTS
+    path (string()) - Filesystem path to the file to open.  The path is
+                      converted to a string via valueToString, so non-string
+                      values are coerced.
+
+RETURN VALUE
+    file() - An open file handle.
+
+ERRORS
+    ArgumentError      - if called with any number of arguments other than 1.
+    FileNotFoundError  - if the file does not exist or cannot be opened.
+
+EXAMPLES
+    Open("data.txt")    -> <file handle>
+    Open("/tmp/log.txt") -> <file handle>
+
+SEE ALSO
+    SafeOpen
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    SafeOpen - FileStream module
+
+SYNOPSIS
+    file() SafeOpen(path: string(), fallback: any() = none())
+
+DESCRIPTION
+    Attempts to open the file at path.  If the file cannot be opened, returns
+    fallback instead of raising an error.  The optional second argument
+    specifies what to return on failure; if omitted it defaults to none().
+
+    This is the non-throwing alternative to Open.  It is useful when the
+    caller wants to check whether a file exists before reading.
+
+ARGUMENTS
+    path     (string()) - Filesystem path to the file to open.
+    fallback (any())    - Value returned when the file cannot be opened.
+                          Defaults to none().
+
+RETURN VALUE
+    file()  - An open file handle on success.
+    any()   - The fallback value if the file cannot be opened.
+
+ERRORS
+    ArgumentError - if called with 0 arguments or more than 2 arguments.
+
+EXAMPLES
+    SafeOpen("maybe.txt")           -> <file handle> or none()
+    SafeOpen("missing.txt", false)  -> false
+
+SEE ALSO
+    Open

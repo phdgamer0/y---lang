@@ -1,0 +1,196 @@
+MODULE: Ncurses
+PURPOSE: Terminal UI, screen management, and keyboard handling using the ncurses library.
+
+This module provides a direct 1:1 mapping of the standard C ncurses API to y--.
+Functions that return or accept WINDOW pointers in C represent them as `int` in y--
+(by casting the pointer to long long and then int).  You should store these
+ints in variables and pass them back to functions expecting a `win` argument.
+
+Import examples:
+    import Ncurses
+
+────────────────────────────────────────────────────────────────────────────
+INITIALIZATION & CLEANUP
+────────────────────────────────────────────────────────────────────────────
+
+initscr() -> int()      - Initializes ncurses, sets up standard screen (stdscr),
+                          calls cbreak(), noecho(), keypad(stdscr, true), and
+                          returns the stdscr pointer as an int.
+endwin() -> none()      - Ends ncurses mode and restores terminal state.
+isendwin() -> bool()    - Returns true if endwin() was called.
+
+────────────────────────────────────────────────────────────────────────────
+COLORS AND ATTRIBUTES
+────────────────────────────────────────────────────────────────────────────
+
+Constants (bool constants indicating attribute presence, or ints):
+COLOR_BLACK, COLOR_RED, COLOR_GREEN, COLOR_YELLOW, COLOR_BLUE, COLOR_MAGENTA,
+COLOR_CYAN, COLOR_WHITE
+
+A_NORMAL, A_BOLD, A_UNDERLINE, A_REVERSE, A_BLINK
+
+start_color() -> int()
+has_colors() -> bool()
+can_change_color() -> bool()
+init_pair(pair, f, b) -> int()       - Initializes a color pair (foreground, background).
+init_color(color, r, g, b) -> int()  - Changes RGB values of a color.
+COLOR_PAIR(n) -> int()               - Returns the attribute for color pair n.
+attron(attr) -> int()
+attroff(attr) -> int()
+attrset(attr) -> int()
+wattron(win, attr) -> int()
+wattroff(win, attr) -> int()
+wattrset(win, attr) -> int()
+standout() -> int()
+standend() -> int()
+
+────────────────────────────────────────────────────────────────────────────
+OUTPUT / PRINTING
+────────────────────────────────────────────────────────────────────────────
+
+printw(str) -> none()                 - Print string to stdscr.
+mvprintw(y, x, str) -> none()         - Move and print to stdscr.
+wprintw(win, str) -> none()           - Print to a specific window.
+mvwprintw(win, y, x, str) -> none()   - Move and print to a specific window.
+
+addnstr(str, n) -> int()
+mvaddnstr(y, x, str, n) -> int()
+mvaddstr(y, x, str) -> int()
+waddstr(win, str) -> int()
+waddnstr(win, str, n) -> int()
+mvwaddstr(win, y, x, str) -> int()
+mvwaddnstr(win, y, x, str, n) -> int()
+
+insch(ch) -> int()
+insstr(str) -> int()
+insnstr(str, n) -> int()
+mvinsch(y, x, ch) -> int()
+mvinsstr(y, x, str) -> int()
+mvinsnstr(y, x, str, n) -> int()
+mvwinsch(win, y, x, ch) -> int()
+mvwinsstr(win, y, x, str) -> int()
+mvwinsnstr(win, y, x, str, n) -> int()
+
+hline(ch, n) -> int()
+vline(ch, n) -> int()
+mvhline(y, x, ch, n) -> int()
+mvvline(y, x, ch, n) -> int()
+whline(win, ch, n) -> int()
+wvline(win, ch, n) -> int()
+mvwhline(win, y, x, ch, n) -> int()
+mvwvline(win, y, x, ch, n) -> int()
+
+box(win, verch, horch) -> int()
+border(ls, rs, ts, bs, tl, tr, bl, br) -> int()
+wborder(win, ls, rs, ts, bs, tl, tr, bl, br) -> int()
+
+────────────────────────────────────────────────────────────────────────────
+INPUT
+────────────────────────────────────────────────────────────────────────────
+
+getch() -> int()
+mvgetch(y, x) -> int()
+wgetch(win) -> int()
+mvwgetch(win, y, x) -> int()
+ungetch(ch) -> int()
+
+getstr(str_out) -> int()              - NOTE: Modifies buffer, passing string may be risky in y--.
+mvgetstr(y, x, str_out) -> int()
+wgetstr(win, str_out) -> int()
+mvwgetstr(win, y, x, str_out) -> int()
+getnstr(str_out, n) -> int()
+mvgetnstr(y, x, str_out, n) -> int()
+wgetnstr(win, str_out, n) -> int()
+mvwgetnstr(win, y, x, str_out, n) -> int()
+
+halfdelay(tenths) -> int()
+nodelay(win, bf) -> int()
+timeout(delay) -> none()
+notimeout(win, bf) -> int()
+keypad(win, bf) -> int()
+meta(win, bf) -> int()
+typeahead(fildes) -> int()
+
+────────────────────────────────────────────────────────────────────────────
+SCREEN, WINDOW, AND CURSOR MANAGEMENT
+────────────────────────────────────────────────────────────────────────────
+
+refresh() -> int()
+wrefresh(win) -> int()
+doupdate() -> int()
+redrawwin(win) -> int()
+wcursyncup(win) -> none()
+syncok(win, bf) -> int()
+
+clear() -> int()
+erase() -> int()
+wclear(win) -> int()
+werase(win) -> int()
+clrtobot() -> int()
+clrtoeol() -> int()
+wclrtobot(win) -> int()
+wclrtoeol(win) -> int()
+clearok(win, bf) -> int()
+
+move(y, x) -> int()
+wmove(win, y, x) -> int()
+getmaxy() -> int()
+getmaxx() -> int()
+getyx() -> list()                     - Returns [y, x]
+curs_set(visibility) -> int()         - 0 = invisible, 1 = normal, 2 = very visible.
+
+newwin(nlines, ncols, begin_y, begin_x) -> int()
+delwin(win) -> int()
+mvwin(win, y, x) -> int()
+subwin(win, nlines, ncols, begin_y, begin_x) -> int()
+derwin(win, nlines, ncols, begin_y, begin_x) -> int()
+dupwin(win) -> int()
+touchwin(win) -> int()
+touchline(win, start, count) -> int()
+untouchwin(win) -> int()
+is_wintouched(win) -> bool()
+is_linetouched(win, line) -> bool()
+
+scroll(win) -> int()
+scrl(n) -> int()
+scrollok(win, bf) -> int()
+idlok(win, bf) -> int()
+idcok(win, bf) -> none()
+setscrreg(top, bot) -> int()
+
+────────────────────────────────────────────────────────────────────────────
+TERMINAL MODES
+────────────────────────────────────────────────────────────────────────────
+
+cbreak() -> int()
+nocbreak() -> int()
+echo() -> int()
+noecho() -> int()
+nl() -> int()
+nonl() -> int()
+raw() -> int()
+noraw() -> int()
+qiflush() -> none()
+noqiflush() -> none()
+def_prog_mode() -> int()
+def_shell_mode() -> int()
+reset_prog_mode() -> int()
+reset_shell_mode() -> int()
+savetty() -> int()
+resetty() -> int()
+
+────────────────────────────────────────────────────────────────────────────
+MISCELLANEOUS
+────────────────────────────────────────────────────────────────────────────
+
+beep() -> int()
+flash() -> int()
+napms(ms) -> int()
+delay_output(ms) -> int()
+flushinp() -> int()
+baudrate() -> int()
+filter() -> none()
+longname() -> string()
+termname() -> string()
+use_env(f) -> none()
+use_tioctl(f) -> none()

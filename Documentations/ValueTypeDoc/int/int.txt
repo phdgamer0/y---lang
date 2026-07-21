@@ -1,0 +1,9 @@
+VALUE TYPE: Int
+PURPOSE: Represents a whole number (usually 64-bit signed integer or BigInt depending on size).
+
+────────────────────────────────────────────────────────────────────────────
+METHODS
+────────────────────────────────────────────────────────────────────────────
+base(n) -> string()               - Converts the integer to a string representation in the specified base `n`.
+                                    The base must be between 2 and 36 (inclusive).
+                                    Negative numbers are prefixed with a minus sign.

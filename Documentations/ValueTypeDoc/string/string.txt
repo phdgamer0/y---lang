@@ -1,0 +1,76 @@
+VALUE TYPE: String
+PURPOSE: Represents a sequence of characters. Strings are mutable in y-- and support a wide variety of methods.
+
+────────────────────────────────────────────────────────────────────────────
+CORE METHODS
+────────────────────────────────────────────────────────────────────────────
+
+append(str) -> string()           - Appends another string to this string (modifies in-place).
+reserve(size) -> none()           - Pre-allocates memory for the string to avoid reallocations.
+resize(size) -> none()            - Resizes the string to the specified length.
+reverse([modify_original=true, custom_lambda=None]) -> string()
+                                  - Reverses the string. Optionally applies a lambda to each char.
+sort([reverse_sort=false, modify_original=true, custom_lambda=None]) -> string()
+                                  - Sorts the characters in the string.
+
+────────────────────────────────────────────────────────────────────────────
+TRANSFORMATIONS & FORMATTING
+────────────────────────────────────────────────────────────────────────────
+
+base(n) -> string()               - (Works if string parses as number? No, base is for int/float, but sometimes used).
+capitalize([modify_original=true]) -> string()
+                                  - Capitalizes the first character of the string.
+casefold([modify_original=true]) -> string()
+                                  - Returns a lowercase string suitable for caseless comparisons.
+center(width, [fillchar=' ', modify_original=true]) -> string()
+                                  - Centers the string within the given width using fillchar.
+chars([start=0, end=-1]) -> list() - Returns a list of characters (substrings of length 1).
+ljust(width, [fillchar=' ', modify_original=true]) -> string()
+                                  - Left-justifies the string in a field of given width.
+lower([modify_original=true]) -> string()
+                                  - Converts all characters to lowercase.
+rjust(width, [fillchar=' ', modify_original=true]) -> string()
+                                  - Right-justifies the string in a field of given width.
+upper([modify_original=true]) -> string()
+                                  - Converts all characters to uppercase.
+split([delimiter=" "]) -> list()  - Splits the string by the specified delimiter.
+
+────────────────────────────────────────────────────────────────────────────
+WHITESPACE & STRIPPING
+────────────────────────────────────────────────────────────────────────────
+
+lstrip([chars=" \t\n\r\v\f", modify_original=true]) -> string()
+                                  - Removes leading characters (whitespace by default).
+rstrip([chars=" \t\n\r\v\f", modify_original=true]) -> string()
+                                  - Removes trailing characters (whitespace by default).
+strip([chars=" \t\n\r\v\f", modify_original=true]) -> string()
+                                  - Removes leading and trailing characters (whitespace by default).
+
+────────────────────────────────────────────────────────────────────────────
+SEARCHING & QUERYING
+────────────────────────────────────────────────────────────────────────────
+
+ascii() -> int()                  - Returns the ASCII integer value of a single-character string.
+count(sub, [start=0, end=-1]) -> int()
+                                  - Counts non-overlapping occurrences of 'sub' in the string.
+endswith(suffix) -> bool()        - Returns true if the string ends with 'suffix'.
+index(sub) -> int()               - Returns the lowest index where 'sub' is found. Throws if not found.
+isalnum() -> bool()               - Returns true if all characters are alphanumeric.
+isalpha() -> bool()               - Returns true if all characters are alphabetic.
+isdecimal() -> bool()             - Returns true if all characters are decimals.
+islower() -> bool()               - Returns true if all characters are lowercase.
+isupper() -> bool()               - Returns true if all characters are uppercase.
+
+────────────────────────────────────────────────────────────────────────────
+FUNCTIONAL METHODS
+────────────────────────────────────────────────────────────────────────────
+Strings can be treated as collections of characters for functional methods:
+All_Of(lambda) -> bool()
+Any_Of(lambda) -> bool()
+None_Of(lambda) -> bool()
+One_Of(lambda) -> bool()
+find(lambda) -> char/None
+select(lambda) -> string()
+reject(lambda) -> string()
+partition(lambda) -> list([string(), string()])
+map(lambda) -> string() (if lambda returns strings, else list)

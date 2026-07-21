@@ -1,0 +1,50 @@
+MODULE: Vector
+PURPOSE: Enables the vector numeric type and exposes a constructor for
+         creating n-dimensional mathematical vectors.
+
+When this module is imported, the global "vector" constructor function
+becomes available.  The resulting vector() values support additional
+methods documented in ValueTypeDoc/vector/vector.txt.
+
+Import examples:
+    import Vector
+    from Vector import vector
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    vector - Vector module
+
+SYNOPSIS
+    vector() vector(x: float(), y: float(), z: float(), ...)
+
+DESCRIPTION
+    Creates an n-dimensional mathematical vector from the given numeric
+    arguments.  Each argument must be a number (int, float, bigint, or bool
+    coercible to a number); non-numeric arguments raise TypeError.
+
+    If called with no arguments, a 3D zero vector <0.0, 0.0, 0.0> is
+    returned by default.
+
+    If called with arguments, each argument becomes one component of the
+    resulting vector in the order given.  There is no upper limit on
+    dimensionality.
+
+ARGUMENTS
+    x, y, z, ... (float()) - Numeric components of the vector.
+
+RETURN VALUE
+    vector() - A new vector value.
+
+ERRORS
+    TypeError - if any argument is not a number.
+
+EXAMPLES
+    vector()            -> <0.0, 0.0, 0.0>
+    vector(1.0, 2.0)    -> <1.0, 2.0>
+    vector(1, 2, 3)     -> <1, 2, 3>
+    vector(1, "a")      -> TypeError
+
+SEE ALSO
+    ValueTypeDoc/vector/vector.txt (for vector methods: dot, cross,
+    magnitude, unitVec, projectOnto, dimension, vector_reversal,
+    expand, shrink)

@@ -1,0 +1,228 @@
+MODULE: System
+PURPOSE: Process-level utilities — exit the interpreter, read command-line
+         arguments, get the process ID, detect the current platform,
+         apply ANSI colour to terminal strings, emit a system beep, and
+         read a single keypress without echoing it.
+
+Import examples:
+    import System
+    from System import Exit, Args, Platform
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Exit - System module
+
+SYNOPSIS
+    none() Exit(code: int() = 0)
+
+DESCRIPTION
+    Terminates the interpreter process immediately with the given exit code
+    by calling C exit().  When called with no arguments the exit code
+    defaults to 0.
+
+    This function never returns.
+
+ARGUMENTS
+    code (int()) - Exit status code.  Defaults to 0 if omitted.
+
+RETURN VALUE
+    (never returns)
+
+ERRORS
+    None.
+
+EXAMPLES
+    Exit()     -> (terminates with code 0)
+    Exit(1)    -> (terminates with code 1)
+
+SEE ALSO
+    ProcessId, Args
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Args - System module
+
+SYNOPSIS
+    list() Args()
+
+DESCRIPTION
+    Returns the command-line arguments of the current process as a list of
+    strings.  On POSIX the implementation reads /proc/self/cmdline; on
+    Windows it uses CommandLineToArgvW.  The list includes the interpreter
+    executable as the first element (argv[0]) followed by the script path
+    and any user-supplied arguments.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    list() - List of string() command-line arguments.
+
+ERRORS
+    None.
+
+EXAMPLES
+    Args()  -> ["y_lang", "myscript.y", "--flag"]
+
+SEE ALSO
+    Exit
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    ProcessId - System module
+
+SYNOPSIS
+    int() ProcessId()
+
+DESCRIPTION
+    Returns the current process ID.  Uses getpid() on POSIX and
+    GetCurrentProcessId() on Windows.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    int() - The process identifier.
+
+ERRORS
+    None.
+
+EXAMPLES
+    ProcessId()  -> 12345
+
+SEE ALSO
+    Exit
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Platform - System module
+
+SYNOPSIS
+    string() Platform()
+
+DESCRIPTION
+    Returns a lowercase string identifying the host platform.  Possible
+    values are:
+      "windows" - compiled with _WIN32
+      "macos"   - compiled with __APPLE__
+      "linux"   - compiled with __linux__
+      "unknown" - any other platform
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    string() - One of "windows", "macos", "linux", or "unknown".
+
+ERRORS
+    None.
+
+EXAMPLES
+    Platform()  -> "linux"
+
+SEE ALSO
+    ProcessId
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Color - System module
+
+SYNOPSIS
+    string() Color(text: string(), colorName: string())
+
+DESCRIPTION
+    Returns text wrapped in ANSI escape codes that produce the given colour
+    when printed to a terminal that supports ANSI sequences.  A reset code
+    is always appended so subsequent output returns to the default colour.
+
+    Valid colorName values and the ANSI codes they map to:
+      "red"     -> ESC[31m
+      "green"   -> ESC[32m
+      "yellow"  -> ESC[33m
+      "blue"    -> ESC[34m
+      "magenta" -> ESC[35m
+      "cyan"    -> ESC[36m
+      "white"   -> ESC[37m  (also the default for unknown names)
+      "reset"   -> ESC[0m
+
+ARGUMENTS
+    text      (string()) - The text to colorise.
+    colorName (string()) - A colour name string (see above).
+
+RETURN VALUE
+    string() - The text prefixed and suffixed with ANSI escape sequences.
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    ValueError    - if colorName is not one of the accepted values.
+
+EXAMPLES
+    Color("hello", "red")    -> "\033[31mhello\033[0m"
+    Color("ok",    "green")  -> "\033[32mok\033[0m"
+
+SEE ALSO
+    (none in this module)
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    Beep - System module
+
+SYNOPSIS
+    none() Beep(frequency: float(), duration: float())
+
+DESCRIPTION
+    Emits an audible beep.
+
+    On Windows, calls the Win32 Beep() API with the given frequency (Hz) and
+    duration (milliseconds).
+
+    On POSIX, writes the ASCII BEL character ('\a') to stdout followed by a
+    flush.  The frequency and duration parameters are validated but otherwise
+    ignored on POSIX.
+
+ARGUMENTS
+    frequency (float()) - Frequency in Hz (must be > 0).
+    duration  (float()) - Duration in milliseconds (must be > 0).
+
+RETURN VALUE
+    none()
+
+ERRORS
+    ArgumentError - if called with any number of arguments other than 2.
+    ValueError    - if frequency or duration is <= 0.
+
+EXAMPLES
+    Beep(440.0, 200.0)  -> none()
+
+SEE ALSO
+    (none in this module)
+
+────────────────────────────────────────────────────────────────────────────
+NAME
+    ReadKey - System module
+
+SYNOPSIS
+    string() ReadKey()
+
+DESCRIPTION
+    Reads a single character from stdin without echoing it to the terminal
+    and without requiring the user to press Enter.
+
+    On Windows, uses _getch().  On POSIX, temporarily disables ICANON and
+    ECHO terminal flags, reads one character via getchar(), and restores the
+    original terminal settings afterwards.
+
+ARGUMENTS
+    (none)
+
+RETURN VALUE
+    string() - A single-character string containing the pressed key.
+
+ERRORS
+    None.
+
+EXAMPLES
+    ReadKey()  -> "a"   (if the user pressed 'a')
+
+SEE ALSO
+    (none in this module)
