@@ -70,27 +70,20 @@ jobs:
           path: build/release/y_lang_new.exe
 
   build-arm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build ARM binary using QEMU emulator
-        uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: ubuntu22.04
-          githubToken: ${{ github.token }}
-          run: |
-            apt-get update
-            apt-get install -y build-essential libx11-dev libgl1-mesa-dev libssl-dev libncurses5-dev libncursesw5-dev git zlib1g-dev libxtst-dev libzstd-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev nlohmann-json3-dev wget
-            wget https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-aarch64.tar.gz
-            tar -zxvf cmake-3.28.3-linux-aarch64.tar.gz
-            export PATH=$(pwd)/cmake-3.28.3-linux-aarch64/bin:$PATH
-            mkdir -p build_cmake
-            cd build_cmake
-            cmake -DCMAKE_BUILD_TYPE=Release ..
-            cmake --build . --parallel $(nproc)
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential libx11-dev libgl1-mesa-dev libssl-dev libncurses5-dev libncursesw5-dev cmake git zlib1g-dev libxtst-dev libzstd-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev nlohmann-json3-dev
+
+      - name: Build ARM binary
+        run: |
+          mkdir -p build_cmake
+          cd build_cmake
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build . --parallel $(nproc)
 
       - name: Upload ARM Artifact
         uses: actions/upload-artifact@v4
