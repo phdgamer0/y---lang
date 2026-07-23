@@ -370,19 +370,22 @@ define class Enemy:{
 
 ~ Digital Differential Analyzer (DDA) Algorithm for fast raycasting grids
 define function DDA(Begin:vector(), Dir:vector(), RenderDistance:float()) -> list():{
-   let rounded_Begin = <(-MAP_START[0] + Begin[0]) // MAP_BLOCK_LENGTH, (-MAP_START[1] + Begin[1]) // MAP_BLOCK_LENGTH> 
+   let neg_map = -MAP_START[0]
+   let sum_x = -MAP_START[0] + Begin[0]
+   let sum_y = -MAP_START[1] + Begin[1]
+   let rounded_Begin = <sum_x // MAP_BLOCK_LENGTH, sum_y // MAP_BLOCK_LENGTH> 
    
    ~ 'nor' LOGIC GATE: The y-- compiler natively understands complex gates. 
    ~ Returns true only if BOTH values are exactly 0.0F.
    if Dir[0] nor Dir[1]: return [RenderDistance, false]
    
-   let delta_x = Abs(1.0F / Dir[0]) if Dir[0] is not 0.0F else 999999.0F
-   let delta_y = Abs(1.0F / Dir[1]) if Dir[1] is not 0.0F else 999999.0F
+   let delta_x = Abs(1.0F / Dir[0]) if Dir[0] !== 0.0F else 999999.0F
+   let delta_y = Abs(1.0F / Dir[1]) if Dir[1] !== 0.0F else 999999.0F
    
-   ~ MULTI-ASSIGNMENT: Assigns both step variables cleanly in one line.
    let step_x, step_y = Sgn(Dir[0]), Sgn(Dir[1])
    
    let grid_pos_x = (Begin[0] - MAP_START[0]) / MAP_BLOCK_LENGTH
+   
    let grid_pos_y = (Begin[1] - MAP_START[1]) / MAP_BLOCK_LENGTH
    let side_x, side_y
    let hit_vertical = true
@@ -398,6 +401,7 @@ define function DDA(Begin:vector(), Dir:vector(), RenderDistance:float()) -> lis
    else:{
       side_x = 999999.0F
    }
+   
    if step_y is 1:{
       side_y = (rounded_Begin[1] + 1.0F - grid_pos_y) * delta_y
    }
@@ -512,10 +516,10 @@ define function main():{
    let sky = @sky_ground_texture_array[0]
    let ground = @sky_ground_texture_array[1]
    
-   let wall_texture = LoadTexture('example programs/src/pixwall.png')
-   let enemy_txture = LoadTexture("example programs/src/images.png")
-   let death_screen_texture = LoadTexture('example programs/src/death_screen.png')
-   let arial_font = LoadFont('example programs/src/ARIAL.TTF')
+   let wall_texture = LoadTexture('/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/example programs/src/pixwall.png')
+   let enemy_txture = LoadTexture("/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/example programs/src/images.png")
+   let death_screen_texture = LoadTexture('/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/example programs/src/death_screen.png')
+   let arial_font = LoadFont('/home/phd/Desktop/CppStuff/Projects/y--lang/y---lang/example programs/src/ARIAL.TTF')
    
    let Loading_length = MeasureTextEx(arial_font, "LOADING...", 20, 1)
    let game_over_length = MeasureTextEx(arial_font, "Press ENTER to restart...", 20, 1)

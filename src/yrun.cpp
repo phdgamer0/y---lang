@@ -1,5 +1,7 @@
-#include "old.h"
-#include "pystring.h"
+#include "ylang/old_copy.hpp"
+#include "ylang/pystring.h"
+#include "ylang/serialization.hpp"
+#include "ylang/assembler.hpp"
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -23,33 +25,130 @@ int main(int argc, char *argv[]) {
 		runREPL();
 		return 0;
 	}
-	else if (argc > 2) {
-		std::cerr << "FATAL ERROR: Too many input file provided.\n";
-		std::cerr << "Usage: " << argv[0] << " <file.ymm>\n";
+
+	bool compileOnly = false;
+	bool humanReadable = false;
+	std::vector<std::string> scriptArgs;
+
+	for (int i = 1; i < argc; i++) {
+		std::string arg = argv[i];
+		if (arg == "-c" || arg == "--compile") {
+			compileOnly = true;
+		} else if (arg == "-h" || arg == "--humanreadable") {
+			humanReadable = true;
+		} else {
+			scriptArgs.push_back(arg);
+		}
+	}
+
+	if (scriptArgs.empty()) {
+		std::cerr << "FATAL ERROR: No input file provided.\n";
+		std::cerr << "Usage: yrun [flags] <file.ymm> [args...]\n";
 		return 1;
 	}
-	// Read the path from the first command-line argument
-	std::string path = argv[1];
+
+	std::string path = scriptArgs[0];
 	std::filesystem::path p(path);
-	if (p.extension() != ".ymm") {
+	std::string ext = p.extension().string();
+
+	if (ext != ".ymm" && ext != ".ymc" && ext != ".yb") {
 		std::string filename = p.filename().string();
-		std::cerr << "FATAL ERROR: " << filename << " must end with .ymm extension.\n";
-		std::cerr << "Usage: " << p.stem().string() << ".ymm\n";
+		std::cerr << "FATAL ERROR: " << filename << " must end with .ymm, .ymc, or .yb extension.\n";
 		std::cerr << "Interpretation aborted...\n";
 		return 1;
 	}
-	std::ifstream file(path);
+
+	std::ifstream file(path, std::ios::binary);
 	if (!file) {
 		std::cerr << "FATAL ERROR: Cannot open file at path:" << path << "\n";
 		return 1;
 	}
-	std::stringstream ss;
-	ss << file.rdbuf();
-	string code = ss.str();
+
 	DEBUGGER_MODE_IS_ENABLED = false;
 	enableColors();
 	std::chrono::steady_clock::time_point start;
 	std::chrono::steady_clock::time_point end;
+
+    if (ext == ".ymc") {
+        Chunk* chunk = loadChunk(file);
+        VM vm;
+        Interpreter interp;
+        vm.globals = interp.env;
+        vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
+        vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
+            if (interp.modules.find(libName) != interp.modules.end()) interp.modules[libName](targetEnv, symbols);
+            else throw ImportError("Unknown module '" + libName + "'", 0, 0);
+        };
+        start = std::chrono::steady_clock::now();
+        vm.run(*chunk);
+        
+        if (vm.globals->exists("main")) {
+            Value mainVal = vm.globals->get("main");
+            if (mainVal.type == ValueType::FUNCTION) {
+                Chunk bootChunk;
+                ByteCodeCompiler bootCompiler(&bootChunk);
+                int passedArgs = 0;
+                for (size_t i = 1; i < scriptArgs.size(); i++) {
+                    bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
+                    passedArgs++;
+                }
+                bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
+                bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
+                bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
+                bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
+                bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+                bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
+                vm.run(bootChunk);
+            }
+        }
+        end = std::chrono::steady_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
+        delete chunk;
+        return 0;
+    } else if (ext == ".yb") {
+        Chunk* chunk = loadAssembly(file);
+        VM vm;
+        Interpreter interp;
+        vm.globals = interp.env;
+        vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
+        vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
+            if (interp.modules.find(libName) != interp.modules.end()) interp.modules[libName](targetEnv, symbols);
+            else throw ImportError("Unknown module '" + libName + "'", 0, 0);
+        };
+        start = std::chrono::steady_clock::now();
+        vm.run(*chunk);
+        
+        if (vm.globals->exists("main")) {
+            Value mainVal = vm.globals->get("main");
+            if (mainVal.type == ValueType::FUNCTION) {
+                Chunk bootChunk;
+                ByteCodeCompiler bootCompiler(&bootChunk);
+                int passedArgs = 0;
+                for (size_t i = 1; i < scriptArgs.size(); i++) {
+                    bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
+                    passedArgs++;
+                }
+                bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
+                bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
+                bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
+                bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
+                bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+                bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
+                vm.run(bootChunk);
+            }
+        }
+        end = std::chrono::steady_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
+        delete chunk;
+        return 0;
+    }
+
+	std::stringstream ss;
+	ss << file.rdbuf();
+	std::string code = ss.str();
+
 	try {
 		auto tokens = tokenize(code);
 		Parser parser(tokens);
@@ -75,8 +174,9 @@ int main(int argc, char *argv[]) {
 		cout << "Choose Compiler: AST:0 VM:1 ";
 		std::cout << "DEBUG_VM:2 ";
 		cin >> useVM;
-#endif
+#else
 		useVM = 1;
+#endif
 		Interpreter interp;
 		start = std::chrono::steady_clock::now();
 		if (!useVM) {
@@ -95,8 +195,13 @@ int main(int argc, char *argv[]) {
 			}
 			Chunk chunk;
 			ByteCodeCompiler compiler(&chunk);
-			for (Stmt *stmt : program)
+			if (compileOnly) {
+				compiler.isCompileOnly = true;
+				compiler.interp = &interp;
+			}
+			for (Stmt *stmt : program) {
 				compiler.compileStmt(stmt);
+			}
 			int line = program.empty() ? 0 : program.back()->line;
 			int col = program.empty() ? 0 : program.back()->col;
 			compiler.emitByte(OpCode::OP_NOTYPE, line, col);
@@ -112,16 +217,35 @@ int main(int argc, char *argv[]) {
 				else
 					throw ImportError("Unknown module '" + libName + "'", 0, 0);
 			};
+			
+			if (compileOnly) {
+				if (!humanReadable) {
+					std::string outPath = p.stem().string() + ".ymc";
+					std::ofstream outFile(outPath, std::ios::binary);
+					saveChunk(&chunk, outFile);
+					std::cout << "Successfully compiled to " << outPath << "\n";
+				} else {
+					std::string outPath = p.stem().string() + ".yb";
+					std::ofstream outFile(outPath);
+					saveAssembly(&chunk, outFile);
+					std::cout << "Successfully compiled to " << outPath << "\n";
+				}
+				return 0;
+			}
 			vm.run(chunk);
 			if (vm.globals->exists("main")) {
 				Value mainVal = vm.globals->get("main");
-				auto *funcObj = static_cast<FunctionObject *>(mainVal.ref.get());
 				if (mainVal.type == ValueType::FUNCTION) {
 					Chunk bootChunk;
 					ByteCodeCompiler bootCompiler(&bootChunk);
+					int passedArgs = 0;
+					for (size_t i = 1; i < scriptArgs.size(); i++) {
+						bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
+						passedArgs++;
+					}
 					bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
 					bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
-					bootCompiler.chunk->write((uint8_t)0, 0, 0);
+					bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
 					bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
 					bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
 					bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
@@ -129,9 +253,10 @@ int main(int argc, char *argv[]) {
 				}
 				end = std::chrono::steady_clock::now();
 				std::chrono::duration<double> elapsed = end - start;
-				std::cout << "Program finished successfully in " << elapsed.count() << " seconds " << "with code 0";
+				std::cout << "Program finished successfully in " << elapsed.count() << " seconds " << "with code 0\n";
 				vm.globals->clear();
 			}
+
 			if (!vm.stack.empty()) {
 				vm.stack.clear();
 				// for debugging only!

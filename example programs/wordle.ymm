@@ -64,7 +64,8 @@ define function Draw_chances(max_chances:int(), Word:string(), place_holder:stri
 
 define function main():{
     ~ FILE I/O: SafeOpen wraps file streams securely.
-	let File = SafeOpen('example programs/src/valid-wordle-words.txt')
+	let File = SafeOpen('src/valid-wordle-words.txt')
+	if File === None: File = SafeOpen('example programs/src/valid-wordle-words.txt')
 	
 	~ MULTI-ASSIGNMENT: Assigning multiple variables of different types in a single, clean line.
 	let words, inp, gameOver, word, chances = [], "", true, "", 6
