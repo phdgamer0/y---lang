@@ -18,10 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential libx11-dev libgl1-mesa-dev libssl-dev libncurses5-dev libncursesw5-dev cmake git zlib1g-dev libxtst-dev libzstd-dev
-
+        run: sudo apt-get update && sudo apt-get install -y build-essential libx11-dev libgl1-mesa-dev libssl-dev libncurses5-dev libncursesw5-dev cmake git zlib1g-dev libxtst-dev libzstd-dev libxrandr-dev
       - name: Build Linux binary
         run: |
           mkdir -p build_cmake
@@ -84,7 +82,7 @@ jobs:
           githubToken: ${{ github.token }}
           run: |
             apt-get update
-            apt-get install -y build-essential libx11-dev libgl1-mesa-dev libssl-dev libncurses5-dev libncursesw5-dev cmake git zlib1g-dev libxtst-dev libzstd-dev
+            apt-get install -y build-essential libx11-dev libgl1-mesa-dev libssl-dev libncurses5-dev libncursesw5-dev cmake git zlib1g-dev libxtst-dev libzstd-dev libxrandr-dev
             mkdir -p build_cmake
             cd build_cmake
             cmake -DCMAKE_BUILD_TYPE=Release ..
