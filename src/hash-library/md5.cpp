@@ -6,7 +6,7 @@
 
 #include "md5.h"
 
-#ifndef _MSC_VER
+#if !defined(_MSC_VER) && !defined(_WIN32)
 #include <endian.h>
 #endif
 

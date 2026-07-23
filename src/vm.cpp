@@ -1,5 +1,9 @@
 #include "ylang/vm.hpp"
 
+#ifdef _WIN32
+#include <shellapi.h>
+#endif
+
 void Interpreter::registerStdLib() {
 	modules["FileStream"] = [](std::shared_ptr<Env> env, const vector<string> &symbols) {
 		auto moduleNamespace = std::make_shared<ClassObject>("FileStream");
