@@ -159,6 +159,7 @@ if(WIN32)
         OpenSSL::SSL OpenSSL::Crypto
         ZLIB::ZLIB zstd
         OpenGL::GL
+        ws2_32 crypt32
     )
 else()
     target_link_libraries(y_lang_new PRIVATE
