@@ -69,7 +69,22 @@ else()
     set(EIGEN_INCLUDE_DIR "${eigen_SOURCE_DIR}")
 endif()
 
-include_directories(${OPENNN_INCLUDE_DIR} ${EIGEN_INCLUDE_DIR})
+# Nlohmann JSON
+find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp HINTS /usr/local/include /usr/include)
+if(NLOHMANN_JSON_INCLUDE_DIR)
+    message(STATUS "Found nlohmann_json locally at ${NLOHMANN_JSON_INCLUDE_DIR}")
+else()
+    message(STATUS "nlohmann_json not found locally, fetching via CMake...")
+    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        nlohmann_json
+        URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+    set(NLOHMANN_JSON_INCLUDE_DIR "${nlohmann_json_SOURCE_DIR}/include")
+endif()
+
+include_directories(${OPENNN_INCLUDE_DIR} ${EIGEN_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
 
 # Raylib
 find_library(RAYLIB_LIBRARY NAMES raylib)
@@ -80,7 +95,7 @@ else()
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         raylib
-        URL https://github.com/raysan5/raylib/archive/refs/heads/master.zip
+        URL https://github.com/raysan5/raylib/archive/refs/tags/5.5.zip
     )
     FetchContent_MakeAvailable(raylib)
     set(RAYLIB_LIBRARY raylib)
