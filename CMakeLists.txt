@@ -95,7 +95,7 @@ else()
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         raylib
-        URL https://github.com/raysan5/raylib/archive/refs/tags/5.5.zip
+        URL https://github.com/raysan5/raylib/archive/919ad68c.zip
     )
     FetchContent_MakeAvailable(raylib)
     set(RAYLIB_LIBRARY raylib)
