@@ -1,8 +1,9 @@
-#include "ylang/old_copy.hpp"
+#include "ylang/assembler.hpp"
+#include "ylang/compiler.hpp"
 #include "ylang/pystring.h"
 #include "ylang/serialization.hpp"
-#include "ylang/assembler.hpp"
 #include "ylang/transpiler.hpp"
+#include "ylang/vm.hpp"
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -73,81 +74,85 @@ int main(int argc, char *argv[]) {
 	std::chrono::steady_clock::time_point start;
 	std::chrono::steady_clock::time_point end;
 
-    if (ext == ".ymc") {
-        Chunk* chunk = loadChunk(file);
-        VM vm;
-        Interpreter interp;
-        vm.globals = interp.env;
-        vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
-        vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-            if (interp.modules.find(libName) != interp.modules.end()) interp.modules[libName](targetEnv, symbols);
-            else throw ImportError("Unknown module '" + libName + "'", 0, 0);
-        };
-        start = std::chrono::steady_clock::now();
-        vm.run(*chunk);
-        
-        if (vm.globals->exists("main")) {
-            Value mainVal = vm.globals->get("main");
-            if (mainVal.type == ValueType::FUNCTION) {
-                Chunk bootChunk;
-                ByteCodeCompiler bootCompiler(&bootChunk);
-                int passedArgs = 0;
-                for (size_t i = 1; i < scriptArgs.size(); i++) {
-                    bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
-                    passedArgs++;
-                }
-                bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
-                bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
-                bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
-                bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
-                bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
-                bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
-                vm.run(bootChunk);
-            }
-        }
-        end = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = end - start;
-        std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
-        delete chunk;
-        return 0;
-    } else if (ext == ".yb") {
-        Chunk* chunk = loadAssembly(file);
-        VM vm;
-        Interpreter interp;
-        vm.globals = interp.env;
-        vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
-        vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-            if (interp.modules.find(libName) != interp.modules.end()) interp.modules[libName](targetEnv, symbols);
-            else throw ImportError("Unknown module '" + libName + "'", 0, 0);
-        };
-        start = std::chrono::steady_clock::now();
-        vm.run(*chunk);
-        
-        if (vm.globals->exists("main")) {
-            Value mainVal = vm.globals->get("main");
-            if (mainVal.type == ValueType::FUNCTION) {
-                Chunk bootChunk;
-                ByteCodeCompiler bootCompiler(&bootChunk);
-                int passedArgs = 0;
-                for (size_t i = 1; i < scriptArgs.size(); i++) {
-                    bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
-                    passedArgs++;
-                }
-                bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
-                bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
-                bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
-                bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
-                bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
-                bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
-                vm.run(bootChunk);
-            }
-        }
-        end = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = end - start;
-        std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
-        delete chunk;
-        return 0;
-    }
+	if (ext == ".ymc") {
+		Chunk *chunk = loadChunk(file);
+		VM vm;
+		Interpreter interp;
+		vm.globals = interp.env;
+		vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
+		vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
+			if (interp.modules.find(libName) != interp.modules.end())
+				interp.modules[libName](targetEnv, symbols);
+			else
+				throw ImportError("Unknown module '" + libName + "'", 0, 0);
+		};
+		start = std::chrono::steady_clock::now();
+		vm.run(*chunk);
+
+		if (vm.globals->exists("main")) {
+			Value mainVal = vm.globals->get("main");
+			if (mainVal.type == ValueType::FUNCTION) {
+				Chunk bootChunk;
+				ByteCodeCompiler bootCompiler(&bootChunk);
+				int passedArgs = 0;
+				for (size_t i = 1; i < scriptArgs.size(); i++) {
+					bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
+					passedArgs++;
+				}
+				bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
+				bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
+				bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
+				bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
+				bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+				bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
+				vm.run(bootChunk);
+			}
+		}
+		end = std::chrono::steady_clock::now();
+		std::chrono::duration<double> elapsed = end - start;
+		std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
+		delete chunk;
+		return 0;
+	} else if (ext == ".yb") {
+		Chunk *chunk = loadAssembly(file);
+		VM vm;
+		Interpreter interp;
+		vm.globals = interp.env;
+		vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
+		vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
+			if (interp.modules.find(libName) != interp.modules.end())
+				interp.modules[libName](targetEnv, symbols);
+			else
+				throw ImportError("Unknown module '" + libName + "'", 0, 0);
+		};
+		start = std::chrono::steady_clock::now();
+		vm.run(*chunk);
+
+		if (vm.globals->exists("main")) {
+			Value mainVal = vm.globals->get("main");
+			if (mainVal.type == ValueType::FUNCTION) {
+				Chunk bootChunk;
+				ByteCodeCompiler bootCompiler(&bootChunk);
+				int passedArgs = 0;
+				for (size_t i = 1; i < scriptArgs.size(); i++) {
+					bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
+					passedArgs++;
+				}
+				bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
+				bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
+				bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
+				bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
+				bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+				bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
+				vm.run(bootChunk);
+			}
+		}
+		end = std::chrono::steady_clock::now();
+		std::chrono::duration<double> elapsed = end - start;
+		std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
+		delete chunk;
+		return 0;
+	}
 
 	std::stringstream ss;
 	ss << file.rdbuf();
@@ -202,6 +207,25 @@ int main(int argc, char *argv[]) {
 			if (compileOnly || transpileToCpp) {
 				compiler.isCompileOnly = true;
 				compiler.interp = &interp;
+				for (Stmt *stmt : program) {
+					if (!stmt)
+						continue;
+					if (stmt->type == StmtType::FUNC) {
+						auto f = static_cast<FuncStmt *>(stmt);
+						interp.env->set(f->name, Value::NoType(), false);
+					} else if (stmt->type == StmtType::LET) {
+						auto l = static_cast<LetStmt *>(stmt);
+						interp.env->set(l->name, Value::NoType(), false);
+					} else if (stmt->type == StmtType::MULTI_LET) {
+						auto ml = static_cast<MultiLetStmt *>(stmt);
+						for (const auto &name : ml->names) {
+							interp.env->set(name, Value::NoType(), false);
+						}
+					} else if (stmt->type == StmtType::CLASS) {
+						auto c = static_cast<ClassStmt *>(stmt);
+						interp.env->set(c->name, Value::NoType(), false);
+					}
+				}
 			}
 			for (Stmt *stmt : program) {
 				compiler.compileStmt(stmt);
@@ -221,10 +245,11 @@ int main(int argc, char *argv[]) {
 				else
 					throw ImportError("Unknown module '" + libName + "'", 0, 0);
 			};
-			
+
 			if (transpileToCpp) {
 				CppTranspiler transpiler(&chunk);
 				transpiler.generateConstants();
+				transpiler.prePass(program);
 				for (Stmt *stmt : program) {
 					transpiler.transpileStmt(stmt);
 				}
@@ -233,7 +258,7 @@ int main(int argc, char *argv[]) {
 				std::ofstream outFile(outPath); // Save for user to see
 				outFile << cppOut;
 				outFile.close();
-				
+
 				// Write to the permanent target file for fast compilation
 				std::string tempCppPath = std::filesystem::absolute("build/release/transpiled.cpp").string();
 				std::ofstream tempOut(tempCppPath);
@@ -242,7 +267,7 @@ int main(int argc, char *argv[]) {
 
 				std::cout << "Successfully transpiled C++ code to " << outPath << "\n";
 				std::cout << "Compiling with CMake (linking y-- core)...\n";
-				
+
 				std::string binName = p.stem().string();
 				std::string compileCmd = "cd build_cmake && ninja transpiled_bin > /dev/null 2>&1";
 				int ret = system(compileCmd.c_str());
@@ -255,7 +280,7 @@ int main(int argc, char *argv[]) {
 				}
 				return ret;
 			}
-			
+
 			if (compileOnly) {
 				if (!humanReadable) {
 					std::string outPath = p.stem().string() + ".ymc";
@@ -337,100 +362,108 @@ void printErrorContext(const string &source, int line, int col, const std::files
 	}
 }
 void runREPL() {
-   std::cout << "y-- 1.0.0 Interactive Shell\n";
-   std::cout << "Type 'exit' to quit.\n";
-   std::cout << "Type 'ts' to toggle output supression.\n";
-   std::cout << "Type 'clear' to clear the screen.\n";
-   VM vm;
-   vm.printOutput = true;
-   Interpreter interp;
-   vm.globals = interp.env;
-   vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
-   vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-      if (interp.modules.find(libName) != interp.modules.end())
-         interp.modules[libName](targetEnv, symbols);
-      else
-         throw ImportError("Unknown module '" + libName + "'", 0, 0);
-   };
-   replxx::Replxx rx;
-   rx.install_window_change_handler();
-   rx.set_highlighter_callback(ymm_highlighter);
-   std::string codeBuffer = "";
-   int openBraces = 0;
-   int openParens = 0;
-   int openBrackets = 0;
-   while (true) {
+	std::cout << "y-- 1.0.0 Interactive Shell\n";
+	std::cout << "Type 'exit' to quit.\n";
+	std::cout << "Type 'ts' to toggle output supression.\n";
+	std::cout << "Type 'clear' to clear the screen.\n";
+	VM vm;
+	vm.printOutput = true;
+	Interpreter interp;
+	vm.globals = interp.env;
+	vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
+	vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
+		if (interp.modules.find(libName) != interp.modules.end())
+			interp.modules[libName](targetEnv, symbols);
+		else
+			throw ImportError("Unknown module '" + libName + "'", 0, 0);
+	};
+	replxx::Replxx rx;
+	rx.install_window_change_handler();
+	rx.set_highlighter_callback(ymm_highlighter);
+	std::string codeBuffer = "";
+	int openBraces = 0;
+	int openParens = 0;
+	int openBrackets = 0;
+	while (true) {
 		std::string prompt = codeBuffer.empty() ? "\033[38;2;100;180;255m>>>\033[38;2;0m " : "\033[38;2;100;180;255m...\033[38;2;0m ";
-      char const* c_line = rx.input(prompt);
-      if (!c_line) break;
-      std::string line(c_line);
-      if (codeBuffer.empty()) {
-         if (line == "exit" || line == "quit") {
-            std::cout << "Exiting the interactive shell...\n";
-            break;
-         }
-         if (line == "ts"){
-            vm.printOutput = !vm.printOutput;
-            std::cout << (vm.printOutput ? "output supression disabled" : "output supression enabled") << "\n";
-            rx.history_add(line);
-            continue;
-         }
-         if (line == "clear") {
-            rx.clear_screen();
-            rx.history_add(line);
-            continue;
-         }
-         if (line.empty()) continue;
-      }
-      if (!line.empty()) {
-         rx.history_add(line);
-      }
-      codeBuffer += line + "\n";
-      for (char c : line) {
-         if (c == '{') openBraces++;
-         if (c == '}') openBraces--;
-         if (c == '(') openParens++;
-         if (c == ')') openParens--;
-         if (c == '[') openBrackets++;
-         if (c == ']') openBrackets--;
-      }
-      if (openBraces > 0 || openParens > 0 || openBrackets > 0) {
-         continue;
-      }
-      try {
-         auto tokens = tokenize(codeBuffer);
-         Parser parser(tokens);
-         parser.isReplMode = true;
-         vector<Stmt *> program;
-         ASTCleaner cleanup_guard{program};
-         while (!parser.isAtEnd()) {
-            program.push_back(parser.parseStmt());
-         }
-         Chunk chunk;
-         ByteCodeCompiler compiler(&chunk);
-         compiler.isReplMode = true;
-         for (Stmt *stmt : program) {
-            compiler.compileStmt(stmt);
-         }
-         compiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
-         compiler.emitByte(OpCode::OP_RETURN, 0, 0);
-         vm.run(chunk);
-         vm.stack.clear();
-         vm.frames.clear();
-      } catch (const LangError &e) {
-         std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
-         vm.stack.clear();
-         vm.frames.clear();
-      } catch (const std::exception &e) {
-         std::cerr << "Internal C++ Error: " << e.what() << "\n";
-         vm.stack.clear();
-         vm.frames.clear();
-      }
-      codeBuffer = "";
-      openBraces = 0;
-      openParens = 0;
-      openBrackets = 0;
-   }
+		char const *c_line = rx.input(prompt);
+		if (!c_line)
+			break;
+		std::string line(c_line);
+		if (codeBuffer.empty()) {
+			if (line == "exit" || line == "quit") {
+				std::cout << "Exiting the interactive shell...\n";
+				break;
+			}
+			if (line == "ts") {
+				vm.printOutput = !vm.printOutput;
+				std::cout << (vm.printOutput ? "output supression disabled" : "output supression enabled") << "\n";
+				rx.history_add(line);
+				continue;
+			}
+			if (line == "clear") {
+				rx.clear_screen();
+				rx.history_add(line);
+				continue;
+			}
+			if (line.empty())
+				continue;
+		}
+		if (!line.empty()) {
+			rx.history_add(line);
+		}
+		codeBuffer += line + "\n";
+		for (char c : line) {
+			if (c == '{')
+				openBraces++;
+			if (c == '}')
+				openBraces--;
+			if (c == '(')
+				openParens++;
+			if (c == ')')
+				openParens--;
+			if (c == '[')
+				openBrackets++;
+			if (c == ']')
+				openBrackets--;
+		}
+		if (openBraces > 0 || openParens > 0 || openBrackets > 0) {
+			continue;
+		}
+		try {
+			auto tokens = tokenize(codeBuffer);
+			Parser parser(tokens);
+			parser.isReplMode = true;
+			vector<Stmt *> program;
+			ASTCleaner cleanup_guard{program};
+			while (!parser.isAtEnd()) {
+				program.push_back(parser.parseStmt());
+			}
+			Chunk chunk;
+			ByteCodeCompiler compiler(&chunk);
+			compiler.isReplMode = true;
+			for (Stmt *stmt : program) {
+				compiler.compileStmt(stmt);
+			}
+			compiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+			compiler.emitByte(OpCode::OP_RETURN, 0, 0);
+			vm.run(chunk);
+			vm.stack.clear();
+			vm.frames.clear();
+		} catch (const LangError &e) {
+			std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
+			vm.stack.clear();
+			vm.frames.clear();
+		} catch (const std::exception &e) {
+			std::cerr << "Internal C++ Error: " << e.what() << "\n";
+			vm.stack.clear();
+			vm.frames.clear();
+		}
+		codeBuffer = "";
+		openBraces = 0;
+		openParens = 0;
+		openBrackets = 0;
+	}
 }
 void ymm_highlighter(std::string const &input, replxx::Replxx::colors_t &colors) {
 	try {
@@ -532,8 +565,7 @@ void ymm_highlighter(std::string const &input, replxx::Replxx::colors_t &colors)
 				const string &lex = token.value;
 				if (lex == "int" || lex == "float" || lex == "string" || lex == "bool" || lex == "list" || lex == "set" || lex == "dict" || lex == "tuple" || lex == "vector" || lex == "range") {
 					c = replxx::Replxx::Color::CYAN;
-				}
-				else if (!lex.empty() && std::isupper(lex[0])) {
+				} else if (!lex.empty() && std::isupper(lex[0])) {
 					c = replxx::Replxx::Color::YELLOW;
 				}
 				break;
