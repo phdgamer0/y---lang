@@ -2,6 +2,7 @@
 #include "ylang/pystring.h"
 #include "ylang/serialization.hpp"
 #include "ylang/assembler.hpp"
+#include "ylang/transpiler.hpp"
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -28,6 +29,7 @@ int main(int argc, char *argv[]) {
 
 	bool compileOnly = false;
 	bool humanReadable = false;
+	bool transpileToCpp = false;
 	std::vector<std::string> scriptArgs;
 
 	for (int i = 1; i < argc; i++) {
@@ -36,6 +38,8 @@ int main(int argc, char *argv[]) {
 			compileOnly = true;
 		} else if (arg == "-h" || arg == "--humanreadable") {
 			humanReadable = true;
+		} else if (arg == "-t" || arg == "--transpile") {
+			transpileToCpp = true;
 		} else {
 			scriptArgs.push_back(arg);
 		}
@@ -195,7 +199,7 @@ int main(int argc, char *argv[]) {
 			}
 			Chunk chunk;
 			ByteCodeCompiler compiler(&chunk);
-			if (compileOnly) {
+			if (compileOnly || transpileToCpp) {
 				compiler.isCompileOnly = true;
 				compiler.interp = &interp;
 			}
@@ -217,6 +221,40 @@ int main(int argc, char *argv[]) {
 				else
 					throw ImportError("Unknown module '" + libName + "'", 0, 0);
 			};
+			
+			if (transpileToCpp) {
+				CppTranspiler transpiler(&chunk);
+				transpiler.generateConstants();
+				for (Stmt *stmt : program) {
+					transpiler.transpileStmt(stmt);
+				}
+				std::string cppOut = transpiler.finalize(p.stem().string());
+				std::string outPath = p.stem().string() + ".cpp";
+				std::ofstream outFile(outPath); // Save for user to see
+				outFile << cppOut;
+				outFile.close();
+				
+				// Write to the permanent target file for fast compilation
+				std::string tempCppPath = std::filesystem::absolute("build/release/transpiled.cpp").string();
+				std::ofstream tempOut(tempCppPath);
+				tempOut << cppOut;
+				tempOut.close();
+
+				std::cout << "Successfully transpiled C++ code to " << outPath << "\n";
+				std::cout << "Compiling with CMake (linking y-- core)...\n";
+				
+				std::string binName = p.stem().string();
+				std::string compileCmd = "cd build_cmake && ninja transpiled_bin > /dev/null 2>&1";
+				int ret = system(compileCmd.c_str());
+				if (ret == 0) {
+					std::string moveCmd = "mv build/release/transpiled_bin build/release/" + binName;
+					system(moveCmd.c_str());
+					std::cout << "Successfully built native executable: " << binName << "\n";
+				} else {
+					std::cerr << "g++ compilation failed with code " << ret << "\n";
+				}
+				return ret;
+			}
 			
 			if (compileOnly) {
 				if (!humanReadable) {

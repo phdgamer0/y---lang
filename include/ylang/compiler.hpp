@@ -247,7 +247,7 @@ struct ByteCodeCompiler {
 			} else {
 				if (isCompileOnly && interp) {
 					if (!interp->env->exists(v->name) && knownGlobals.find(v->name) == knownGlobals.end()) {
-						throw NameError("Undefined variable '" + v->name + "'", v->line, v->col);
+						throw NameError("COMPILER: Undefined variable '" + v->name + "'", v->line, v->col);
 					}
 				}
 				emitIdentifier(OpCode::OP_GET_VAR, v->name, v->line, v->col);
@@ -714,6 +714,8 @@ struct ByteCodeCompiler {
 		ByteCodeCompiler subCompiler(funcChunk);
 		subCompiler.isCompileOnly = this->isCompileOnly;
 		subCompiler.interp = this->interp;
+		subCompiler.knownGlobals = this->knownGlobals;
+		subCompiler.knownGlobals[f->name] = Value::NoType();
 		subCompiler.beginScope();
 		vector<ParamSpec> actualParams;
 		if (isMethod) {
@@ -727,11 +729,12 @@ struct ByteCodeCompiler {
 		for (auto &param : actualParams) {
 			if (param.defaultValue != nullptr) {
 				param.defaultChunk = new Chunk();
-				ByteCodeCompiler subCompiler(param.defaultChunk);
-				subCompiler.isCompileOnly = this->isCompileOnly;
-				subCompiler.interp = this->interp;
-				subCompiler.compile(param.defaultValue);
-				subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
+				ByteCodeCompiler subCompilerDef(param.defaultChunk);
+				subCompilerDef.isCompileOnly = this->isCompileOnly;
+				subCompilerDef.interp = this->interp;
+				subCompilerDef.knownGlobals = this->knownGlobals;
+				subCompilerDef.compile(param.defaultValue);
+				subCompilerDef.emitByte(OpCode::OP_RETURN, f->line, f->col);
 			}
 		}
 		for (const auto &param : actualParams)

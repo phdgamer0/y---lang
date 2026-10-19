@@ -86,18 +86,21 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include "crypto.h"
+
 #ifdef _MSC_VER
 #include <intrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
+#ifdef __clang__
+#include <immintrin.h>
+#else
 #include <x86intrin.h>
+#endif
 #elif defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
 #ifndef _WIN32
 #define TRUE N_TRUE
 #define FALSE N_FALSE
-#include "ncurses.h"
 #undef TRUE
 #undef FALSE
 #endif
@@ -110,8 +113,6 @@
 #define KEY_UP RAY_UP
 #define KEY_BACKSPACE RAY_BACKSPACE
 #define KEY_END RAY_END
-#define Matrix RaylibMatrix
-#include "raylib.h"
 #undef KEY_ENTER
 #undef KEY_HOME
 #undef KEY_RIGHT
@@ -121,14 +122,14 @@
 #undef KEY_BACKSPACE
 #undef KEY_END
 #undef Matrix
-#include "qrcodegen.hpp"
-#include <nlohmann/json.hpp>
+
+
 #ifdef _WIN32
 #define IN
 #define CONST const
 #endif
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "httplib.h"
+#ifndef YLANG_NO_HEAVY_INCLUDES
+#endif
 #ifdef _WIN32
 #undef IN
 #undef CONST
@@ -146,16 +147,17 @@
 #undef LIGHTGRAY
 #undef GRAY
 #undef WHITE
+#ifndef YLANG_NO_HEAVY_INCLUDES
 #define REPLXX_STATIC
 #include <replxx.hxx>
-#include <opennn/opennn.h>
+#endif
 extern bool DEBUGGER_MODE_IS_ENABLED;
 namespace fs = std::filesystem;
 using std::string;
 using std::unordered_map;
 using std::vector;
-using json = nlohmann::json;
-using namespace qrcodegen;
+
+
 // -------------------- TOKENIZER --------------------
 enum class ValueType {
 	NOTYPE,

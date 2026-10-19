@@ -6,11 +6,7 @@
 #include "lexer.hpp"
 #include "ast.hpp"
 #include "parser.hpp"
-struct OptimizerHack : public opennn::Optimizer {
-	static void set_epochs(opennn::Optimizer *opt, long epochs) {
-		static_cast<OptimizerHack *>(opt)->maximum_epochs = (Index)epochs;
-	}
-};
+
 struct Env;
 struct HeapObject;
 struct BigIntObject;
@@ -2269,55 +2265,7 @@ static inline std::string magic_methods_to_string(Magic_Methods Magic_method) {
 		return "_";
 	}
 }
-static inline Color ValueToColor(const Value &v, int l, int c) {
-	if (v.type != ValueType::INSTANCE)
-		throw TypeError("Expected Color object", l, c);
-	auto *inst = static_cast<InstanceObject *>(v.ref.get());
-	if (inst->klass->name != "Color")
-		throw TypeError("Expected Color object", l, c);
-	return Color{(unsigned char)inst->fields["r"].asInt(),
-		(unsigned char)inst->fields["g"].asInt(),
-		(unsigned char)inst->fields["b"].asInt(),
-		(unsigned char)inst->fields["a"].asInt()};
-}
-static inline Rectangle ValueToRect(const Value &v, int l, int c) {
-	if (v.type != ValueType::INSTANCE)
-		throw TypeError("Expected Rectangle object", l, c);
-	auto *inst = static_cast<InstanceObject *>(v.ref.get());
-	if (inst->klass->name != "Rectangle")
-		throw TypeError("Expected Rectangle object", l, c);
-	return Rectangle{(float)inst->fields["x"].asInt(),
-		(float)inst->fields["y"].asInt(),
-		(float)inst->fields["width"].asInt(),
-		(float)inst->fields["height"].asInt()};
-}
-static inline ::Vector2 ValueToVector2(const Value &v, int l, int c) {
-	if (v.type != ValueType::VECTOR)
-		throw TypeError("Expected Vector object", l, c);
-	auto *vec = static_cast<VectorObject *>(v.ref.get());
-	if (vec->elements.size() < 2)
-		throw ValueError("Vector must have at least 2 elements for Vector2", l,
-			c);
-	return ::Vector2{(float)vec->elements[0].asFloat(),
-		(float)vec->elements[1].asFloat()};
-}
-static inline auto Vector2ToValue = [](::Vector2 v) -> Value {
-	std::vector<Value> elems;
-	elems.reserve(2);
-	elems.push_back(Value::Float(v.x));
-	elems.push_back(Value::Float(v.y));
-	return Value::Vector(elems);
-};
-static inline std::vector<::Vector2> ValueToVectorList(const Value &v, int l, int c) {
-	if (v.type != ValueType::LIST)
-		throw TypeError("Expected List of Vectors", l, c);
-	auto *list = static_cast<ListObject *>(v.ref.get());
-	std::vector<::Vector2> points;
-	points.reserve(list->elements.size());
-	for (const auto &el : list->elements)
-		points.push_back(ValueToVector2(el, l, c));
-	return points;
-}
+
 enum class OpCode : uint8_t {
 	// Literals & Constants
 	OP_CONSTANT,
@@ -2795,6 +2743,7 @@ struct Interpreter {
 	using ModuleLoader =
 		std::function<void(std::shared_ptr<Env>, const vector<string> &)>;
 	std::unordered_map<string, ModuleLoader> modules;
+	void resolveImport(std::string lib, std::vector<std::string> sym, std::shared_ptr<Env> targetEnv);
 	bool returning = false;
 	Value returnValue;
 	bool breaking = false;

@@ -1,8 +1,10 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.16)
 if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
 project(y_lang_new)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Add output directory for the compiled binary
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/release")
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Use flags exactly as requested + CPU optimizations
 if(MSVC)
@@ -32,74 +35,10 @@ find_package(Threads REQUIRED)
 
 # 2. Setup Include Directories and Local Libraries
 
-# Try to find OpenNN locally first, via environment variables or system paths
-find_path(OPENNN_INCLUDE_DIR opennn/opennn.h HINTS $ENV{OPENNN_ROOT} /usr/local/include /usr/include /opt/opennn)
-find_library(OPENNN_LIBRARY NAMES opennn HINTS $ENV{OPENNN_ROOT}/build/opennn $ENV{OPENNN_ROOT}/build /usr/local/lib /usr/lib /opt/opennn/build)
 
-if(OPENNN_INCLUDE_DIR AND OPENNN_LIBRARY)
-    message(STATUS "Found OpenNN at ${OPENNN_INCLUDE_DIR}")
-else()
-    message(STATUS "OpenNN not found locally, fetching via CMake (this may take a few minutes)...")
-    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-    set(OpenNN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(OpenNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(OpenNN_BUILD_BLANK OFF CACHE BOOL "" FORCE)
-    set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-    set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        opennn
-        URL https://github.com/Artelnics/opennn/archive/refs/heads/master.zip
-    )
-    FetchContent_MakeAvailable(opennn)
-    set(OPENNN_INCLUDE_DIR "${opennn_SOURCE_DIR}")
-    set(OPENNN_LIBRARY opennn)
-endif()
 
-# Try to find Eigen3 locally first
-find_path(EIGEN_INCLUDE_DIR Eigen/Dense HINTS $ENV{EIGEN_ROOT} $ENV{OPENNN_ROOT}/eigen /usr/local/include/eigen3 /usr/include/eigen3 /usr/local/include /usr/include)
-if(EIGEN_INCLUDE_DIR)
-    message(STATUS "Found Eigen at ${EIGEN_INCLUDE_DIR}")
-else()
-    message(STATUS "Eigen not found locally, fetching via CMake...")
-    FetchContent_Declare(
-        eigen
-        URL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
-    )
-    FetchContent_MakeAvailable(eigen)
-    set(EIGEN_INCLUDE_DIR "${eigen_SOURCE_DIR}")
-endif()
 
-# Nlohmann JSON
-find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp HINTS /usr/local/include /usr/include)
-if(NLOHMANN_JSON_INCLUDE_DIR)
-    message(STATUS "Found nlohmann_json locally at ${NLOHMANN_JSON_INCLUDE_DIR}")
-else()
-    message(STATUS "nlohmann_json not found locally, fetching via CMake...")
-    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        nlohmann_json
-        URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip
-    )
-    FetchContent_MakeAvailable(nlohmann_json)
-    set(NLOHMANN_JSON_INCLUDE_DIR "${nlohmann_json_SOURCE_DIR}/include")
-endif()
 
-include_directories(${OPENNN_INCLUDE_DIR} ${EIGEN_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
-
-# Raylib
-find_library(RAYLIB_LIBRARY NAMES raylib)
-if(RAYLIB_LIBRARY)
-    message(STATUS "Found Raylib locally")
-else()
-    message(STATUS "Raylib not found locally, fetching via CMake...")
-    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        raylib
-        URL https://github.com/raysan5/raylib/archive/919ad68c.zip
-    )
-    FetchContent_MakeAvailable(raylib)
-    set(RAYLIB_LIBRARY raylib)
-endif()
 
 # Replxx
 find_library(REPLXX_LIBRARY NAMES replxx)
@@ -117,19 +56,11 @@ else()
 endif()
 
 # System packages
-find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
-find_package(OpenGL REQUIRED)
 
-if(NOT WIN32)
-    find_package(Curses REQUIRED)
-    find_package(X11 REQUIRED)
-endif()
 
-# Source files
-set(SOURCES
-    src/yrun.cpp
-    src/qrcodegen.cpp
+# Core Source files (everything except main/yrun)
+set(CORE_SOURCES
     src/types.cpp
     src/errors.cpp
     src/lexer.cpp
@@ -137,43 +68,55 @@ set(SOURCES
     src/parser.cpp
     src/objects.cpp
     src/compiler.cpp
+    src/transpiler.cpp
     src/vm.cpp
-    src/hash-library/md5.cpp
-    src/hash-library/sha1.cpp
-    src/hash-library/sha256.cpp
-    src/hash-library/sha3.cpp
-    src/hash-library/keccak.cpp
 )
 
-add_executable(y_lang_new ${SOURCES})
+add_library(ylang_core SHARED ${CORE_SOURCES})
+set_target_properties(ylang_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(ylang_core PUBLIC include/ylang include src ${replxx_SOURCE_DIR}/include)
+
+add_executable(y_lang_new src/yrun.cpp)
 
 # Include directories
 target_include_directories(y_lang_new PRIVATE include/ylang include src)
 
-# Link libraries (matching -Wl,-Bstatic and -Wl,-Bdynamic semantics as much as possible)
+# Link libraries to the core library
 if(WIN32)
-    target_link_libraries(y_lang_new PRIVATE
-        ${OPENNN_LIBRARY}
-        ${RAYLIB_LIBRARY}
+    target_link_libraries(ylang_core PRIVATE
         ${REPLXX_LIBRARY}
-        OpenSSL::SSL OpenSSL::Crypto
+    )
+    target_link_libraries(ylang_core PUBLIC
         ZLIB::ZLIB zstd
-        OpenGL::GL
-        ws2_32 crypt32
     )
 else()
-    target_link_libraries(y_lang_new PRIVATE
-        ${OPENNN_LIBRARY}
-        ${RAYLIB_LIBRARY}
+    target_link_libraries(ylang_core PRIVATE
         ${REPLXX_LIBRARY}
-        OpenSSL::SSL OpenSSL::Crypto
-        ${CURSES_LIBRARIES} tinfo
+    )
+    target_link_libraries(ylang_core PUBLIC
         ZLIB::ZLIB zstd
-        OpenGL::GL
-        X11::X11 Xtst
         m
         Threads::Threads
         dl
+        X11
+        Xtst
         rt
     )
 endif()
+
+# Link the main executable to the core library
+target_link_libraries(y_lang_new PUBLIC ylang_core ${REPLXX_LIBRARY})
+
+# Add a permanent target for transpiled scripts to avoid CMake reconfiguration overhead
+add_executable(transpiled_bin "${CMAKE_SOURCE_DIR}/build/release/transpiled.cpp")
+target_include_directories(transpiled_bin PRIVATE include/ylang include src)
+target_link_libraries(transpiled_bin PUBLIC ylang_core)
+set_target_properties(transpiled_bin PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/release")
+if (NOT MSVC)
+    target_compile_options(transpiled_bin PRIVATE -fno-lto)
+    target_link_options(transpiled_bin PRIVATE -fno-lto)
+endif()
+target_compile_definitions(transpiled_bin PRIVATE YLANG_NO_HEAVY_INCLUDES)
+
+# Use precompiled headers for massive speedup during repeated transpilation!
+target_precompile_headers(transpiled_bin PRIVATE include/ylang/objects.hpp include/ylang/vm.hpp)

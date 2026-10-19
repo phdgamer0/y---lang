@@ -5,13 +5,13 @@
 #include "parser.hpp"
 #include <algorithm>
 struct VM;
-inline std::vector<VM*> activeVMs;
+inline std::vector<VM *> activeVMs;
 
 struct VM {
-	VM(const VM&) = delete;
-	VM& operator=(const VM&) = delete;
-	VM(VM&&) = delete;
-	VM& operator=(VM&&) = delete;
+	VM(const VM &) = delete;
+	VM &operator=(const VM &) = delete;
+	VM(VM &&) = delete;
+	VM &operator=(VM &&) = delete;
 	int ctleTicks = 0;
 	std::vector<Value> stack;
 	std::shared_ptr<Env> globals;
@@ -34,117 +34,145 @@ struct VM {
 		activeVMs.erase(std::remove(activeVMs.begin(), activeVMs.end(), this), activeVMs.end());
 	}
 	void markObject(HeapObject *obj) {
-		if (!obj || obj->gc_marked) return;
+		if (!obj || obj->gc_marked)
+			return;
 		obj->gc_marked = true;
 		switch (obj->type) {
-			case ValueType::LIST: {
-				for (auto &v : static_cast<ListObject*>(obj)->elements) markValue(v);
-				break;
+		case ValueType::LIST: {
+			for (auto &v : static_cast<ListObject *>(obj)->elements)
+				markValue(v);
+			break;
+		}
+		case ValueType::TUPLE: {
+			for (auto &v : static_cast<TupleObject *>(obj)->elements)
+				markValue(v);
+			break;
+		}
+		case ValueType::SET: {
+			for (auto &v : static_cast<SetObject *>(obj)->elements)
+				markValue(const_cast<Value &>(v));
+			break;
+		}
+		case ValueType::DICT: {
+			for (auto &kv : static_cast<DictObject *>(obj)->items) {
+				markValue(const_cast<Value &>(kv.first));
+				markValue(kv.second);
 			}
-			case ValueType::TUPLE: {
-				for (auto &v : static_cast<TupleObject*>(obj)->elements) markValue(v);
-				break;
+			break;
+		}
+		case ValueType::PAIRED: {
+			for (auto &kv : static_cast<PairedObject *>(obj)->pairs) {
+				markValue(kv.first);
+				markValue(kv.second);
 			}
-			case ValueType::SET: {
-				for (auto &v : static_cast<SetObject*>(obj)->elements) markValue(const_cast<Value&>(v));
-				break;
+			break;
+		}
+		case ValueType::VECTOR: {
+			for (auto &v : static_cast<VectorObject *>(obj)->elements)
+				markValue(v);
+			break;
+		}
+		case ValueType::FUNCTION: {
+			auto *f = static_cast<FunctionObject *>(obj);
+			if (f->closure)
+				markEnv(f->closure.get());
+			for (auto &kv : f->cache) {
+				for (auto &v : kv.first)
+					markValue(const_cast<Value &>(v));
+				markValue(const_cast<Value &>(kv.second));
 			}
-			case ValueType::DICT: {
-				for (auto &kv : static_cast<DictObject*>(obj)->items) {
-					markValue(const_cast<Value&>(kv.first));
-					markValue(kv.second);
-				}
-				break;
+			for (auto &kv : f->singleArgCache) {
+				markValue(const_cast<Value &>(kv.first));
+				markValue(kv.second);
 			}
-			case ValueType::PAIRED: {
-				for (auto &kv : static_cast<PairedObject*>(obj)->pairs) {
-					markValue(kv.first);
-					markValue(kv.second);
-				}
-				break;
+			break;
+		}
+		case ValueType::CLASS: {
+			auto *c = static_cast<ClassObject *>(obj);
+			for (auto &v : c->parents)
+				markValue(v);
+			for (auto &kv : c->staticFields)
+				markValue(kv.second);
+			for (auto &kv : c->methods)
+				markValue(kv.second.func);
+			break;
+		}
+		case ValueType::INSTANCE: {
+			auto *inst = static_cast<InstanceObject *>(obj);
+			if (inst->klass)
+				markObject(inst->klass);
+			for (auto &kv : inst->fields)
+				markValue(kv.second);
+			break;
+		}
+		case ValueType::SUPER: {
+			auto *s = static_cast<SuperObject *>(obj);
+			markValue(s->instance);
+			if (s->startClass)
+				markObject(s->startClass);
+			break;
+		}
+		case ValueType::OVERLOAD: {
+			auto *o = static_cast<OverloadObject *>(obj);
+			for (auto &v : o->overloads)
+				markValue(v);
+			for (auto &kv : o->signatureCache)
+				markValue(kv.second);
+			break;
+		}
+		case ValueType::REFERENCE: {
+			if (auto *lr = dynamic_cast<ListRefObject *>(obj)) {
+				if (lr->list)
+					markObject(lr->list.get());
+			} else if (auto *pr = dynamic_cast<PropRefObject *>(obj)) {
+				if (pr->inst)
+					markObject(pr->inst.get());
+			} else if (auto *vr = dynamic_cast<VarRefObject *>(obj)) {
+				if (vr->env)
+					markEnv(vr->env.get());
 			}
-			case ValueType::VECTOR: {
-				for (auto &v : static_cast<VectorObject*>(obj)->elements) markValue(v);
-				break;
-			}
-			case ValueType::FUNCTION: {
-				auto *f = static_cast<FunctionObject*>(obj);
-				if (f->closure) markEnv(f->closure.get());
-				for (auto &kv : f->cache) {
-					for (auto &v : kv.first) markValue(const_cast<Value&>(v));
-					markValue(const_cast<Value&>(kv.second));
-				}
-				for (auto &kv : f->singleArgCache) {
-					markValue(const_cast<Value&>(kv.first));
-					markValue(kv.second);
-				}
-				break;
-			}
-			case ValueType::CLASS: {
-				auto *c = static_cast<ClassObject*>(obj);
-				for (auto &v : c->parents) markValue(v);
-				for (auto &kv : c->staticFields) markValue(kv.second);
-				for (auto &kv : c->methods) markValue(kv.second.func);
-				break;
-			}
-			case ValueType::INSTANCE: {
-				auto *inst = static_cast<InstanceObject*>(obj);
-				if (inst->klass) markObject(inst->klass);
-				for (auto &kv : inst->fields) markValue(kv.second);
-				break;
-			}
-			case ValueType::SUPER: {
-				auto *s = static_cast<SuperObject*>(obj);
-				markValue(s->instance);
-				if (s->startClass) markObject(s->startClass);
-				break;
-			}
-			case ValueType::OVERLOAD: {
-				auto *o = static_cast<OverloadObject*>(obj);
-				for (auto &v : o->overloads) markValue(v);
-				for (auto &kv : o->signatureCache) markValue(kv.second);
-				break;
-			}
-			case ValueType::REFERENCE: {
-				if (auto *lr = dynamic_cast<ListRefObject*>(obj)) {
-					if (lr->list) markObject(lr->list.get());
-				} else if (auto *pr = dynamic_cast<PropRefObject*>(obj)) {
-					if (pr->inst) markObject(pr->inst.get());
-				} else if (auto *vr = dynamic_cast<VarRefObject*>(obj)) {
-					if (vr->env) markEnv(vr->env.get());
-				}
-				break;
-			}
-			default: break;
+			break;
+		}
+		default:
+			break;
 		}
 	}
 	void markValue(Value &v, int depth = 0) {
-		if (v.ref) markObject(v.ref.get());
+		if (v.ref)
+			markObject(v.ref.get());
 		if (v.type == ValueType::REFERENCE && depth < 100) {
-			Value* p = v.get_ptr_safe();
-			if (p && p != &v) markValue(*p, depth + 1);
+			Value *p = v.get_ptr_safe();
+			if (p && p != &v)
+				markValue(*p, depth + 1);
 		}
 	}
 	void markEnv(Env *env) {
-		if (!env) return;
+		if (!env)
+			return;
 		for (auto &kv : env->vars) {
 			markValue(kv.second.value);
-			if (kv.second.alias) markValue(*kv.second.alias);
+			if (kv.second.alias)
+				markValue(*kv.second.alias);
 		}
-		if (env->parent) markEnv(env->parent.get());
+		if (env->parent)
+			markEnv(env->parent.get());
 	}
 	void gc_collect() {
-		HeapObject* curr = gc_head;
+		HeapObject *curr = gc_head;
 		while (curr) {
 			curr->gc_marked = false;
 			curr = curr->gc_next;
 		}
-		for (VM* vm : activeVMs) {
-			for (auto &v : vm->stack) markValue(v);
-			if (vm->globals) markEnv(vm->globals.get());
+		for (VM *vm : activeVMs) {
+			for (auto &v : vm->stack)
+				markValue(v);
+			if (vm->globals)
+				markEnv(vm->globals.get());
 			for (auto &f : vm->frames) {
-				if (f.function) markObject(f.function);
-				for (auto &v : f.cacheKey) markValue(v);
+				if (f.function)
+					markObject(f.function);
+				for (auto &v : f.cacheKey)
+					markValue(v);
 				markValue(f.singleCacheKey);
 			}
 		}
@@ -500,131 +528,8 @@ struct VM {
 		return v;
 	}
 };
-// ------------------ CRYPTO MODULE ------------------
 
-template<typename HashAlg>
-inline std::string computeHash(const Value& v);
 
-inline std::string xorHexStrings(const std::string& a, const std::string& b) {
-    std::string res;
-    for (size_t i = 0; i < a.length() && i < b.length(); ++i) {
-        int valA = (a[i] >= '0' && a[i] <= '9') ? (a[i] - '0') : (tolower(a[i]) - 'a' + 10);
-        int valB = (b[i] >= '0' && b[i] <= '9') ? (b[i] - '0') : (tolower(b[i]) - 'a' + 10);
-        int valRes = valA ^ valB;
-        res += "0123456789abcdef"[valRes];
-    }
-    return res;
-}
-
-template<typename HashAlg>
-inline std::string computeHash(const Value& v) {
-    HashAlg alg;
-    if (v.type == ValueType::STRING) {
-        alg.add(v.asString().c_str(), v.asString().length());
-        return alg.getHash();
-    } else if (v.type == ValueType::INT) {
-        std::string s = std::to_string(v.asInt());
-        alg.add(s.c_str(), s.length());
-        return alg.getHash();
-    } else if (v.type == ValueType::FLOAT) {
-        std::string s = std::to_string(v.asFloat());
-        alg.add(s.c_str(), s.length());
-        return alg.getHash();
-    } else if (v.type == ValueType::BOOL) {
-        std::string s = v.asBool() ? "true" : "false";
-        alg.add(s.c_str(), s.length());
-        return alg.getHash();
-    } else if (v.type == ValueType::BIGINT) {
-        std::string s = valueToString(v);
-        alg.add(s.c_str(), s.length());
-        return alg.getHash();
-    } else if (v.type == ValueType::FILE) {
-        auto *f = static_cast<FileObject *>(v.ref.get());
-        std::ifstream ifs(f->path, std::ios::binary);
-        if (ifs) {
-            char buffer[4096];
-            while (ifs.read(buffer, sizeof(buffer))) {
-                alg.add(buffer, ifs.gcount());
-            }
-            if (ifs.gcount() > 0) {
-                alg.add(buffer, ifs.gcount());
-            }
-        }
-        return alg.getHash();
-    } else if (v.type == ValueType::LIST || v.type == ValueType::TUPLE || v.type == ValueType::VECTOR) {
-        // Sequential types
-        std::string res;
-        if (v.type == ValueType::LIST) {
-            auto *list = static_cast<ListObject *>(v.ref.get());
-            for (const auto& item : list->elements) {
-                std::string subHash = computeHash<HashAlg>(item);
-                alg.add(subHash.c_str(), subHash.length());
-            }
-        } else if (v.type == ValueType::TUPLE) {
-            auto *tup = static_cast<TupleObject *>(v.ref.get());
-            for (const auto& item : tup->elements) {
-                std::string subHash = computeHash<HashAlg>(item);
-                alg.add(subHash.c_str(), subHash.length());
-            }
-        } else {
-            auto *vec = static_cast<VectorObject *>(v.ref.get());
-            for (const auto& item : vec->elements) {
-                std::string subHash = computeHash<HashAlg>(item);
-                alg.add(subHash.c_str(), subHash.length());
-            }
-        }
-        return alg.getHash();
-    } else if (v.type == ValueType::DICT) {
-        // Unordered -> hash pairs individually, then XOR them
-        auto *dict = static_cast<DictObject *>(v.ref.get());
-        std::string combinedHex = "";
-        for (const auto& pair : dict->items) {
-            std::string keyHash = computeHash<HashAlg>(pair.first);
-            std::string valHash = computeHash<HashAlg>(pair.second);
-            HashAlg pairAlg;
-            pairAlg.add(keyHash.c_str(), keyHash.length());
-            pairAlg.add(valHash.c_str(), valHash.length());
-            std::string pairHex = pairAlg.getHash();
-            if (combinedHex.empty()) combinedHex = pairHex;
-            else combinedHex = xorHexStrings(combinedHex, pairHex);
-        }
-        if (combinedHex.empty()) combinedHex = alg.getHash();
-        return combinedHex;
-    } else if (v.type == ValueType::SET) {
-        // Unordered -> hash individually, then XOR
-        auto *set = static_cast<SetObject *>(v.ref.get());
-        std::string combinedHex = "";
-        for (const auto& item : set->elements) {
-            std::string itemHex = computeHash<HashAlg>(item);
-            if (combinedHex.empty()) combinedHex = itemHex;
-            else combinedHex = xorHexStrings(combinedHex, itemHex);
-        }
-        if (combinedHex.empty()) combinedHex = alg.getHash();
-        return combinedHex;
-    } else {
-        // fallback for everything else (functions, classes)
-        std::string s = valueToString(v);
-        alg.add(s.c_str(), s.length());
-        return alg.getHash();
-    }
-}
-
-class DoubleSHA256 {
-    HL_SHA256 sha;
-    std::string firstHash;
-public:
-    void add(const void* data, size_t numBytes) {
-        sha.add(data, numBytes);
-    }
-    std::string getHash() {
-        firstHash = sha.getHash();
-        HL_SHA256 sha2;
-        sha2.add(firstHash.c_str(), firstHash.length());
-        return sha2.getHash();
-    }
-};
-
-	
 inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver) {
 	while (v.type == ValueType::REFERENCE) {
 		if (!v.get_ptr_safe())
@@ -1070,7 +975,8 @@ inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 			return Value::Int(a.iVal / b.iVal);
 		} else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
 			double db = b.asFloat();
-			if (db == 0.0) throw std::runtime_error("Division by zero");
+			if (db == 0.0)
+				throw std::runtime_error("Division by zero");
 			return Value::Int((long long)std::floor(a.asFloat() / db));
 		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			if (b.asFloat() == 0.0)
@@ -1084,16 +990,19 @@ inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 		}
 	} else if (op == TokenType::MOD) {
 		if (a.type == ValueType::INT && b.type == ValueType::INT) {
-			if (b.iVal == 0) throw std::runtime_error("Modulo by zero");
+			if (b.iVal == 0)
+				throw std::runtime_error("Modulo by zero");
 			return Value::Int(a.iVal % b.iVal);
 		} else if (a.type == ValueType::FLOAT || b.type == ValueType::FLOAT) {
 			double db = b.asFloat();
-			if (db == 0.0) throw std::runtime_error("Modulo by zero");
+			if (db == 0.0)
+				throw std::runtime_error("Modulo by zero");
 			return Value::Float(std::fmod(a.asFloat(), db));
 		} else if (a.type == ValueType::BIGINT || b.type == ValueType::BIGINT) {
 			return BigIntObject::mod(a, b);
 		} else if (a.isNumber() && b.isNumber()) {
-			if (b.asFloat() == 0) throw std::runtime_error("Modulo by zero");
+			if (b.asFloat() == 0)
+				throw std::runtime_error("Modulo by zero");
 			return Value::Float(std::fmod(a.asFloat(), b.asFloat()));
 		}
 	} else if (op == TokenType::BITWISE_AND) {
@@ -1137,6 +1046,46 @@ inline Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 		} else if (a.isNumber() && b.isNumber()) {
 			return Value::Float(std::pow(a.asFloat(), b.asFloat()));
 		}
+	} else if (op == TokenType::LT) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Bool(a.iVal < b.iVal);
+		if (a.isNumber() && b.isNumber())
+			return Value::Bool(a.asFloat() < b.asFloat());
+		if (a.type == ValueType::STRING && b.type == ValueType::STRING)
+			return Value::Bool(valueToString(a) < valueToString(b));
+	} else if (op == TokenType::LTE) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Bool(a.iVal <= b.iVal);
+		if (a.isNumber() && b.isNumber())
+			return Value::Bool(a.asFloat() <= b.asFloat());
+		if (a.type == ValueType::STRING && b.type == ValueType::STRING)
+			return Value::Bool(valueToString(a) <= valueToString(b));
+	} else if (op == TokenType::GT) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Bool(a.iVal > b.iVal);
+		if (a.isNumber() && b.isNumber())
+			return Value::Bool(a.asFloat() > b.asFloat());
+		if (a.type == ValueType::STRING && b.type == ValueType::STRING)
+			return Value::Bool(valueToString(a) > valueToString(b));
+	} else if (op == TokenType::GTE) {
+		if (a.type == ValueType::INT && b.type == ValueType::INT)
+			return Value::Bool(a.iVal >= b.iVal);
+		if (a.isNumber() && b.isNumber())
+			return Value::Bool(a.asFloat() >= b.asFloat());
+		if (a.type == ValueType::STRING && b.type == ValueType::STRING)
+			return Value::Bool(valueToString(a) >= valueToString(b));
+	} else if (op == TokenType::EQ) {
+		return Value::Bool(a.looseEquals(b));
+	} else if (op == TokenType::NEQ) {
+		return Value::Bool(!a.looseEquals(b));
+	} else if (op == TokenType::STRICT_EQ) {
+		return Value::Bool(a.strictEquals(b));
+	} else if (op == TokenType::STRICT_NEQ) {
+		return Value::Bool(!a.strictEquals(b));
+	} else if (op == TokenType::AND) {
+		return Value::Bool(a.isTruthy() && b.isTruthy());
+	} else if (op == TokenType::OR) {
+		return Value::Bool(a.isTruthy() || b.isTruthy());
 	}
 	throw std::runtime_error("Cannot fold this operation at compile time.");
 }

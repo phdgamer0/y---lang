@@ -763,6 +763,9 @@
 		case StmtType::FUNC: {
 			auto f = static_cast<FuncStmt *>(s);
 			emitFunction(f);
+			if (isCompileOnly) {
+				knownGlobals[f->name] = Value::NoType();
+			}
 			emitIdentifier(OpCode::OP_DEFINE_VAR, f->name, f->line, f->col);
 			chunk->write((uint8_t)0, f->line, f->col);
 			break;

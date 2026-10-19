@@ -2,7 +2,8 @@
 
 all:
 	@mkdir -p build_cmake
-	@cd build_cmake && cmake -DCMAKE_BUILD_TYPE=Release .. && cmake --build . --parallel $$(nproc)
+	@cd build_cmake && cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON .. && cmake --build . --parallel $$(nproc)
+	@cp build_cmake/compile_commands.json . 2>/dev/null || true
 
 clean:
 	@rm -rf build_cmake
