@@ -2458,8 +2458,8 @@ Value Interpreter::nativePrint(const vector<Value> &args, int l, int c) {
 			res = runMagic(v, "__display__");
 		return res;
 	};
-	std::unordered_set<const HeapObject *> seen;
 	for (size_t i = 0; i < args.size(); i++) {
+		std::unordered_set<const HeapObject *> seen;
 		std::string output = runMagic(args[i], "__display__");
 		if (!output.empty())
 			std::cout << output;
@@ -4743,8 +4743,8 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 							if (printOutput /*v.type != ValueType::NOTYPE && v.type != ValueType::NONE*/) {
 								std::cout << "-> " << valueToString(v) << "\n";
 							}
-							DISPATCH();
 						}
+						DISPATCH();
 					}
 					OP(OP_CLASS) : {
 						{
@@ -5513,7 +5513,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 						{
 							uint8_t slot = *ip++;
 							const Value& val = stack[frame->basePointer + slot];
-							if (val.type == ValueType::NOTYPE) {
+							if (isCTLE && val.type == ValueType::NOTYPE) {
 								throw CTLEAbort();
 							}
 							if (val.type == ValueType::REFERENCE)
@@ -5623,15 +5623,23 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 						{
 							uint8_t slot = *ip++;
 							int idx = frame->basePointer + slot;
-							if (stack[idx].type == ValueType::NOTYPE) {
+							if (isCTLE && stack[idx].type == ValueType::NOTYPE) {
 								throw CTLEAbort();
 							}
-							if (stack[idx].type == ValueType::INT)
-								stack[idx].iVal++;
-							else if (stack[idx].type == ValueType::FLOAT)
-								stack[idx].fVal++;
+							Value *target = &stack[idx];
+							if (target->type == ValueType::REFERENCE) {
+								if (target->isConst)
+									throw OwnershipError("Cannot assign to const reference", line, col);
+								target = target->get_ptr_safe();
+							}
+							if (target->isConst)
+								throw ConstError("Cannot assign to const variable", line, col);
+							if (target->type == ValueType::INT)
+								target->iVal++;
+							else if (target->type == ValueType::FLOAT)
+								target->fVal++;
 							else
-								stack[idx].fVal++;
+								target->fVal++;
 						}
 						DISPATCH();
 					}
@@ -5642,7 +5650,7 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 							uint16_t offset = (ip[0] << 8) | ip[1];
 							ip += 2;
 							int idx = frame->basePointer + slot;
-							if (stack[idx].type == ValueType::NOTYPE) {
+							if (isCTLE && stack[idx].type == ValueType::NOTYPE) {
 								throw CTLEAbort();
 							}
 							if (stack[idx].type == ValueType::INT) {
@@ -6120,61 +6128,71 @@ Value Interpreter::Resolve_methods(MethodCallExpr *m) {
 						DISPATCH();
 					}
 					OP(OP_BITWISE_AND) : {
-						Value b = pop();
-						Value a = pop();
-						if (!invokeBinaryDunder(a, b, "__bit_and__", "__r_bit_and__", line, col)) {
-							try {
-								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_AND, a, b));
-							} catch (const std::runtime_error &e) {
-								throw ValueError(e.what(), line, col);
+						{
+							Value b = pop();
+							Value a = pop();
+							if (!invokeBinaryDunder(a, b, "__bit_and__", "__r_bit_and__", line, col)) {
+								try {
+									stack.push_back(EvaluateConstBinary(TokenType::BITWISE_AND, a, b));
+								} catch (const std::runtime_error &e) {
+									throw ValueError(e.what(), line, col);
+								}
 							}
 						}
 						DISPATCH();
 					}
 					OP(OP_BITWISE_OR) : {
-						Value b = pop();
-						Value a = pop();
-						if (!invokeBinaryDunder(a, b, "__bit_or__", "__r_bit_or__", line, col)) {
-							try {
-								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_OR, a, b));
-							} catch (const std::runtime_error &e) {
-								throw ValueError(e.what(), line, col);
+						{
+							Value b = pop();
+							Value a = pop();
+							if (!invokeBinaryDunder(a, b, "__bit_or__", "__r_bit_or__", line, col)) {
+								try {
+									stack.push_back(EvaluateConstBinary(TokenType::BITWISE_OR, a, b));
+								} catch (const std::runtime_error &e) {
+									throw ValueError(e.what(), line, col);
+								}
 							}
 						}
 						DISPATCH();
 					}
 					OP(OP_BITWISE_XOR) : {
-						Value b = pop();
-						Value a = pop();
-						if (!invokeBinaryDunder(a, b, "__bit_xor__", "__r_bit_xor__", line, col)) {
-							try {
-								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_XOR, a, b));
-							} catch (const std::runtime_error &e) {
-								throw ValueError(e.what(), line, col);
+						{
+							Value b = pop();
+							Value a = pop();
+							if (!invokeBinaryDunder(a, b, "__bit_xor__", "__r_bit_xor__", line, col)) {
+								try {
+									stack.push_back(EvaluateConstBinary(TokenType::BITWISE_XOR, a, b));
+								} catch (const std::runtime_error &e) {
+									throw ValueError(e.what(), line, col);
+								}
 							}
 						}
 						DISPATCH();
 					}
 					OP(OP_BITWISE_SHL) : {
-						Value b = pop();
-						Value a = pop();
-						if (!invokeBinaryDunder(a, b, "__bit_shl__", "__r_bit_shl__", line, col)) {
-							try {
-								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_SHL, a, b));
-							} catch (const std::runtime_error &e) {
-								throw ValueError(e.what(), line, col);
+						{
+							Value b = pop();
+							Value a = pop();
+							if (!invokeBinaryDunder(a, b, "__bit_shl__", "__r_bit_shl__", line, col)) {
+								try {
+									stack.push_back(EvaluateConstBinary(TokenType::BITWISE_SHL, a, b));
+								} catch (const std::runtime_error &e) {
+									throw ValueError(e.what(), line, col);
+								}
 							}
 						}
 						DISPATCH();
 					}
 					OP(OP_BITWISE_SHR) : {
-						Value b = pop();
-						Value a = pop();
-						if (!invokeBinaryDunder(a, b, "__bit_shr__", "__r_bit_shr__", line, col)) {
-							try {
-								stack.push_back(EvaluateConstBinary(TokenType::BITWISE_SHR, a, b));
-							} catch (const std::runtime_error &e) {
-								throw ValueError(e.what(), line, col);
+						{
+							Value b = pop();
+							Value a = pop();
+							if (!invokeBinaryDunder(a, b, "__bit_shr__", "__r_bit_shr__", line, col)) {
+								try {
+									stack.push_back(EvaluateConstBinary(TokenType::BITWISE_SHR, a, b));
+								} catch (const std::runtime_error &e) {
+									throw ValueError(e.what(), line, col);
+								}
 							}
 						}
 						DISPATCH();
@@ -7934,10 +7952,12 @@ OP(OP_INVOKE) : {
 										cls, [](HeapObject *) {});
 									stack.push_back(objVal);
 									callValue(delMethod->func, 2, line, col);
-									DISPATCH();
+								} else {
+									stack.push_back(Value::None());
 								}
+							} else {
+								stack.push_back(Value::None());
 							}
-							stack.push_back(Value::None());
 						}
 						DISPATCH();
 					}
@@ -7977,6 +7997,9 @@ OP(OP_INVOKE) : {
 									}
 									if (func->returnType != ValueType::NOTYPE &&
 										 result.type != func->returnType) {
+										if (result.type == ValueType::REFERENCE && result.get_ptr_safe() && result.get_ptr_safe()->type == func->returnType) {
+											// Target matches returnType, keep reference!
+										} else {
 										bool converted = false;
 										if (func->returnType == ValueType::FLOAT &&
 											 result.type == ValueType::INT) {
@@ -8072,6 +8095,7 @@ OP(OP_INVOKE) : {
 													std::to_string((int)func->returnType) +
 													" Got " + std::to_string((int)result.type),
 												line, col);
+										}
 										}
 									}
 									if (func->returnsConst)

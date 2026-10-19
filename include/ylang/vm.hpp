@@ -13,6 +13,7 @@ struct VM {
 	VM(VM &&) = delete;
 	VM &operator=(VM &&) = delete;
 	int ctleTicks = 0;
+	bool isCTLE = false;
 	std::vector<Value> stack;
 	std::shared_ptr<Env> globals;
 	std::function<Value(MethodCallExpr *)> methodResolver;
@@ -450,6 +451,10 @@ struct VM {
 					}
 				}
 			}
+			if (p.isConst)
+				argVal.isConst = true;
+			if (p.type != ValueType::NOTYPE)
+				argVal.isLocked = true;
 			finalArgs[i] = argVal;
 		}
 		if (function->isCached) {
@@ -528,7 +533,6 @@ struct VM {
 		return v;
 	}
 };
-
 
 inline std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int l, int c, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver) {
 	while (v.type == ValueType::REFERENCE) {

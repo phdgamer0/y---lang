@@ -13,20 +13,28 @@ struct ByteCodeCompiler {
 	vector<Local> locals;
 	int scopeDepth = 0;
 	bool isReplMode = false;
-	Interpreter* interp = nullptr;
+	Interpreter *interp = nullptr;
 	bool isCompileOnly = false;
+	bool returnsRef = false;
+	bool returnsConst = false;
 	std::map<string, Value> knownGlobals;
 
 	ValueType tryExtractType(Expr *e) {
-		if (!e) return ValueType::NOTYPE;
-		if (e->type == ExprType::NUMBER) return static_cast<NumberExpr*>(e)->isFloat ? ValueType::FLOAT : ValueType::INT;
-		if (e->type == ExprType::STRING) return ValueType::STRING;
-		if (e->type == ExprType::BOOL) return ValueType::BOOL;
+		if (!e)
+			return ValueType::NOTYPE;
+		if (e->type == ExprType::NUMBER)
+			return static_cast<NumberExpr *>(e)->isFloat ? ValueType::FLOAT : ValueType::INT;
+		if (e->type == ExprType::STRING)
+			return ValueType::STRING;
+		if (e->type == ExprType::BOOL)
+			return ValueType::BOOL;
 		if (e->type == ExprType::VAR) {
 			auto v = static_cast<VarExpr *>(e);
 			int arg = resolveLocal(v->name);
-			if (arg != -1 && locals[arg].hasKnownType) return locals[arg].knownType;
-			else if (knownGlobals.count(v->name)) return knownGlobals[v->name].type;
+			if (arg != -1 && locals[arg].hasKnownType)
+				return locals[arg].knownType;
+			else if (knownGlobals.count(v->name))
+				return knownGlobals[v->name].type;
 		}
 		return ValueType::NOTYPE;
 	}
@@ -157,6 +165,8 @@ struct ByteCodeCompiler {
 					defCompiler.emitByte(OpCode::OP_RETURN, lam->line, 0);
 				}
 			}
+			subCompiler.returnsRef = lam->returnsRef;
+			subCompiler.returnsConst = lam->returnsConst;
 			for (const auto &param : lam->params)
 				subCompiler.addLocal(param.name);
 			for (auto *stmt : lam->body)
@@ -166,7 +176,7 @@ struct ByteCodeCompiler {
 			auto *funcObj = new FunctionObject(
 				lam->params, lam->returnType, lam->defaultRetArgs,
 				lam->returnsConst, lam->body, nullptr, lam->isCached,
-				funcChunk);
+				funcChunk, lam->returnsRef);
 			for (auto *retArg : lam->defaultRetArgs) {
 				Chunk *retChunk = new Chunk();
 				ByteCodeCompiler retCompiler(retChunk);
@@ -317,7 +327,8 @@ struct ByteCodeCompiler {
 				break;
 			}
 			auto c = static_cast<CallExpr *>(e);
-			if (isCTLE) throw CTLEAbort(); // No function calls allowed in compile-time loops yet!
+			if (isCTLE)
+				throw CTLEAbort(); // No function calls allowed in compile-time loops yet!
 			if (c->name == "super") {
 				if (!c->args.empty())
 					throw ArgumentError("super() takes no arguments", c->line,
@@ -438,7 +449,7 @@ struct ByteCodeCompiler {
 		}
 		case ExprType::INC_DEC: {
 			auto incdec = static_cast<IncDecExpr *>(e);
-			if (auto v = dynamic_cast<VarExpr*>(incdec->expr)) {
+			if (auto v = dynamic_cast<VarExpr *>(incdec->expr)) {
 				int arg = resolveLocal(v->name);
 				if (arg != -1) {
 					emitByte(OpCode::OP_GET_LOCAL, e->line, e->col);
@@ -446,7 +457,8 @@ struct ByteCodeCompiler {
 				} else {
 					emitIdentifier(OpCode::OP_GET_VAR, v->name, e->line, e->col);
 				}
-				if (!incdec->isPrefix) emitByte(OpCode::OP_DUP, e->line, e->col);
+				if (!incdec->isPrefix)
+					emitByte(OpCode::OP_DUP, e->line, e->col);
 				emitConstant(Value::Int(1), e->line, e->col);
 				emitByte(incdec->isIncrement ? OpCode::OP_ADD : OpCode::OP_SUB, e->line, e->col);
 				if (arg != -1) {
@@ -455,13 +467,14 @@ struct ByteCodeCompiler {
 				} else {
 					emitIdentifier(OpCode::OP_SET_VAR, v->name, e->line, e->col);
 				}
-				if (!incdec->isPrefix) emitByte(OpCode::OP_POP, e->line, e->col);
-			} else if (auto get = dynamic_cast<GetExpr*>(incdec->expr)) {
+				if (!incdec->isPrefix)
+					emitByte(OpCode::OP_POP, e->line, e->col);
+			} else if (auto get = dynamic_cast<GetExpr *>(incdec->expr)) {
 				compile(get->object);
 				emitIdentifier(OpCode::OP_INC_PROPERTY, get->name, e->line, e->col);
 				chunk->write(incdec->isIncrement ? 1 : 0, e->line, e->col);
 				chunk->write(incdec->isPrefix ? 1 : 0, e->line, e->col);
-			} else if (auto idx = dynamic_cast<IndexExpr*>(incdec->expr)) {
+			} else if (auto idx = dynamic_cast<IndexExpr *>(incdec->expr)) {
 				compile(idx->base);
 				compile(idx->index);
 				emitByte(OpCode::OP_INC_INDEX, e->line, e->col);
@@ -716,6 +729,8 @@ struct ByteCodeCompiler {
 		subCompiler.interp = this->interp;
 		subCompiler.knownGlobals = this->knownGlobals;
 		subCompiler.knownGlobals[f->name] = Value::NoType();
+		subCompiler.returnsRef = f->returnsRef;
+		subCompiler.returnsConst = f->returnsConst;
 		subCompiler.beginScope();
 		vector<ParamSpec> actualParams;
 		if (isMethod) {
@@ -747,7 +762,7 @@ struct ByteCodeCompiler {
 		subCompiler.emitByte(OpCode::OP_RETURN, f->line, f->col);
 		auto *funcObj = new FunctionObject(
 			actualParams, f->returnType, f->defaultRetArgs, f->returnsConst,
-			f->body, nullptr, f->isCached, funcChunk);
+			f->body, nullptr, f->isCached, funcChunk, f->returnsRef);
 		for (auto *retArg : f->defaultRetArgs) {
 			Chunk *retChunk = new Chunk();
 			ByteCodeCompiler subCompiler(retChunk);
@@ -766,7 +781,8 @@ struct ByteCodeCompiler {
 #endif
 		funcVal.ref = std::shared_ptr<HeapObject>(funcObj);
 		emitConstant(funcVal, f->line, f->col);
-		if (!isMethod) knownGlobals[f->name] = funcVal;
+		if (!isMethod)
+			knownGlobals[f->name] = funcVal;
 	}
 	bool tryExtractConstant(Expr *e, Value &outVal);
 };
@@ -798,9 +814,12 @@ struct ByteCodeCompiler {
 
 // 3. Define the jump mechanism!
 #ifdef USE_COMPUTED_GOTOS
-#define DISPATCH()                                                        \
-	do {                                                                  \
-		if (gc_alloc_count > 50000) { gc_collect(); gc_alloc_count = 0; } \
+#define DISPATCH()                                                      \
+	do {                                                                 \
+		if (gc_alloc_count > 50000) {                                     \
+			gc_collect();                                                  \
+			gc_alloc_count = 0;                                            \
+		}                                                                 \
 		RUN_DEBUGGER();                                                   \
 		currentChunk = frame->function ? frame->function->chunk : &chunk; \
 		instruction = static_cast<OpCode>(*ip++);                         \
