@@ -66,6 +66,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <climits>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>

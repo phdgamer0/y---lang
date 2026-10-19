@@ -8,6 +8,7 @@ class Parser {
 	bool allowGT = true;
 	int classDepth = 0;
 	int scopeDepth = 0;
+
  public:
 	bool isReplMode = false;
 	void synchronize() {
@@ -372,13 +373,17 @@ class Parser {
 			if (peek().type != TokenType::RPAREN) {
 				do {
 					CopyMode mode = CopyMode::SHALLOW;
-					if (match(TokenType::AT))
-						mode = CopyMode::REF;
-					else if (match(TokenType::DOLLAR))
-						mode = CopyMode::DEEP;
 					bool isConst = false;
-					if (match(TokenType::CONST))
-						isConst = true;
+					while (true) {
+						if (match(TokenType::AT))
+							mode = CopyMode::REF;
+						else if (match(TokenType::DOLLAR))
+							mode = CopyMode::DEEP;
+						else if (match(TokenType::CONST))
+							isConst = true;
+						else
+							break;
+					}
 					bool isVariadic = false;
 					bool isKwargs = false;
 					if (match(TokenType::POW)) {
@@ -476,10 +481,17 @@ class Parser {
 			consume(TokenType::RPAREN, "Expected ')' after parameters");
 			ValueType retType = ValueType::NOTYPE;
 			bool retConst = false;
+			bool retRef = false;
 			vector<Expr *> retArgs;
 			if (match(TokenType::ARROW)) {
-				if (match(TokenType::CONST))
-					retConst = true;
+				while (true) {
+					if (match(TokenType::CONST))
+						retConst = true;
+					else if (match(TokenType::AT))
+						retRef = true;
+					else
+						break;
+				}
 				string t;
 				if (match(TokenType::FUNCTION))
 					t = "function";
@@ -541,7 +553,7 @@ class Parser {
 			consume(TokenType::COLON, "Expected ':' before lambda body");
 			vector<Stmt *> body = parseBlock();
 			return setPos(
-				new LambdaExpr(params, retType, retArgs, retConst, body, isCached),
+				new LambdaExpr(params, retType, retArgs, retConst, body, isCached, retRef),
 				startTok);
 		}
 		if (match(TokenType::OMIT)) {
@@ -965,6 +977,7 @@ class Parser {
 			vector<bool> consts;
 			vector<AccessLevel> accesses;
 			vector<Expr *> values;
+			bool isLocked = false;
 			do {
 				bool isConst = false;
 				AccessLevel access = AccessLevel::PUBLIC;
@@ -994,11 +1007,23 @@ class Parser {
 				} else if (classDepth == 0 && (name == "self" || name == "obj")) {
 					throw SyntaxError("'" + name + "' is a reserved keyword inside classes.", t.line, t.col);
 				}
+				if (peek().type == TokenType::COLON && pos + 1 < tokens.size() && tokens[pos + 1].type != TokenType::ASSIGN) {
+					match(TokenType::COLON);
+					if (peek().type == TokenType::IDENTIFIER || peek().type == TokenType::FUNCTION || peek().type == TokenType::LAMBDA) {
+						advance();
+						if (match(TokenType::LPAREN)) {
+							if (peek().type != TokenType::RPAREN) {
+								parseExpr();
+							}
+							consume(TokenType::RPAREN, "Expected ')' after type definition");
+						}
+						isLocked = true;
+					}
+				}
 				names.push_back(name);
 				consts.push_back(isConst);
 				accesses.push_back(access);
 			} while (match(TokenType::COMMA));
-			bool isLocked = false;
 			bool hasAssign = false;
 			if (match(TokenType::COLON_EQ)) {
 				isLocked = true;
@@ -1144,13 +1169,17 @@ class Parser {
 			if (peek().type != TokenType::RPAREN) {
 				do {
 					CopyMode mode = CopyMode::SHALLOW;
-					if (match(TokenType::AT))
-						mode = CopyMode::REF;
-					else if (match(TokenType::DOLLAR))
-						mode = CopyMode::DEEP;
 					bool isConst = false;
-					if (match(TokenType::CONST))
-						isConst = true;
+					while (true) {
+						if (match(TokenType::AT))
+							mode = CopyMode::REF;
+						else if (match(TokenType::DOLLAR))
+							mode = CopyMode::DEEP;
+						else if (match(TokenType::CONST))
+							isConst = true;
+						else
+							break;
+					}
 					bool isVariadic = false;
 					bool isKwargs = false;
 					if (match(TokenType::POW)) {
@@ -1241,10 +1270,17 @@ class Parser {
 			}
 			consume(TokenType::RPAREN, "Expected ')' after function parameters");
 			bool retConst = false;
+			bool retRef = false;
 			vector<Expr *> retArgs;
 			if (match(TokenType::ARROW)) {
-				if (match(TokenType::CONST))
-					retConst = true;
+				while (true) {
+					if (match(TokenType::CONST))
+						retConst = true;
+					else if (match(TokenType::AT))
+						retRef = true;
+					else
+						break;
+				}
 				string t;
 				if (match(TokenType::FUNCTION))
 					t = "function";
@@ -1304,7 +1340,7 @@ class Parser {
 			consume(TokenType::COLON, "Expected ':' after function signature");
 			vector<Stmt *> body = parseBlock();
 			return setPos(new FuncStmt(fname, params, retArgs, body, retType,
-								  retConst, isCached),
+								  retConst, isCached, retRef),
 				defTok);
 		}
 		if (match(TokenType::WHILE)) {
@@ -1541,7 +1577,8 @@ class Parser {
 			 match(TokenType::BITWISE_SHR_EQ)) {
 			Token op = tokens[pos - 1];
 			Expr *rhs = parseExpr();
-			if (op.type == TokenType::COLON_EQ) op.type = TokenType::ASSIGN;
+			if (op.type == TokenType::COLON_EQ)
+				op.type = TokenType::ASSIGN;
 			return setPos(new AssignStmt(e, op.type, rhs), op);
 		}
 		if (match(TokenType::INCREMENT)) {

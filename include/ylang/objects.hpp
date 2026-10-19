@@ -1,11 +1,11 @@
 #pragma once
 #ifndef YLANG_OBJECTS_HPP
 #define YLANG_OBJECTS_HPP
-#include "types.hpp"
+#include "ast.hpp"
 #include "errors.hpp"
 #include "lexer.hpp"
-#include "ast.hpp"
 #include "parser.hpp"
+#include "types.hpp"
 
 struct Env;
 struct HeapObject;
@@ -44,7 +44,7 @@ struct Value {
 	static Value BigInt(long long n);
 	static Value BigInt(std::vector<uint32_t> chunks, bool isNegative);
 	static Value BigInt(std::shared_ptr<BigIntObject> obj);
-	static Value BigInt(const std::string& str);
+	static Value BigInt(const std::string &str);
 	static Value Float(double v, bool locked = false, bool isConst = false);
 	static Value Bool(bool v, bool locked = false, bool isConst = false);
 	static Value String(const string &v, bool locked = false,
@@ -82,9 +82,9 @@ struct Value {
 	const string &asString() const;
 	bool sameType(const Value &other) const { return type == other.type; }
 
-	Value* get_ptr_safe() const;
+	Value *get_ptr_safe() const;
 };
-inline HeapObject* gc_head = nullptr;
+inline HeapObject *gc_head = nullptr;
 inline int gc_alloc_count = 0;
 inline int gc_delete_count = 0;
 
@@ -93,8 +93,8 @@ struct HeapObject {
 	ValueType type;
 	bool typeLocked = false;
 	bool gc_marked = false;
-	HeapObject* gc_next = nullptr;
-	HeapObject* gc_prev = nullptr;
+	HeapObject *gc_next = nullptr;
+	HeapObject *gc_prev = nullptr;
 
 	HeapObject(ValueType t, bool locked = false) : type(t), typeLocked(locked) {
 		if (gc_head) {
@@ -105,7 +105,7 @@ struct HeapObject {
 		gc_alloc_count++;
 	}
 
-	HeapObject(const HeapObject& other) : name(other.name), type(other.type), typeLocked(other.typeLocked) {
+	HeapObject(const HeapObject &other) : name(other.name), type(other.type), typeLocked(other.typeLocked) {
 		if (gc_head) {
 			gc_head->gc_prev = this;
 			this->gc_next = gc_head;
@@ -114,7 +114,7 @@ struct HeapObject {
 		gc_alloc_count++;
 	}
 
-	HeapObject(HeapObject&& other) noexcept : name(std::move(other.name)), type(other.type), typeLocked(other.typeLocked) {
+	HeapObject(HeapObject &&other) noexcept : name(std::move(other.name)), type(other.type), typeLocked(other.typeLocked) {
 		if (gc_head) {
 			gc_head->gc_prev = this;
 			this->gc_next = gc_head;
@@ -123,7 +123,7 @@ struct HeapObject {
 		gc_alloc_count++;
 	}
 
-	HeapObject& operator=(const HeapObject& other) {
+	HeapObject &operator=(const HeapObject &other) {
 		if (this != &other) {
 			name = other.name;
 			type = other.type;
@@ -132,7 +132,7 @@ struct HeapObject {
 		return *this;
 	}
 
-	HeapObject& operator=(HeapObject&& other) noexcept {
+	HeapObject &operator=(HeapObject &&other) noexcept {
 		if (this != &other) {
 			name = std::move(other.name);
 			type = other.type;
@@ -142,9 +142,12 @@ struct HeapObject {
 	}
 
 	virtual ~HeapObject() {
-		if (gc_prev) gc_prev->gc_next = gc_next;
-		if (gc_next) gc_next->gc_prev = gc_prev;
-		if (gc_head == this) gc_head = gc_next;
+		if (gc_prev)
+			gc_prev->gc_next = gc_next;
+		if (gc_next)
+			gc_next->gc_prev = gc_prev;
+		if (gc_head == this)
+			gc_head = gc_next;
 		gc_delete_count++;
 	}
 	virtual void breakCycles() {}
@@ -367,10 +370,11 @@ struct BigIntObject : HeapObject {
 			}
 		}
 	}
-	static std::vector<uint32_t> karatsubaMul(const std::vector<uint32_t>& A, const std::vector<uint32_t>& B) {
+	static std::vector<uint32_t> karatsubaMul(const std::vector<uint32_t> &A, const std::vector<uint32_t> &B) {
 		if (A.size() < 32 || B.size() < 32) {
 			size_t n = A.size(), m = B.size();
-			if (n == 0 || m == 0) return {0};
+			if (n == 0 || m == 0)
+				return {0};
 			std::vector<uint32_t> res(n + m, 0);
 			for (size_t i = 0; i < n; i++) {
 				uint64_t carry = 0;
@@ -381,49 +385,54 @@ struct BigIntObject : HeapObject {
 				}
 				res[i + m] += (uint32_t)carry;
 			}
-			while(res.size() > 1 && res.back() == 0) res.pop_back();
+			while (res.size() > 1 && res.back() == 0)
+				res.pop_back();
 			return res;
 		}
-		
+
 		size_t m = std::max(A.size(), B.size());
 		size_t k = m / 2;
-		
+
 		std::vector<uint32_t> A_0(A.begin(), A.begin() + std::min(A.size(), k));
 		std::vector<uint32_t> A_1(A.begin() + std::min(A.size(), k), A.end());
-		if (A_1.empty()) A_1.push_back(0);
-		if (A_0.empty()) A_0.push_back(0);
-		
+		if (A_1.empty())
+			A_1.push_back(0);
+		if (A_0.empty())
+			A_0.push_back(0);
+
 		std::vector<uint32_t> B_0(B.begin(), B.begin() + std::min(B.size(), k));
 		std::vector<uint32_t> B_1(B.begin() + std::min(B.size(), k), B.end());
-		if (B_1.empty()) B_1.push_back(0);
-		if (B_0.empty()) B_0.push_back(0);
-		
+		if (B_1.empty())
+			B_1.push_back(0);
+		if (B_0.empty())
+			B_0.push_back(0);
+
 		std::vector<uint32_t> Z_2 = karatsubaMul(A_1, B_1);
 		std::vector<uint32_t> Z_0 = karatsubaMul(A_0, B_0);
-		
+
 		BigIntObject a0(A_0, false), a1(A_1, false);
 		BigIntObject b0(B_0, false), b1(B_1, false);
 		BigIntObject sumA = a0.absAdd(a1);
 		BigIntObject sumB = b0.absAdd(b1);
-		
+
 		std::vector<uint32_t> Z_1 = karatsubaMul(sumA.chunks, sumB.chunks);
-		
+
 		BigIntObject z1(Z_1, false), z2(Z_2, false), z0(Z_0, false);
 		z1 = z1.absSub(z2).absSub(z0);
-		
+
 		BigIntObject res(Z_0, false);
 		BigIntObject z1_shifted = z1;
 		if (!(z1_shifted.chunks.size() == 1 && z1_shifted.chunks[0] == 0)) {
 			z1_shifted.chunks.insert(z1_shifted.chunks.begin(), k, 0);
 			res = res.absAdd(z1_shifted);
 		}
-		
+
 		BigIntObject z2_shifted = z2;
 		if (!(z2_shifted.chunks.size() == 1 && z2_shifted.chunks[0] == 0)) {
 			z2_shifted.chunks.insert(z2_shifted.chunks.begin(), 2 * k, 0);
 			res = res.absAdd(z2_shifted);
 		}
-		
+
 		return res.chunks;
 	}
 
@@ -529,8 +538,10 @@ struct BigIntObject : HeapObject {
 		return result;
 	}
 	BigIntObject operator<<(long long shift) const {
-		if (shift < 0) return operator>>(-shift);
-		if (shift == 0 || chunks.empty()) return *this;
+		if (shift < 0)
+			return operator>>(-shift);
+		if (shift == 0 || chunks.empty())
+			return *this;
 		BigIntObject result(0);
 		size_t chunkShift = shift / 32;
 		size_t bitShift = shift % 32;
@@ -546,8 +557,10 @@ struct BigIntObject : HeapObject {
 		return result;
 	}
 	BigIntObject operator>>(long long shift) const {
-		if (shift < 0) return operator<<(-shift);
-		if (shift == 0 || chunks.empty()) return *this;
+		if (shift < 0)
+			return operator<<(-shift);
+		if (shift == 0 || chunks.empty())
+			return *this;
 		BigIntObject result(0);
 		size_t chunkShift = shift / 32;
 		size_t bitShift = shift % 32;
@@ -768,14 +781,14 @@ struct InstanceObject : HeapObject {
 };
 struct RefObject : HeapObject {
 	RefObject() : HeapObject(ValueType::REFERENCE) {}
-	virtual Value* get_ptr() = 0;
+	virtual Value *get_ptr() = 0;
 };
 struct ListRefObject : RefObject {
 	std::shared_ptr<ListObject> list;
 	int index;
 	ListRefObject(std::shared_ptr<ListObject> l, int i)
 		 : list(l), index(i) {}
-	Value* get_ptr() override { return &list->elements[index]; }
+	Value *get_ptr() override { return &list->elements[index]; }
 	void breakCycles() override { list.reset(); }
 };
 struct VarRefObject : RefObject {
@@ -783,7 +796,7 @@ struct VarRefObject : RefObject {
 	std::string name;
 	VarRefObject(std::shared_ptr<Env> e, const std::string &n)
 		 : env(e), name(n) {}
-	Value* get_ptr() override;
+	Value *get_ptr() override;
 	void breakCycles() override { env.reset(); }
 };
 struct PropRefObject : RefObject {
@@ -791,7 +804,7 @@ struct PropRefObject : RefObject {
 	std::string name;
 	PropRefObject(std::shared_ptr<InstanceObject> i, const std::string &n)
 		 : inst(i), name(n) {}
-	Value* get_ptr() override { return &inst->fields[name]; }
+	Value *get_ptr() override { return &inst->fields[name]; }
 	void breakCycles() override { inst.reset(); }
 };
 struct DictRefObject : RefObject {
@@ -799,7 +812,7 @@ struct DictRefObject : RefObject {
 	Value key;
 	DictRefObject(std::shared_ptr<DictObject> d, const Value &k)
 		 : dict(d), key(k) {}
-	Value* get_ptr() override { return &dict->items[key]; }
+	Value *get_ptr() override { return &dict->items[key]; }
 	void breakCycles() override { dict.reset(); }
 };
 struct SuperObject : HeapObject {
@@ -849,7 +862,7 @@ inline Value Value::BigInt(std::shared_ptr<BigIntObject> obj) {
 	v.ref = obj;
 	return v;
 }
-inline Value Value::BigInt(const std::string& str) {
+inline Value Value::BigInt(const std::string &str) {
 	Value v;
 	v.type = ValueType::BIGINT;
 	std::vector<uint32_t> chunks;
@@ -861,13 +874,14 @@ inline Value Value::BigInt(const std::string& str) {
 	} else if (str.length() > 0 && str[0] == '+') {
 		start = 1;
 	}
-	
+
 	// Parse base 10
 	chunks.push_back(0);
 	for (size_t i = start; i < str.length(); i++) {
-		if (str[i] < '0' || str[i] > '9') continue;
+		if (str[i] < '0' || str[i] > '9')
+			continue;
 		uint32_t digit = str[i] - '0';
-		
+
 		// Multiply chunks by 10 and add digit
 		uint64_t carry = digit;
 		for (size_t j = 0; j < chunks.size(); j++) {
@@ -1222,16 +1236,20 @@ inline bool Value::strictEquals(const Value &other) const {
 		return true;
 	}
 	case ValueType::INSTANCE: {
-      auto *inst1 = static_cast<InstanceObject *>(ref.get());
-      auto *inst2 = static_cast<InstanceObject *>(other.ref.get());
-      if (inst1 == inst2) return true;
-      if (inst1->klass->name != inst2->klass->name) return false;
-      if (inst1->fields.size() != inst2->fields.size()) return false;
-      for (const auto &[k, v] : inst1->fields) {
-         if (inst2->fields.find(k) == inst2->fields.end() || !v.strictEquals(inst2->fields.at(k))) return false;
-      }
-      return true;
-   }
+		auto *inst1 = static_cast<InstanceObject *>(ref.get());
+		auto *inst2 = static_cast<InstanceObject *>(other.ref.get());
+		if (inst1 == inst2)
+			return true;
+		if (inst1->klass->name != inst2->klass->name)
+			return false;
+		if (inst1->fields.size() != inst2->fields.size())
+			return false;
+		for (const auto &[k, v] : inst1->fields) {
+			if (inst2->fields.find(k) == inst2->fields.end() || !v.strictEquals(inst2->fields.at(k)))
+				return false;
+		}
+		return true;
+	}
 	}
 	return false;
 }
@@ -1414,6 +1432,27 @@ struct Env {
 		auto it = vars.find(n);
 		if (it != vars.end()) {
 			Var &existing = it->second;
+			if (v.type == ValueType::REFERENCE && v.get_ptr_safe()) {
+				existing.alias = v.get_ptr_safe();
+				existing.value = v;
+				existing.isLocked = locked;
+				existing.isConst = isConstVar;
+				return;
+			}
+			if (existing.alias) {
+				if (existing.isConst) {
+					throw RuntimeError("Cannot reassign a constant variable '" + n + "'", 0, 0);
+				}
+				if (existing.isLocked && existing.alias->type != v.type) {
+					throw RuntimeError("Type mismatch: variable '" + n + "' is type-locked.", 0, 0);
+				}
+				bool wasConst = existing.alias->isConst;
+				bool wasLocked = existing.alias->isLocked;
+				*existing.alias = v;
+				existing.alias->isConst = wasConst;
+				existing.alias->isLocked = wasLocked;
+				return;
+			}
 			if (existing.isLocked && existing.value.type != v.type) {
 				throw RuntimeError(
 					"Type mismatch: variable '" + n + "' is type-locked.", 0, 0);
@@ -1435,24 +1474,62 @@ struct Env {
 		v.isConst = isConstVar;
 		if (locked && v.ref)
 			v.ref->typeLocked = true;
-		vars[n] = Var{v, nullptr, isConstVar, locked};
+		Value *target = (v.type == ValueType::REFERENCE && v.get_ptr_safe()) ? v.get_ptr_safe() : nullptr;
+		vars[n] = Var{v, target, isConstVar, locked};
 	}
 	Value get(const string &n) {
 		Var &var = lookup(n);
-		Value val = var.alias ? *var.alias : var.value;
+		Value val;
+		if (var.alias) {
+			val = *var.alias;
+		} else if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) {
+			val = *var.value.get_ptr_safe();
+		} else {
+			val = var.value;
+		}
 		val.isConst = var.isConst;
 		val.isLocked = var.isLocked;
 		return val;
 	}
+	void setAlias(const string &n, Value *target, bool locked = false, bool isConstVar = false) {
+		Var v;
+		v.alias = target;
+		v.isConst = isConstVar;
+		v.isLocked = locked;
+		vars[n] = v;
+	}
 	void assign(const string &n, Value v) {
 		Var &var = lookup(n);
 
-		if (var.alias) {
-			*var.alias = v;
+		if (var.isConst) {
+			throw RuntimeError("Cannot reassign a constant variable '" + n + "'", 0, 0);
+		}
+
+		Value *target = var.alias ? var.alias : ((var.value.type == ValueType::REFERENCE) ? var.value.get_ptr_safe() : nullptr);
+		if (target) {
+			if (target->isConst) {
+				throw RuntimeError("Cannot assign to const variable via reference '" + n + "'", 0, 0);
+			}
+			if (var.isLocked && target->type != v.type) {
+				throw RuntimeError("Type mismatch: variable '" + n + "' is type-locked.", 0, 0);
+			}
+			bool wasConst = target->isConst;
+			bool wasLocked = target->isLocked;
+			*target = v;
+			target->isConst = wasConst;
+			target->isLocked = wasLocked;
 			return;
 		}
 
+		if (var.isLocked && var.value.type != v.type) {
+			throw RuntimeError("Type mismatch: variable '" + n + "' is type-locked.", 0, 0);
+		}
+
+		bool wasConst = var.value.isConst;
+		bool wasLocked = var.value.isLocked;
 		var.value = v;
+		var.value.isConst = wasConst;
+		var.value.isLocked = wasLocked;
 	}
 	bool exists(const string &n) {
 		if (vars.count(n))
@@ -1463,12 +1540,18 @@ struct Env {
 	}
 };
 
-inline Value* VarRefObject::get_ptr() {
-	return &env->lookup(name).value;
+inline Value *VarRefObject::get_ptr() {
+	auto &var = env->lookup(name);
+	if (var.alias)
+		return var.alias;
+	if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe())
+		return var.value.get_ptr_safe();
+	return &var.value;
 }
 
-inline Value* Value::get_ptr_safe() const {
-	if (ref && ref->type == ValueType::REFERENCE) return static_cast<RefObject*>(ref.get())->get_ptr();
+inline Value *Value::get_ptr_safe() const {
+	if (ref && ref->type == ValueType::REFERENCE)
+		return static_cast<RefObject *>(ref.get())->get_ptr();
 	return ptr;
 }
 static inline uint32_t divMod1e9(std::vector<uint32_t> &chunks) {
@@ -1504,7 +1587,7 @@ static inline std::string bigIntToString(BigIntObject *big) {
 	std::string final_res = "";
 	if (big->isNegative)
 		final_res += "-";
-	
+
 	// Reverse 9-digit chunks by reversing the whole string then reversing each chunk?
 	// Wait, we append chunks in reverse order (least significant first).
 	// So we should build a vector of strings or insert at front.
@@ -1522,7 +1605,8 @@ static inline std::string bigIntToString(BigIntObject *big) {
 	for (int i = parts.size() - 1; i >= 0; i--) {
 		final_res += parts[i];
 	}
-	if (final_res.empty()) return "0";
+	if (final_res.empty())
+		return "0";
 	return final_res;
 }
 static inline std::string formatNumber(double val) {
@@ -1801,6 +1885,7 @@ struct FunctionObject : HeapObject {
 	vector<Expr *> defaultRetArgs;
 	vector<Chunk *> defaultRetChunks;
 	bool returnsConst;
+	bool returnsRef = false;
 	vector<Stmt *> body;
 	std::shared_ptr<Env> closure;
 	bool isCached;
@@ -1810,12 +1895,13 @@ struct FunctionObject : HeapObject {
 	std::unordered_map<Value, Value, ValueHash, ValueEqual> singleArgCache;
 	FunctionObject(const vector<ParamSpec> &p, ValueType rt, vector<Expr *> dra,
 		bool rc, const vector<Stmt *> &b, std::shared_ptr<Env> c,
-		bool cached, Chunk *ch = nullptr)
+		bool cached, Chunk *ch = nullptr, bool rr = false)
 		 : HeapObject(ValueType::FUNCTION),
 			params(p),
 			returnType(rt),
 			defaultRetArgs(dra),
 			returnsConst(rc),
+			returnsRef(rr),
 			body(b),
 			closure(c),
 			isCached(cached),
@@ -1963,13 +2049,13 @@ enum class Magic_Methods : uint8_t {
 			  Moving away from "getitem/setitem" to "at/put" style
 	================================================================
 	*/
-	__count__, // (was __len__)    Size of container
-	__at__,	  // (was __get__)    val = obj[key]
-	__put__,	  // (was __set__)    obj[key] = val
-	__call__, // () operator to call like a function
-	__has__, // (was __contains__) if x is in obj
-	__lacks__,  // if x is not in obj
-	__missing__, // if obj is not in x
+	__count__,			// (was __len__)    Size of container
+	__at__,				// (was __get__)    val = obj[key]
+	__put__,				// (was __set__)    obj[key] = val
+	__call__,			// () operator to call like a function
+	__has__,				// (was __contains__) if x is in obj
+	__lacks__,			// if x is not in obj
+	__missing__,		// if obj is not in x
 	__not__missing__, // (was __getattr__) if obj is not in x
 	__assign__,			// (was __setattr__) Called when setting a property
 
@@ -2459,16 +2545,26 @@ static inline std::string OpCodeToString(OpCode num) {
 		return "OP_DELETE";
 	case OpCode::OP_ADD:
 		return "OP_ADD";
-	case OpCode::OP_FAST_IADD: return "OP_FAST_IADD";
-	case OpCode::OP_FAST_ISUB: return "OP_FAST_ISUB";
-	case OpCode::OP_FAST_IMUL: return "OP_FAST_IMUL";
-	case OpCode::OP_FAST_IDIV: return "OP_FAST_IDIV";
-	case OpCode::OP_FAST_FADD: return "OP_FAST_FADD";
-	case OpCode::OP_FAST_FSUB: return "OP_FAST_FSUB";
-	case OpCode::OP_FAST_FMUL: return "OP_FAST_FMUL";
-	case OpCode::OP_FAST_FDIV: return "OP_FAST_FDIV";
-	case OpCode::OP_FAST_SADD: return "OP_FAST_SADD";
-	case OpCode::OP_CTLE_TICK: return "OP_CTLE_TICK";
+	case OpCode::OP_FAST_IADD:
+		return "OP_FAST_IADD";
+	case OpCode::OP_FAST_ISUB:
+		return "OP_FAST_ISUB";
+	case OpCode::OP_FAST_IMUL:
+		return "OP_FAST_IMUL";
+	case OpCode::OP_FAST_IDIV:
+		return "OP_FAST_IDIV";
+	case OpCode::OP_FAST_FADD:
+		return "OP_FAST_FADD";
+	case OpCode::OP_FAST_FSUB:
+		return "OP_FAST_FSUB";
+	case OpCode::OP_FAST_FMUL:
+		return "OP_FAST_FMUL";
+	case OpCode::OP_FAST_FDIV:
+		return "OP_FAST_FDIV";
+	case OpCode::OP_FAST_SADD:
+		return "OP_FAST_SADD";
+	case OpCode::OP_CTLE_TICK:
+		return "OP_CTLE_TICK";
 	case OpCode::OP_SUB:
 		return "OP_SUB";
 	case OpCode::OP_MUL:
@@ -2695,12 +2791,14 @@ struct Chunk {
 
 inline FunctionObject::~FunctionObject() {
 	for (auto &p : params) {
-		if (p.defaultChunk) delete p.defaultChunk;
+		if (p.defaultChunk)
+			delete p.defaultChunk;
 	}
 	for (auto *c : defaultRetChunks) {
 		delete c;
 	}
-	if (chunk) delete chunk;
+	if (chunk)
+		delete chunk;
 }
 struct LoopContext {
 	int startAddress;
@@ -3648,7 +3746,7 @@ struct Interpreter {
 			auto lam = static_cast<LambdaExpr *>(e);
 			auto *funcObj = new FunctionObject(
 				lam->params, lam->returnType, lam->defaultRetArgs,
-				lam->returnsConst, lam->body, env, lam->isCached);
+				lam->returnsConst, lam->body, env, lam->isCached, nullptr, lam->returnsRef);
 			Value v;
 			v.type = ValueType::FUNCTION;
 			v.ref = std::shared_ptr<HeapObject>(funcObj);
@@ -4265,7 +4363,7 @@ struct Interpreter {
 			auto f = static_cast<FuncStmt *>(s);
 			auto *func =
 				new FunctionObject(f->params, f->returnType, f->defaultRetArgs,
-					f->returnsConst, f->body, env, f->isCached);
+					f->returnsConst, f->body, env, f->isCached, nullptr, f->returnsRef);
 			Value funcVal;
 			funcVal.type = ValueType::FUNCTION;
 			funcVal.ref = std::shared_ptr<HeapObject>(func);
