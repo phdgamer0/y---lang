@@ -30,6 +30,8 @@ struct UserFunctionInfo {
 	bool returnsConst;
 	std::vector<ParamSpec> params;
 	std::vector<std::string> paramTypeStrs;
+	int variadicIdx = -1;
+	int kwargsIdx = -1;
 };
 
 struct NativeVar {
