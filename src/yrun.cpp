@@ -54,11 +54,12 @@ int main(int argc, char *argv[]) {
 
 	std::string path = scriptArgs[0];
 	std::filesystem::path p(path);
+	std::string n = p.filename().string();
 	std::string ext = p.extension().string();
+	scriptArgs.insert(scriptArgs.begin() + 1, path);
 
 	if (ext != ".ymm" && ext != ".ymc" && ext != ".yb") {
-		std::string filename = p.filename().string();
-		std::cerr << "FATAL ERROR: " << filename << " must end with .ymm, .ymc, or .yb extension.\n";
+		std::cerr << "FATAL ERROR: " << n << " must end with .ymm, .ymc, or .yb extension.\n";
 		std::cerr << "Interpretation aborted...\n";
 		return 1;
 	}
@@ -254,7 +255,8 @@ int main(int argc, char *argv[]) {
 					transpiler.transpileStmt(stmt);
 				}
 				std::string cppOut = transpiler.finalize(p.stem().string());
-				std::string outPath = p.stem().string() + ".cpp";
+				std::filesystem::path outCppPath = p.parent_path().empty() ? std::filesystem::path(p.stem().string() + ".cpp") : (p.parent_path() / (p.stem().string() + ".cpp"));
+				std::string outPath = outCppPath.string();
 				std::ofstream outFile(outPath); // Save for user to see
 				outFile << cppOut;
 				outFile.close();
