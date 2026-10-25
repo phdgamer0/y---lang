@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
-project(y_lang_new)
+project(ymm)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -76,10 +76,10 @@ add_library(ylang_core SHARED ${CORE_SOURCES})
 set_target_properties(ylang_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(ylang_core PUBLIC include/ylang include src ${replxx_SOURCE_DIR}/include)
 
-add_executable(y_lang_new src/yrun.cpp)
+add_executable(ymm src/yrun.cpp)
 
 # Include directories
-target_include_directories(y_lang_new PRIVATE include/ylang include src)
+target_include_directories(ymm PRIVATE include/ylang include src)
 
 # Link libraries to the core library
 if(WIN32)
@@ -105,7 +105,7 @@ else()
 endif()
 
 # Link the main executable to the core library
-target_link_libraries(y_lang_new PUBLIC ylang_core ${REPLXX_LIBRARY})
+target_link_libraries(ymm PUBLIC ylang_core ${REPLXX_LIBRARY})
 
 # Add a permanent target for transpiled scripts to avoid CMake reconfiguration overhead
 add_executable(transpiled_bin "${CMAKE_SOURCE_DIR}/build/release/transpiled.cpp")
