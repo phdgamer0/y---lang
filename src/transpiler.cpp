@@ -1,4 +1,5 @@
 #include "ylang/transpiler.hpp"
+#include "lexer.hpp"
 #include <iostream>
 
 using namespace std;
@@ -143,6 +144,63 @@ std::string CppTranspiler::getCppType(ValueType type, CopyMode mode, bool isCons
 	return isConst ? "const Value&" : "Value";
 }
 
+static bool containsReturn(const std::vector<Stmt *> &stmts) {
+	for (Stmt *st : stmts) {
+		if (!st)
+			continue;
+		if (st->type == StmtType::RETURN)
+			return true;
+		if (st->type == StmtType::IF) {
+			auto ifStmt = static_cast<IfStmt *>(st);
+			if (containsReturn(ifStmt->body))
+				return true;
+			for (const auto &elif : ifStmt->elifs) {
+				if (containsReturn(elif.second))
+					return true;
+			}
+			if (containsReturn(ifStmt->elseBody))
+				return true;
+		} else if (st->type == StmtType::WHILE) {
+			auto wStmt = static_cast<WhileStmt *>(st);
+			if (containsReturn(wStmt->body))
+				return true;
+		} else if (st->type == StmtType::DO_WHILE) {
+			auto dwStmt = static_cast<DoWhileStmt *>(st);
+			if (containsReturn(dwStmt->body))
+				return true;
+		} else if (st->type == StmtType::FOR) {
+			auto fStmt = static_cast<ForStmt *>(st);
+			if (containsReturn(fStmt->body))
+				return true;
+		} else if (st->type == StmtType::FOR_EACH) {
+			auto feStmt = static_cast<ForEachStmt *>(st);
+			if (containsReturn(feStmt->body))
+				return true;
+		} else if (st->type == StmtType::TRY) {
+			auto tStmt = static_cast<TryStmt *>(st);
+			if (containsReturn(tStmt->tryBlock))
+				return true;
+			for (const auto &c : tStmt->catches) {
+				if (containsReturn(c.body))
+					return true;
+			}
+			if (containsReturn(tStmt->elseBlock))
+				return true;
+			if (containsReturn(tStmt->finallyBlock))
+				return true;
+		} else if (st->type == StmtType::SWITCH) {
+			auto swStmt = static_cast<SwitchStmt *>(st);
+			for (const auto &c : swStmt->cases) {
+				if (containsReturn(c.body))
+					return true;
+			}
+			if (containsReturn(swStmt->defaultBody))
+				return true;
+		}
+	}
+	return false;
+}
+
 void CppTranspiler::prePass(const std::vector<Stmt *> &program) {
 	for (Stmt *s : program) {
 		if (!s || s->type != StmtType::FUNC)
@@ -155,14 +213,16 @@ void CppTranspiler::prePass(const std::vector<Stmt *> &program) {
 		info.returnsRef = func->returnsRef;
 		info.returnsConst = func->returnsConst;
 		info.params = func->params;
-
-		bool hasReturn = false;
-		for (Stmt *st : func->body) {
-			if (st && st->type == StmtType::RETURN) {
-				hasReturn = true;
-				break;
-			}
+		info.variadicIdx = -1;
+		info.kwargsIdx = -1;
+		for (size_t i = 0; i < func->params.size(); i++) {
+			if (func->params[i].isVariadic)
+				info.variadicIdx = (int)i;
+			if (func->params[i].isKwargs)
+				info.kwargsIdx = (int)i;
 		}
+
+		bool hasReturn = containsReturn(func->body);
 
 		if (func->returnType == ValueType::NOTYPE && !hasReturn) {
 			info.returnTypeStr = "void";
@@ -177,9 +237,19 @@ void CppTranspiler::prePass(const std::vector<Stmt *> &program) {
 		std::string paramsStr = "";
 		for (size_t i = 0; i < func->params.size(); i++) {
 			const auto &p = func->params[i];
-			std::string pType = getCppType(p.type, p.mode, p.isConst, false, p.mode == CopyMode::REF);
+			std::string pType;
+			if (p.isVariadic || p.isKwargs) {
+				pType = "Value";
+			} else {
+				pType = getCppType(p.type, p.mode, p.isConst, false, p.mode == CopyMode::REF);
+			}
 			info.paramTypeStrs.push_back(pType);
 			paramsStr += pType + " " + p.name;
+			if (p.isVariadic) {
+				paramsStr += " = Value::Tuple({})";
+			} else if (p.isKwargs) {
+				paramsStr += " = Value::Dict({})";
+			}
 			if (i < func->params.size() - 1)
 				paramsStr += ", ";
 		}
@@ -242,74 +312,168 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 		if (it != userFunctions.end()) {
 			const auto &info = it->second;
 			std::string targetFunc = info.cppName;
-			std::string argsStr = "";
-			for (size_t i = 0; i < call->args.size(); i++) {
-				std::string paramType = (i < info.paramTypeStrs.size()) ? info.paramTypeStrs[i] : "Value";
-				CopyMode mode = (i < call->modes.size()) ? call->modes[i] : CopyMode::SHALLOW;
-				Expr *argExpr = call->args[i];
 
+			// Separate positional and keyword arguments
+			std::vector<Expr *> posArgs;
+			std::vector<CopyMode> posModes;
+			std::vector<std::pair<std::string, Expr *>> kwArgs;
+			for (size_t i = 0; i < call->args.size(); i++) {
+				Expr *arg = call->args[i];
+				CopyMode mode = (i < call->modes.size()) ? call->modes[i] : CopyMode::SHALLOW;
+				std::string kwName = "";
+				Expr *kwVal = nullptr;
+				if (arg && arg->type == ExprType::BINARY) {
+					auto bin = static_cast<BinExpr *>(arg);
+					if (bin->op == TokenType::COLON) {
+						if (bin->left && bin->left->type == ExprType::STRING) {
+							kwName = static_cast<StringExpr *>(bin->left)->val;
+							kwVal = bin->right;
+						} else if (bin->left && bin->left->type == ExprType::VAR) {
+							kwName = static_cast<VarExpr *>(bin->left)->name;
+							kwVal = bin->right;
+						}
+					}
+				}
+				if (!kwName.empty()) {
+					kwArgs.push_back({kwName, kwVal});
+				} else {
+					posArgs.push_back(arg);
+					posModes.push_back(mode);
+				}
+			}
+
+			size_t normalParamCount = 0;
+			for (const auto &p : info.params) {
+				if (!p.isVariadic && !p.isKwargs)
+					normalParamCount++;
+			}
+
+			auto formatArg = [&](const std::string &paramType, CopyMode mode, Expr *argExpr) -> std::string {
 				if (paramType == "long long&" || paramType == "const long long&") {
 					if (auto v = dynamic_cast<VarExpr *>(argExpr)) {
 						if (lookupNativeVar(v->name)) {
-							argsStr += v->name;
+							return v->name;
 						} else {
-							argsStr += "__y_env_int_ref(current_env, \"" + v->name + "\")";
+							return "__y_env_int_ref(current_env, \"" + v->name + "\")";
 						}
 					} else {
-						argsStr += "__y_to_int(" + transpileExpr(argExpr) + ")";
+						return "__y_to_int(" + transpileExpr(argExpr) + ")";
 					}
 				} else if (paramType == "double&" || paramType == "const double&") {
 					if (auto v = dynamic_cast<VarExpr *>(argExpr)) {
 						if (lookupNativeVar(v->name)) {
-							argsStr += v->name;
+							return v->name;
 						} else {
-							argsStr += "__y_env_float_ref(current_env, \"" + v->name + "\")";
+							return "__y_env_float_ref(current_env, \"" + v->name + "\")";
 						}
 					} else {
-						argsStr += "__y_to_float(" + transpileExpr(argExpr) + ")";
+						return "__y_to_float(" + transpileExpr(argExpr) + ")";
 					}
 				} else if (paramType == "bool&" || paramType == "const bool&") {
 					if (auto v = dynamic_cast<VarExpr *>(argExpr)) {
 						if (lookupNativeVar(v->name)) {
-							argsStr += v->name;
+							return v->name;
 						} else {
-							argsStr += "__y_env_bool_ref(current_env, \"" + v->name + "\")";
+							return "__y_env_bool_ref(current_env, \"" + v->name + "\")";
 						}
 					} else {
-						argsStr += "__y_to_bool(" + transpileExpr(argExpr) + ")";
+						return "__y_to_bool(" + transpileExpr(argExpr) + ")";
 					}
 				} else if (paramType == "Value&" || paramType == "const Value&") {
 					if (auto v = dynamic_cast<VarExpr *>(argExpr)) {
 						if (lookupNativeVar(v->name)) {
-							argsStr += v->name;
+							return v->name;
 						} else {
-							argsStr += "__y_env_val_ref(current_env, \"" + v->name + "\")";
+							return "__y_env_val_ref(current_env, \"" + v->name + "\")";
 						}
 					} else {
-						argsStr += "__y_val(" + transpileExpr(argExpr) + ")";
+						return "__y_val(" + transpileExpr(argExpr) + ")";
 					}
 				} else if (paramType == "long long" || paramType == "const long long") {
-					argsStr += "__y_to_int(" + transpileExpr(argExpr) + ")";
+					return "__y_to_int(" + transpileExpr(argExpr) + ")";
 				} else if (paramType == "double" || paramType == "const double") {
-					argsStr += "__y_to_float(" + transpileExpr(argExpr) + ")";
+					return "__y_to_float(" + transpileExpr(argExpr) + ")";
 				} else if (paramType == "bool" || paramType == "const bool") {
-					argsStr += "__y_to_bool(" + transpileExpr(argExpr) + ")";
+					return "__y_to_bool(" + transpileExpr(argExpr) + ")";
 				} else if (paramType == "std::string" || paramType == "const std::string&") {
-					argsStr += "__y_to_str(" + transpileExpr(argExpr) + ")";
+					return "__y_to_str(" + transpileExpr(argExpr) + ")";
 				} else {
 					if (mode == CopyMode::REF) {
 						if (auto v = dynamic_cast<VarExpr *>(argExpr)) {
-							argsStr += "__y_make_ref(current_env, \"" + v->name + "\")";
+							return "__y_make_ref(current_env, \"" + v->name + "\")";
 						} else {
-							argsStr += "__y_val(" + transpileExpr(argExpr) + ")";
+							return "__y_val(" + transpileExpr(argExpr) + ")";
 						}
 					} else if (mode == CopyMode::DEEP) {
-						argsStr += "deepCopy(__y_val(" + transpileExpr(call->args[i]) + "))";
+						return "deepCopy(__y_val(" + transpileExpr(argExpr) + "))";
 					} else {
-						argsStr += "__y_val(" + transpileExpr(call->args[i]) + ")";
+						return "__y_val(" + transpileExpr(argExpr) + ")";
 					}
 				}
-				if (i < call->args.size() - 1)
+			};
+
+			std::string argsStr = "";
+			std::vector<bool> kwConsumed(kwArgs.size(), false);
+
+			for (size_t i = 0; i < info.params.size(); i++) {
+				const auto &p = info.params[i];
+				const std::string &paramType = info.paramTypeStrs[i];
+
+				if (p.isVariadic) {
+					if (posArgs.size() > normalParamCount) {
+						std::string tupleElems = "";
+						for (size_t j = normalParamCount; j < posArgs.size(); j++) {
+							tupleElems += "__y_val(" + transpileExpr(posArgs[j]) + ")";
+							if (j < posArgs.size() - 1)
+								tupleElems += ", ";
+						}
+						argsStr += "Value::Tuple({" + tupleElems + "})";
+					} else {
+						argsStr += "Value::Tuple({})";
+					}
+				} else if (p.isKwargs) {
+					std::string dictElems = "";
+					bool first = true;
+					for (size_t j = 0; j < kwArgs.size(); j++) {
+						if (!kwConsumed[j]) {
+							if (!first)
+								dictElems += ", ";
+							dictElems += "{ Value::String(\"" + kwArgs[j].first + "\"), __y_val(" + transpileExpr(kwArgs[j].second) + ") }";
+							first = false;
+						}
+					}
+					argsStr += "Value::Dict({" + dictElems + "})";
+				} else {
+					if (i < posArgs.size()) {
+						argsStr += formatArg(paramType, posModes[i], posArgs[i]);
+					} else {
+						bool foundKw = false;
+						for (size_t j = 0; j < kwArgs.size(); j++) {
+							if (!kwConsumed[j] && kwArgs[j].first == p.name) {
+								argsStr += formatArg(paramType, CopyMode::SHALLOW, kwArgs[j].second);
+								kwConsumed[j] = true;
+								foundKw = true;
+								break;
+							}
+						}
+						if (!foundKw) {
+							if (p.defaultValue) {
+								argsStr += formatArg(paramType, CopyMode::SHALLOW, p.defaultValue);
+							} else if (paramType == "long long" || paramType == "const long long") {
+								argsStr += "0LL";
+							} else if (paramType == "double" || paramType == "const double") {
+								argsStr += "0.0";
+							} else if (paramType == "bool" || paramType == "const bool") {
+								argsStr += "false";
+							} else if (paramType == "std::string" || paramType == "const std::string&") {
+								argsStr += "\"\"";
+							} else {
+								argsStr += "Value::NoType()";
+							}
+						}
+					}
+				}
+				if (i < info.params.size() - 1)
 					argsStr += ", ";
 			}
 			return targetFunc + "(" + argsStr + ")";
@@ -351,10 +515,19 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 			bool isConst = p.isConst;
 			if (p.isVariadic) {
 				lambdaStr += "        std::vector<Value> _rest_list;\n";
-				lambdaStr += "        for (size_t _i = " + std::to_string(pos_idx) + "; _i < _pos_count; _i++) {\n";
+				lambdaStr += "        for (size_t _i = " + std::to_string(pos_idx) + "; _i < (size_t)_pos_count; _i++) {\n";
 				lambdaStr += "            _rest_list.push_back(_args[_i]);\n";
 				lambdaStr += "        }\n";
 				lambdaStr += "        current_env->set(\"" + p.name + "\", Value::Tuple(_rest_list), false, true);\n";
+			} else if (p.isKwargs) {
+				lambdaStr += "        std::unordered_map<Value, Value, ValueHash, ValueEqual> _kw_items;\n";
+				lambdaStr += "        for (size_t _i = (size_t)_pos_count; _i < _args.size(); _i++) {\n";
+				lambdaStr += "            if (_args[_i].type == ValueType::PAIRED) {\n";
+				lambdaStr += "                auto* _pairObj = static_cast<PairedObject*>(_args[_i].ref.get());\n";
+				lambdaStr += "                for (const auto& entry : _pairObj->pairs) _kw_items[entry.first] = entry.second;\n";
+				lambdaStr += "            }\n";
+				lambdaStr += "        }\n";
+				lambdaStr += "        current_env->set(\"" + p.name + "\", Value::Dict(_kw_items), false, " + (p.isConst ? "true" : "false") + ");\n";
 			} else {
 				lambdaStr += "        Value _arg_" + p.name + ";\n";
 				lambdaStr += "        if (_pos_count > " + std::to_string(pos_idx) + ") {\n";
@@ -505,9 +678,9 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 		case TokenType::NEQ:
 			return "Value::Bool(__y_neq(" + left + ", " + right + "))";
 		case TokenType::STRICT_EQ:
-			return "Value::Bool((" + left + ").strictEquals(" + right + "))";
+			return "Value::Bool(__y_strict_eq(" + left + ", " + right + "))";
 		case TokenType::STRICT_NEQ:
-			return "Value::Bool(!(" + left + ").strictEquals(" + right + "))";
+			return "Value::Bool(__y_strict_neq(" + left + ", " + right + "))";
 		case TokenType::LT:
 			return "Value::Bool(__y_lt(" + left + ", " + right + "))";
 		case TokenType::LTE:
@@ -536,6 +709,16 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 			return "EvaluateConstBinary(TokenType::BITWISE_SHL, " + left + ", " + right + ")";
 		case TokenType::BITWISE_SHR:
 			return "EvaluateConstBinary(TokenType::BITWISE_SHR, " + left + ", " + right + ")";
+		case TokenType::IS_IN:
+			return "Value::Bool(__y_is_in(__y_val(" + left + "), __y_val(" + right + ")))";
+		case TokenType::IS_NOT_IN:
+			return "Value::Bool(__y_is_not_in(__y_val(" + left + "), __y_val(" + right + ")))";
+		case TokenType::IS:
+			return "EvaluateConstBinary(TokenType::IS, __y_val(" + left + "), __y_val(" + right + "))";
+		case TokenType::IS_NOT:
+			return "EvaluateConstBinary(TokenType::IS_NOT, __y_val(" + left + "), __y_val(" + right + "))";
+		case TokenType::COLON:
+			return "Value::Paired({ {" + left + ", " + right + "} })";
 		default:
 			break;
 		}
@@ -588,13 +771,21 @@ std::string CppTranspiler::transpileCond(Expr *e) {
 		case TokenType::NEQ:
 			return "__y_neq(" + left + ", " + right + ")";
 		case TokenType::STRICT_EQ:
-			return "(" + left + ").strictEquals(" + right + ")";
+			return "__y_strict_eq(" + left + ", " + right + ")";
 		case TokenType::STRICT_NEQ:
-			return "!(" + left + ").strictEquals(" + right + ")";
+			return "__y_strict_neq(" + left + ", " + right + ")";
 		case TokenType::AND:
 			return "(" + transpileCond(bin->left) + " && " + transpileCond(bin->right) + ")";
 		case TokenType::OR:
 			return "(" + transpileCond(bin->left) + " || " + transpileCond(bin->right) + ")";
+		case TokenType::IS_IN:
+			return "__y_is_in(__y_val(" + left + "), __y_val(" + right + "))";
+		case TokenType::IS_NOT_IN:
+			return "__y_is_not_in(__y_val(" + left + "), __y_val(" + right + "))";
+		case TokenType::IS:
+			return "EvaluateConstBinary(TokenType::IS, __y_val(" + left + "), __y_val(" + right + ")).isTruthy()";
+		case TokenType::IS_NOT:
+			return "EvaluateConstBinary(TokenType::IS_NOT, __y_val(" + left + "), __y_val(" + right + ")).isTruthy()";
 		default:
 			break;
 		}
@@ -902,33 +1093,86 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		output += "    {\n";
 		output += "        EnvRestorer env_restorer_outer(current_env);\n";
 		output += "        long long _iter_idx_" + std::to_string(loopId) + " = 0;\n";
-		output += "        std::vector<std::vector<Value>> _streams;\n";
 		bool isDictUnpack = (fe->collections.size() == 1 && fe->loopVars.size() == 2);
-		if (isDictUnpack) {
-			output += "        Value _dict_val = " + transpileExpr(fe->collections[0]) + ";\n";
-			output += "        std::vector<Value> _keys; std::vector<Value> _vals;\n";
-			output += "        if (_dict_val.type == ValueType::DICT) {\n";
-			output += "            auto* _d = static_cast<DictObject*>(_dict_val.ref.get());\n";
-			output += "            for (auto& _p : _d->items) { _keys.push_back(_p.first); _vals.push_back(_p.second); }\n";
+		if (fe->collections.size() == 1 && fe->loopVars.size() == 1) {
+			std::string colExpr = transpileExpr(fe->collections[0]);
+			std::string loopVar = fe->loopVars[0];
+			std::string colVar = "_col_" + std::to_string(loopId);
+			std::string vecVar = "_vec_" + std::to_string(loopId);
+			std::string idxVar = "_iter_idx_" + std::to_string(loopId);
+
+			std::string saved_output = output;
+			output = "";
+			constScopes.push_back({});
+			for (auto stmt : fe->body)
+				transpileStmt(stmt);
+			constScopes.pop_back();
+			std::string bodyOutput = output;
+			output = saved_output;
+
+			output += "        Value " + colVar + " = " + colExpr + ";\n";
+			output += "        if (const auto* " + vecVar + " = __y_get_vector_ptr(" + colVar + ")) {\n";
+			output += "            size_t _len_" + std::to_string(loopId) + " = " + vecVar + "->size();\n";
+			output += "            for (; (size_t)" + idxVar + " < _len_" + std::to_string(loopId) + "; " + idxVar + "++) {\n";
+			output += "                current_env->set(\"" + loopVar + "\", (*" + vecVar + ")[" + idxVar + "], false, false);\n";
+			output += bodyOutput;
+			output += "            }\n";
+			output += "        } else {\n";
+			output += "            auto _items_" + std::to_string(loopId) + " = __y_to_vector(" + colVar + ");\n";
+			output += "            size_t _len_" + std::to_string(loopId) + " = _items_" + std::to_string(loopId) + ".size();\n";
+			output += "            for (; (size_t)" + idxVar + " < _len_" + std::to_string(loopId) + "; " + idxVar + "++) {\n";
+			output += "                current_env->set(\"" + loopVar + "\", _items_" + std::to_string(loopId) + "[" + idxVar + "], false, false);\n";
+			output += bodyOutput;
+			output += "            }\n";
 			output += "        }\n";
-			output += "        _streams.push_back(_keys);\n";
-			output += "        _streams.push_back(_vals);\n";
+		} else if (isDictUnpack) {
+			std::string colExpr = transpileExpr(fe->collections[0]);
+			std::string kVar = fe->loopVars[0];
+			std::string vVar = fe->loopVars[1];
+			std::string colVar = "_dict_val_" + std::to_string(loopId);
+			std::string dictVar = "_dict_ptr_" + std::to_string(loopId);
+
+			std::string saved_output = output;
+			output = "";
+			constScopes.push_back({});
+			for (auto stmt : fe->body)
+				transpileStmt(stmt);
+			constScopes.pop_back();
+			std::string bodyOutput = output;
+			output = saved_output;
+
+			output += "        Value " + colVar + " = " + colExpr + ";\n";
+			output += "        if (const auto* " + dictVar + " = __y_get_dict_ptr(" + colVar + ")) {\n";
+			output += "            for (const auto& [_k, _v] : *" + dictVar + ") {\n";
+			output += "                current_env->set(\"" + kVar + "\", _k, false, false);\n";
+			output += "                current_env->set(\"" + vVar + "\", _v, false, false);\n";
+			output += bodyOutput;
+			output += "            }\n";
+			output += "        } else {\n";
+			output += "            auto _items_" + std::to_string(loopId) + " = __y_to_vector(" + colVar + ");\n";
+			output += "            for (const auto& _pair : _items_" + std::to_string(loopId) + ") {\n";
+			output += "                current_env->set(\"" + kVar + "\", __y_get_index(_pair, 0LL), false, false);\n";
+			output += "                current_env->set(\"" + vVar + "\", __y_get_index(_pair, 1LL), false, false);\n";
+			output += bodyOutput;
+			output += "            }\n";
+			output += "        }\n";
 		} else {
+			output += "        std::vector<std::vector<Value>> _streams;\n";
 			for (auto col : fe->collections) {
 				output += "        _streams.push_back(__y_to_vector(" + transpileExpr(col) + "));\n";
 			}
+			output += "        size_t _min_len_" + std::to_string(loopId) + " = _streams.empty() ? 0 : _streams[0].size();\n";
+			output += "        for (size_t _si = 1; _si < _streams.size(); _si++) { if (_streams[_si].size() < _min_len_" + std::to_string(loopId) + ") _min_len_" + std::to_string(loopId) + " = _streams[_si].size(); }\n";
+			output += "        for (; (size_t)_iter_idx_" + std::to_string(loopId) + " < _min_len_" + std::to_string(loopId) + "; _iter_idx_" + std::to_string(loopId) + "++) {\n";
+			constScopes.push_back({});
+			for (size_t i = 0; i < fe->loopVars.size(); i++) {
+				output += "            current_env->set(\"" + fe->loopVars[i] + "\", _streams[" + std::to_string(i) + "][_iter_idx_" + std::to_string(loopId) + "], false, false);\n";
+			}
+			for (auto stmt : fe->body)
+				transpileStmt(stmt);
+			constScopes.pop_back();
+			output += "        }\n";
 		}
-		output += "        size_t _min_len_" + std::to_string(loopId) + " = _streams.empty() ? 0 : _streams[0].size();\n";
-		output += "        for (size_t _si = 1; _si < _streams.size(); _si++) { if (_streams[_si].size() < _min_len_" + std::to_string(loopId) + ") _min_len_" + std::to_string(loopId) + " = _streams[_si].size(); }\n";
-		output += "        for (; (size_t)_iter_idx_" + std::to_string(loopId) + " < _min_len_" + std::to_string(loopId) + "; _iter_idx_" + std::to_string(loopId) + "++) {\n";
-		constScopes.push_back({});
-		for (size_t i = 0; i < fe->loopVars.size(); i++) {
-			output += "            current_env->set(\"" + fe->loopVars[i] + "\", _streams[" + std::to_string(i) + "][_iter_idx_" + std::to_string(loopId) + "], false, false);\n";
-		}
-		for (auto stmt : fe->body)
-			transpileStmt(stmt);
-		constScopes.pop_back();
-		output += "        }\n";
 		output += "    }\n";
 		loopStack.pop_back();
 		break;
@@ -989,21 +1233,21 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		} else if (currentFuncNativeReturnType == "std::string") {
 			output += "    return __y_to_str(" + valStr + ");\n";
 		} else if (currentFuncNativeReturnType == "long long&" ||
-		           currentFuncNativeReturnType == "const long long&" ||
-		           currentFuncNativeReturnType == "double&" ||
-		           currentFuncNativeReturnType == "const double&" ||
-		           currentFuncNativeReturnType == "bool&" ||
-		           currentFuncNativeReturnType == "const bool&" ||
-		           currentFuncNativeReturnType == "std::string&" ||
-		           currentFuncNativeReturnType == "const std::string&" ||
-		           currentFuncNativeReturnType == "Value&" ||
-		           currentFuncNativeReturnType == "const Value&") {
+					  currentFuncNativeReturnType == "const long long&" ||
+					  currentFuncNativeReturnType == "double&" ||
+					  currentFuncNativeReturnType == "const double&" ||
+					  currentFuncNativeReturnType == "bool&" ||
+					  currentFuncNativeReturnType == "const bool&" ||
+					  currentFuncNativeReturnType == "std::string&" ||
+					  currentFuncNativeReturnType == "const std::string&" ||
+					  currentFuncNativeReturnType == "Value&" ||
+					  currentFuncNativeReturnType == "const Value&") {
 			output += "    return " + valStr + ";\n";
 		} else {
 			if (currentFuncReturnsConst) {
-				output += "    { Value _retVal = " + valStr + "; _retVal.isConst = true; return _retVal; }\n";
+				output += "    { Value _retVal = __y_val(" + valStr + "); _retVal.isConst = true; return _retVal; }\n";
 			} else {
-				output += "    return " + valStr + ";\n";
+				output += "    return __y_val(" + valStr + ");\n";
 			}
 		}
 		break;
@@ -1017,10 +1261,10 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		for (const auto &c : sw->cases) {
 			string caseValStr = transpileExpr(c.value);
 			if (firstCase) {
-				output += "        if (__switch_target.strictEquals(" + caseValStr + ")) {\n";
+				output += "        if (__y_strict_eq(__switch_target, " + caseValStr + ")) {\n";
 				firstCase = false;
 			} else {
-				output += "        else if (__switch_target.strictEquals(" + caseValStr + ")) {\n";
+				output += "        else if (__y_strict_eq(__switch_target, " + caseValStr + ")) {\n";
 			}
 			output += "            EnvRestorer env_restorer(current_env);\n";
 			for (auto stmt : c.body)
@@ -1094,14 +1338,16 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 	case StmtType::FUNC: {
 		auto func = reinterpret_cast<struct FuncStmt *>(s);
 		auto it = userFunctions.find(func->name);
-		if (it == userFunctions.end()) break;
-		const auto& info = it->second;
+		if (it == userFunctions.end())
+			break;
+		const auto &info = it->second;
 
 		std::string funcDef = "";
 		std::string paramsStr = "";
 		for (size_t i = 0; i < info.params.size(); i++) {
 			paramsStr += info.paramTypeStrs[i] + " " + info.params[i].name;
-			if (i < info.params.size() - 1) paramsStr += ", ";
+			if (i < info.params.size() - 1)
+				paramsStr += ", ";
 		}
 
 		funcDef += "inline auto " + info.cppName + "(" + paramsStr + ") -> " + info.returnTypeStr + " {\n";
@@ -1112,18 +1358,22 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		constScopes.push_back({});
 
 		for (size_t i = 0; i < info.params.size(); i++) {
-			const auto& p = info.params[i];
-			const std::string& pType = info.paramTypeStrs[i];
+			const auto &p = info.params[i];
+			const std::string &pType = info.paramTypeStrs[i];
 
-			if (pType == "long long" || pType == "const long long" ||
-			    pType == "long long&" || pType == "const long long&" ||
-			    pType == "double" || pType == "const double" ||
-			    pType == "double&" || pType == "const double&" ||
-			    pType == "bool" || pType == "const bool" ||
-			    pType == "bool&" || pType == "const bool&" ||
-			    pType == "std::string" || pType == "const std::string&" ||
-			    pType == "std::string&") {
-				nativeScopes.back()[p.name] = { pType, (p.mode == CopyMode::REF), p.isConst };
+			if (p.isVariadic) {
+				funcDef += "    current_env->set(\"" + p.name + "\", " + p.name + ", false, true);\n";
+			} else if (p.isKwargs) {
+				funcDef += "    current_env->set(\"" + p.name + "\", " + p.name + ", false, " + (p.isConst ? "true" : "false") + ");\n";
+			} else if (pType == "long long" || pType == "const long long" ||
+						  pType == "long long&" || pType == "const long long&" ||
+						  pType == "double" || pType == "const double" ||
+						  pType == "double&" || pType == "const double&" ||
+						  pType == "bool" || pType == "const bool" ||
+						  pType == "bool&" || pType == "const bool&" ||
+						  pType == "std::string" || pType == "const std::string&" ||
+						  pType == "std::string&") {
+				nativeScopes.back()[p.name] = {pType, (p.mode == CopyMode::REF), p.isConst};
 			} else {
 				bool isLocked = (p.type != ValueType::NOTYPE);
 				if (p.mode == CopyMode::REF) {
@@ -1179,11 +1429,43 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		// Generate reflection wrapper for globals in main()
 		if (func->name != "main") {
 			std::string wrapper = "    y_transpile_globals->set(\"" + func->name + "\", Value::Native([](const std::vector<Value>& _args, int _pos_count, int _kw_count) mutable -> Value {\n";
+
+			size_t normalParamCount = 0;
+			for (const auto &p : info.params) {
+				if (!p.isVariadic && !p.isKwargs)
+					normalParamCount++;
+			}
+
+			if (info.variadicIdx != -1) {
+				wrapper += "        std::vector<Value> _rest_tuple;\n";
+				wrapper += "        for (size_t _i = " + std::to_string(normalParamCount) + "; _i < (size_t)_pos_count; _i++) {\n";
+				wrapper += "            _rest_tuple.push_back(_args[_i]);\n";
+				wrapper += "        }\n";
+				wrapper += "        Value _variadic_val = Value::Tuple(_rest_tuple);\n";
+			}
+
+			if (info.kwargsIdx != -1) {
+				wrapper += "        std::unordered_map<Value, Value, ValueHash, ValueEqual> _kw_items;\n";
+				wrapper += "        for (size_t _i = (size_t)_pos_count; _i < _args.size(); _i++) {\n";
+				wrapper += "            if (_args[_i].type == ValueType::PAIRED) {\n";
+				wrapper += "                auto* _pairObj = static_cast<PairedObject*>(_args[_i].ref.get());\n";
+				wrapper += "                for (const auto& entry : _pairObj->pairs) _kw_items[entry.first] = entry.second;\n";
+				wrapper += "            }\n";
+				wrapper += "        }\n";
+				wrapper += "        Value _kwargs_val = Value::Dict(_kw_items);\n";
+			}
+
 			std::string callArgs = "";
 			for (size_t i = 0; i < info.params.size(); i++) {
-				const auto& pType = info.paramTypeStrs[i];
+				const auto &p = info.params[i];
+				const auto &pType = info.paramTypeStrs[i];
 				std::string idx = std::to_string(i);
-				if (pType == "long long" || pType == "const long long") {
+
+				if (p.isVariadic) {
+					callArgs += "_variadic_val";
+				} else if (p.isKwargs) {
+					callArgs += "_kwargs_val";
+				} else if (pType == "long long" || pType == "const long long") {
 					callArgs += "(_pos_count > " + idx + " ? _args[" + idx + "].asInt() : 0LL)";
 				} else if (pType == "long long&" || pType == "const long long&") {
 					callArgs += "(_pos_count > " + idx + " ? (_args[" + idx + "].get_ptr_safe() ? _args[" + idx + "].get_ptr_safe()->iVal : const_cast<Value&>(_args[" + idx + "]).iVal) : const_cast<Value&>(_args[" + idx + "]).iVal)";
@@ -1202,7 +1484,8 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 				} else {
 					callArgs += "(_pos_count > " + idx + " ? _args[" + idx + "] : Value::NoType())";
 				}
-				if (i < info.params.size() - 1) callArgs += ", ";
+				if (i < info.params.size() - 1)
+					callArgs += ", ";
 			}
 			if (info.returnTypeStr == "void") {
 				wrapper += "        " + info.cppName + "(" + callArgs + ");\n";
@@ -1225,417 +1508,7 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 std::string CppTranspiler::finalize(const std::string &scriptName) {
 	stringstream ss;
 	ss << "// Auto generated by y-- transpiler DO NOT EDIT THIS FILE!!!\n";
-	ss << "#include \"ylang/objects.hpp\"\n"
-			"#include \"ylang/vm.hpp\"\n"
-			"#include \"ylang/ast.hpp\"\n"
-			"#include <cmath>\n"
-			"\n";
-
-	ss << "inline Value __y_val(const Value& v) { return v; }\n"
-			"inline Value __y_val(long long v) { return Value::Int(v); }\n"
-			"inline Value __y_val(int v) { return Value::Int((long long)v); }\n"
-			"inline Value __y_val(double v) { return Value::Float(v); }\n"
-			"inline Value __y_val(bool v) { return Value::Bool(v); }\n"
-			"inline Value __y_val(const std::string& v) { return Value::String(v); }\n"
-			"inline Value __y_val(const char* v) { return Value::String(std::string(v)); }\n\n"
-			"inline Value __y_make_ref(const std::shared_ptr<Env>& env, const std::string& name) {\n"
-			"    auto& var = env->lookup(name);\n"
-			"    if (var.alias) return Value::Reference(var.alias, nullptr);\n"
-			"    if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value;\n"
-			"    return Value::FromExisting(std::make_shared<VarRefObject>(env, name), ValueType::REFERENCE);\n"
-			"}\n\n"
-			"inline long long __y_to_int(long long v) { return v; }\n"
-			"inline long long __y_to_int(double v) { return (long long)v; }\n"
-			"inline long long __y_to_int(bool v) { return v ? 1LL : 0LL; }\n"
-			"inline long long __y_to_int(const Value& v) { return v.asInt(); }\n\n"
-			"inline double __y_to_float(double v) { return v; }\n"
-			"inline double __y_to_float(long long v) { return (double)v; }\n"
-			"inline double __y_to_float(const Value& v) { return v.asFloat(); }\n\n"
-			"inline bool __y_to_bool(bool v) { return v; }\n"
-			"inline bool __y_to_bool(long long v) { return v != 0; }\n"
-			"inline bool __y_to_bool(const Value& v) { return v.isTruthy(); }\n\n"
-			"inline std::string __y_to_str(const std::string& v) { return v; }\n"
-			"inline std::string __y_to_str(const char* v) { return std::string(v); }\n"
-			"inline std::string __y_to_str(const Value& v) { return v.asString(); }\n\n"
-			"inline long long& __y_env_int_ref(const std::shared_ptr<Env>& env, const std::string& name) {\n"
-			"    auto& var = env->lookup(name);\n"
-			"    if (var.alias) return var.alias->iVal;\n"
-			"    if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe()->iVal;\n"
-			"    return var.value.iVal;\n"
-			"}\n"
-			"inline double& __y_env_float_ref(const std::shared_ptr<Env>& env, const std::string& name) {\n"
-			"    auto& var = env->lookup(name);\n"
-			"    if (var.alias) return var.alias->fVal;\n"
-			"    if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe()->fVal;\n"
-			"    return var.value.fVal;\n"
-			"}\n"
-			"inline bool& __y_env_bool_ref(const std::shared_ptr<Env>& env, const std::string& name) {\n"
-			"    auto& var = env->lookup(name);\n"
-			"    if (var.alias) return var.alias->bVal;\n"
-			"    if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe()->bVal;\n"
-			"    return var.value.bVal;\n"
-			"}\n"
-			"inline Value& __y_env_val_ref(const std::shared_ptr<Env>& env, const std::string& name) {\n"
-			"    auto& var = env->lookup(name);\n"
-			"    if (var.alias) return *var.alias;\n"
-			"    if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return *var.value.get_ptr_safe();\n"
-			"    return var.value;\n"
-			"}\n\n"
-			"inline Value* __y_env_ptr(const std::shared_ptr<Env>& env, const std::string& name) {\n"
-			"    auto& var = env->lookup(name);\n"
-			"    if (var.alias) return var.alias;\n"
-			"    if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe();\n"
-			"    return &var.value;\n"
-			"}\n\n"
-			"inline bool __y_is_truthy(bool b) { return b; }\n"
-			"inline bool __y_is_truthy(long long n) { return n != 0; }\n"
-			"inline bool __y_is_truthy(double d) { return d != 0.0; }\n"
-			"inline bool __y_is_truthy(const std::string& s) { return !s.empty(); }\n"
-			"inline bool __y_is_truthy(const Value& v) { return v.isTruthy(); }\n\n"
-
-			"inline bool __y_lt(const Value& a, const Value& b) {\n"
-			"    if (a.type == ValueType::INT && b.type == ValueType::INT) return a.iVal < b.iVal;\n"
-			"    if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) return a.fVal < b.fVal;\n"
-			"    if (a.isNumber() && b.isNumber()) return a.asFloat() < b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::LT, a, b).isTruthy();\n"
-			"}\n"
-			"inline bool __y_lt(long long a, long long b) { return a < b; }\n"
-			"inline bool __y_lt(double a, double b) { return a < b; }\n"
-			"inline bool __y_lt(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) return a.iVal < b;\n"
-			"    if (a.isNumber()) return a.asFloat() < (double)b;\n"
-			"    return EvaluateConstBinary(TokenType::LT, a, Value::Int(b)).isTruthy();\n"
-			"}\n"
-			"inline bool __y_lt(long long a, const Value& b) {\n"
-			"    if (b.type == ValueType::INT) return a < b.iVal;\n"
-			"    if (b.isNumber()) return (double)a < b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::LT, Value::Int(a), b).isTruthy();\n"
-			"}\n\n"
-
-			"inline bool __y_lte(const Value& a, const Value& b) {\n"
-			"    if (a.type == ValueType::INT && b.type == ValueType::INT) return a.iVal <= b.iVal;\n"
-			"    if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) return a.fVal <= b.fVal;\n"
-			"    if (a.isNumber() && b.isNumber()) return a.asFloat() <= b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::LTE, a, b).isTruthy();\n"
-			"}\n"
-			"inline bool __y_lte(long long a, long long b) { return a <= b; }\n"
-			"inline bool __y_lte(double a, double b) { return a <= b; }\n"
-			"inline bool __y_lte(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) return a.iVal <= b;\n"
-			"    if (a.isNumber()) return a.asFloat() <= (double)b;\n"
-			"    return EvaluateConstBinary(TokenType::LTE, a, Value::Int(b)).isTruthy();\n"
-			"}\n"
-			"inline bool __y_lte(long long a, const Value& b) {\n"
-			"    if (b.type == ValueType::INT) return a <= b.iVal;\n"
-			"    if (b.isNumber()) return (double)a <= b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::LTE, Value::Int(a), b).isTruthy();\n"
-			"}\n\n"
-
-			"inline bool __y_gt(const Value& a, const Value& b) {\n"
-			"    if (a.type == ValueType::INT && b.type == ValueType::INT) return a.iVal > b.iVal;\n"
-			"    if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) return a.fVal > b.fVal;\n"
-			"    if (a.isNumber() && b.isNumber()) return a.asFloat() > b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::GT, a, b).isTruthy();\n"
-			"}\n"
-			"inline bool __y_gt(long long a, long long b) { return a > b; }\n"
-			"inline bool __y_gt(double a, double b) { return a > b; }\n"
-			"inline bool __y_gt(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) return a.iVal > b;\n"
-			"    if (a.isNumber()) return a.asFloat() > (double)b;\n"
-			"    return EvaluateConstBinary(TokenType::GT, a, Value::Int(b)).isTruthy();\n"
-			"}\n"
-			"inline bool __y_gt(long long a, const Value& b) {\n"
-			"    if (b.type == ValueType::INT) return a > b.iVal;\n"
-			"    if (b.isNumber()) return (double)a > b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::GT, Value::Int(a), b).isTruthy();\n"
-			"}\n\n"
-
-			"inline bool __y_gte(const Value& a, const Value& b) {\n"
-			"    if (a.type == ValueType::INT && b.type == ValueType::INT) return a.iVal >= b.iVal;\n"
-			"    if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) return a.fVal >= b.fVal;\n"
-			"    if (a.isNumber() && b.isNumber()) return a.asFloat() >= b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::GTE, a, b).isTruthy();\n"
-			"}\n"
-			"inline bool __y_gte(long long a, long long b) { return a >= b; }\n"
-			"inline bool __y_gte(double a, double b) { return a >= b; }\n"
-			"inline bool __y_gte(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) return a.iVal >= b;\n"
-			"    if (a.isNumber()) return a.asFloat() >= (double)b;\n"
-			"    return EvaluateConstBinary(TokenType::GTE, a, Value::Int(b)).isTruthy();\n"
-			"}\n"
-			"inline bool __y_gte(long long a, const Value& b) {\n"
-			"    if (b.type == ValueType::INT) return a >= b.iVal;\n"
-			"    if (b.isNumber()) return (double)a >= b.asFloat();\n"
-			"    return EvaluateConstBinary(TokenType::GTE, Value::Int(a), b).isTruthy();\n"
-			"}\n\n"
-
-			"inline bool __y_eq(const Value& a, const Value& b) {\n"
-			"    if (a.type == b.type) return a.strictEquals(b);\n"
-			"    if (a.isNumber() && b.isNumber()) return a.asFloat() == b.asFloat();\n"
-			"    return a.looseEquals(b);\n"
-			"}\n"
-			"inline bool __y_eq(long long a, long long b) { return a == b; }\n"
-			"inline bool __y_eq(double a, double b) { return a == b; }\n"
-			"inline bool __y_eq(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) return a.iVal == b;\n"
-			"    if (a.isNumber()) return a.asFloat() == (double)b;\n"
-			"    return false;\n"
-			"}\n"
-			"inline bool __y_eq(long long a, const Value& b) {\n"
-			"    return __y_eq(b, a);\n"
-			"}\n"
-			"inline bool __y_neq(const Value& a, const Value& b) {\n"
-			"    return !__y_eq(a, b);\n"
-			"}\n"
-			"inline bool __y_neq(long long a, long long b) { return a != b; }\n"
-			"inline bool __y_neq(double a, double b) { return a != b; }\n"
-			"inline Value __y_add(const Value& a, const Value& b);\n"
-			"inline Value __y_sub(const Value& a, const Value& b);\n"
-			"inline Value __y_mul(const Value& a, const Value& b);\n"
-			"inline Value __y_div(const Value& a, const Value& b);\n\n"
-			"inline Value __y_add(long long a, long long b) {\n"
-			"    long long res;\n"
-			"    if (!__builtin_add_overflow(a, b, &res)) return Value::Int(res);\n"
-			"    return BigIntObject::add(Value::BigInt(a), Value::BigInt(b));\n"
-			"}\n"
-			"inline Value __y_add(long long a, const Value& b) {\n"
-			"    if (b.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_add_overflow(a, b.iVal, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::add(Value::BigInt(a), Value::BigInt(b.iVal));\n"
-			"    }\n"
-			"    return __y_add(Value::Int(a), b);\n"
-			"}\n"
-			"inline Value __y_add(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_add_overflow(a.iVal, b, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b));\n"
-			"    }\n"
-			"    return __y_add(a, Value::Int(b));\n"
-			"}\n"
-			"inline Value __y_add(double a, double b) { return Value::Float(a + b); }\n"
-			"inline Value __y_add(const Value& a, double b) { return __y_add(a, Value::Float(b)); }\n"
-			"inline Value __y_add(double a, const Value& b) { return __y_add(Value::Float(a), b); }\n\n"
-			"inline Value __y_add(const Value& a, const Value& b) {\n"
-			"    if (a.type == ValueType::INT && b.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_add_overflow(a.iVal, b.iVal, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::add(Value::BigInt(a.iVal), Value::BigInt(b.iVal));\n"
-			"    }\n"
-			"    if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) {\n"
-			"        return Value::Float(a.fVal + b.fVal);\n"
-			"    }\n"
-			"    return EvaluateConstBinary(TokenType::PLUS, a, b);\n"
-			"}\n\n"
-
-			"inline Value __y_sub(long long a, long long b) {\n"
-			"    long long res;\n"
-			"    if (!__builtin_sub_overflow(a, b, &res)) return Value::Int(res);\n"
-			"    return BigIntObject::sub(Value::BigInt(a), Value::BigInt(b));\n"
-			"}\n"
-			"inline Value __y_sub(long long a, const Value& b) {\n"
-			"    if (b.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_sub_overflow(a, b.iVal, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::sub(Value::BigInt(a), Value::BigInt(b.iVal));\n"
-			"    }\n"
-			"    return __y_sub(Value::Int(a), b);\n"
-			"}\n"
-			"inline Value __y_sub(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_sub_overflow(a.iVal, b, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b));\n"
-			"    }\n"
-			"    return __y_sub(a, Value::Int(b));\n"
-			"}\n"
-			"inline Value __y_sub(double a, double b) { return Value::Float(a - b); }\n"
-			"inline Value __y_sub(const Value& a, double b) { return __y_sub(a, Value::Float(b)); }\n"
-			"inline Value __y_sub(double a, const Value& b) { return __y_sub(Value::Float(a), b); }\n\n"
-			"inline Value __y_sub(const Value& a, const Value& b) {\n"
-			"    if (a.type == ValueType::INT && b.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_sub_overflow(a.iVal, b.iVal, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::sub(Value::BigInt(a.iVal), Value::BigInt(b.iVal));\n"
-			"    }\n"
-			"    if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) {\n"
-			"        return Value::Float(a.fVal - b.fVal);\n"
-			"    }\n"
-			"    return EvaluateConstBinary(TokenType::MINUS, a, b);\n"
-			"}\n\n"
-
-			"inline Value __y_mul(long long a, long long b) {\n"
-			"    long long res;\n"
-			"    if (!__builtin_mul_overflow(a, b, &res)) return Value::Int(res);\n"
-			"    return BigIntObject::mul(Value::BigInt(a), Value::BigInt(b));\n"
-			"}\n"
-			"inline Value __y_mul(long long a, const Value& b) {\n"
-			"    if (b.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_mul_overflow(a, b.iVal, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::mul(Value::BigInt(a), Value::BigInt(b.iVal));\n"
-			"    }\n"
-			"    return __y_mul(Value::Int(a), b);\n"
-			"}\n"
-			"inline Value __y_mul(const Value& a, long long b) {\n"
-			"    if (a.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_mul_overflow(a.iVal, b, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b));\n"
-			"    }\n"
-			"    return __y_mul(a, Value::Int(b));\n"
-			"}\n"
-			"inline Value __y_mul(double a, double b) { return Value::Float(a * b); }\n"
-			"inline Value __y_mul(const Value& a, double b) { return __y_mul(a, Value::Float(b)); }\n"
-			"inline Value __y_mul(double a, const Value& b) { return __y_mul(Value::Float(a), b); }\n\n"
-			"inline Value __y_mul(const Value& a, const Value& b) {\n"
-			"    if (a.type == ValueType::INT && b.type == ValueType::INT) {\n"
-			"        long long res;\n"
-			"        if (!__builtin_mul_overflow(a.iVal, b.iVal, &res)) return Value::Int(res);\n"
-			"        return BigIntObject::mul(Value::BigInt(a.iVal), Value::BigInt(b.iVal));\n"
-			"    }\n"
-			"    if (a.type == ValueType::FLOAT && b.type == ValueType::FLOAT) {\n"
-			"        return Value::Float(a.fVal * b.fVal);\n"
-			"    }\n"
-			"    return EvaluateConstBinary(TokenType::STAR, a, b);\n"
-			"}\n\n"
-
-			"inline Value __y_div(long long a, long long b) {\n"
-			"    if (b == 0) throw std::runtime_error(\"Division by zero\");\n"
-			"    return Value::Float((double)a / (double)b);\n"
-			"}\n"
-			"inline Value __y_div(long long a, const Value& b) {\n"
-			"    return __y_div(Value::Int(a), b);\n"
-			"}\n"
-			"inline Value __y_div(const Value& a, long long b) {\n"
-			"    if (b == 0) throw std::runtime_error(\"Division by zero\");\n"
-			"    return __y_div(a, Value::Float((double)b));\n"
-			"}\n"
-			"inline Value __y_div(double a, double b) {\n"
-			"    if (b == 0.0) throw std::runtime_error(\"Division by zero\");\n"
-			"    return Value::Float(a / b);\n"
-			"}\n"
-			"inline Value __y_div(const Value& a, double b) {\n"
-			"    if (b == 0.0) throw std::runtime_error(\"Division by zero\");\n"
-			"    return __y_div(a, Value::Float(b));\n"
-			"}\n"
-			"inline Value __y_div(double a, const Value& b) {\n"
-			"    return __y_div(Value::Float(a), b);\n"
-			"}\n\n"
-			"inline Value __y_div(const Value& a, const Value& b) {\n"
-			"    if (a.isNumber() && b.isNumber()) {\n"
-			"        double db = b.asFloat();\n"
-			"        if (db == 0.0) throw std::runtime_error(\"Division by zero\");\n"
-			"        return Value::Float(a.asFloat() / db);\n"
-			"    }\n"
-			"    return EvaluateConstBinary(TokenType::SLASH, a, b);\n"
-			"}\n\n"
-
-			"inline std::vector<Value> __y_to_vector(const Value& val) {\n"
-			"    if (val.type == ValueType::LIST) {\n"
-			"        return static_cast<ListObject*>(val.ref.get())->elements;\n"
-			"    } else if (val.type == ValueType::TUPLE) {\n"
-			"        return static_cast<TupleObject*>(val.ref.get())->elements;\n"
-			"    } else if (val.type == ValueType::VECTOR) {\n"
-			"        return static_cast<VectorObject*>(val.ref.get())->elements;\n"
-			"    } else if (val.type == ValueType::STRING) {\n"
-			"        std::string s = val.asString();\n"
-			"        std::vector<Value> res;\n"
-			"        res.reserve(s.size());\n"
-			"        for (char c : s) res.push_back(Value::String(std::string(1, c)));\n"
-			"        return res;\n"
-			"    } else if (val.type == ValueType::SET) {\n"
-			"        auto* s = static_cast<SetObject*>(val.ref.get());\n"
-			"        std::vector<Value> res;\n"
-			"        res.reserve(s->elements.size());\n"
-			"        for (const auto& elem : s->elements) res.push_back(elem);\n"
-			"        return res;\n"
-			"    }\n"
-			"    return {};\n"
-			"}\n\n";
-
-	ss << "Value __y_call(Value callee, const std::vector<Value>& args) {\n"
-			"    if (callee.type == ValueType::NATIVE_FUNCTION) {\n"
-			"        auto* nf = static_cast<NativeFunctionObject*>(callee.ref.get());\n"
-			"        return nf->func(args, args.size(), 0);\n"
-			"    } else if (callee.type == ValueType::CLASS) {\n"
-			"        auto* cls = static_cast<ClassObject*>(callee.ref.get());\n"
-			"        Value instance = Value::Instance(callee);\n"
-			"        if (cls->methods.count(\"__construct__\")) {\n"
-			"            Value initMethod = cls->methods[\"__construct__\"].func;\n"
-			"            if (initMethod.type == ValueType::NATIVE_FUNCTION) {\n"
-			"                static_cast<NativeFunctionObject*>(initMethod.ref.get())->func(args, args.size(), 0);\n"
-			"            }\n"
-			"        }\n"
-			"        return instance;\n"
-			"    }\n"
-			"    return Value::None();\n"
-			"}\n\n"
-			"Value __y_get_index(Value base, Value index) {\n"
-			"    if (base.type == ValueType::LIST) {\n"
-			"        auto* list = static_cast<ListObject*>(base.ref.get());\n"
-			"        long long idx = index.asInt();\n"
-			"        if (idx < 0) idx += list->elements.size();\n"
-			"        if (idx >= 0 && idx < (long long)list->elements.size()) return list->elements[idx];\n"
-			"    } else if (base.type == ValueType::TUPLE) {\n"
-			"        auto* tup = static_cast<TupleObject*>(base.ref.get());\n"
-			"        long long idx = index.asInt();\n"
-			"        if (idx < 0) idx += tup->elements.size();\n"
-			"        if (idx >= 0 && idx < (long long)tup->elements.size()) return tup->elements[idx];\n"
-			"    } else if (base.type == ValueType::DICT) {\n"
-			"        auto* dict = static_cast<DictObject*>(base.ref.get());\n"
-			"        if (dict->items.count(index)) return dict->items[index];\n"
-			"    } else if (base.type == ValueType::STRING) {\n"
-			"        std::string s = base.asString();\n"
-			"        long long idx = index.asInt();\n"
-			"        if (idx < 0) idx += s.size();\n"
-			"        if (idx >= 0 && idx < (long long)s.size()) return Value::String(std::string(1, s[idx]));\n"
-			"    }\n"
-			"    return Value::None();\n"
-			"}\n\n"
-			"void __y_set_index(Value base, Value index, Value val) {\n"
-			"    if (base.type == ValueType::LIST) {\n"
-			"        auto* list = static_cast<ListObject*>(base.ref.get());\n"
-			"        long long idx = index.asInt();\n"
-			"        if (idx < 0) idx += list->elements.size();\n"
-			"        if (idx >= 0 && idx < (long long)list->elements.size()) list->elements[idx] = val;\n"
-			"    } else if (base.type == ValueType::VECTOR) {\n"
-			"        auto* vec = static_cast<VectorObject*>(base.ref.get());\n"
-			"        long long idx = index.asInt();\n"
-			"        if (idx < 0) idx += vec->elements.size();\n"
-			"        if (idx >= 0 && idx < (long long)vec->elements.size()) vec->elements[idx] = val;\n"
-			"    } else if (base.type == ValueType::DICT) {\n"
-			"        auto* dict = static_cast<DictObject*>(base.ref.get());\n"
-			"        dict->items[index] = val;\n"
-			"    }\n"
-			"}\n\n";
-
-	ss << "struct EnvRestorer {\n";
-	ss << "    std::shared_ptr<Env>& current_env;\n";
-	ss << "    std::shared_ptr<Env> previous_env;\n";
-	ss << "    EnvRestorer(std::shared_ptr<Env>& ce) : current_env(ce), previous_env(ce) {\n";
-	ss << "        current_env = std::make_shared<Env>();\n";
-	ss << "        current_env->parent = previous_env;\n";
-	ss << "    }\n";
-	ss << "    ~EnvRestorer() { current_env = previous_env; }\n";
-	ss << "};\n\n";
-
-	// Globals environment
-	ss << "std::shared_ptr<Env> y_transpile_globals = std::make_shared<Env>();\n";
-	ss << "VM transpiled_vm;\n";
-	ss << "Value __y_method_call(const std::string& method, Value obj, std::vector<Value> args) {\n";
-	ss << "    if (obj.type == ValueType::REFERENCE && obj.get_ptr_safe()) obj = *obj.get_ptr_safe();\n";
-	ss << "    std::vector<ValueExpr*> dummyArgs;\n";
-	ss << "    for (auto& arg : args) dummyArgs.push_back(new ValueExpr(arg));\n";
-	ss << "    ValueExpr* dummyObject = new ValueExpr(obj);\n";
-	ss << "    std::vector<Expr*> exprArgs(dummyArgs.begin(), dummyArgs.end());\n";
-	ss << "    MethodCallExpr mockAST(dummyObject, method, exprArgs);\n";
-	ss << "    Value result = transpiled_vm.methodResolver(&mockAST);\n";
-	ss << "    delete dummyObject;\n";
-	ss << "    for (auto* a : dummyArgs) delete a;\n";
-	ss << "    return result;\n";
-	ss << "}\n\n";
+	ss << "#include \"ylang/transpiler_runtime.hpp\"\n\n";
 
 	ss << "// --- User Function Declarations ---\n";
 	ss << userFunctionDecls << "\n";
@@ -1655,10 +1528,14 @@ std::string CppTranspiler::finalize(const std::string &scriptName) {
 	ss << output;
 
 	if (hasUserMain) {
-		ss << "    y_user_main();\n";
+		ss << "    std::vector<Value> args_vec(argc, Value::String(\"\"));\n";
+		ss << "    for (size_t i = 0; i < argc; i++) {\n";
+		ss << "        args_vec[i] = Value::String(argv[i]);\n";
+		ss << "    }\n";
+		ss << "    y_user_main(Value::Tuple(args_vec));\n";
 	}
 
-	ss << "\n    return 0;\n";
+	ss << "    return 0;\n";
 	ss << "}\n";
 	return ss.str();
 }
