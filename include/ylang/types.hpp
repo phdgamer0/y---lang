@@ -41,19 +41,6 @@
 #include <dlfcn.h>
 #include <termios.h>
 #include <fcntl.h>
-#define Font X11_Font
-#define Status X11_Status
-#define Success X11_Success
-#define None X11_None
-#define Bool X11_Bool
-#include <X11/Xlib.h>
-#include <X11/extensions/XTest.h>
-#include <X11/keysym.h>
-#undef Font
-#undef Status
-#undef Success
-#undef None
-#undef Bool
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -148,10 +135,6 @@
 #undef LIGHTGRAY
 #undef GRAY
 #undef WHITE
-#ifndef YLANG_NO_HEAVY_INCLUDES
-#define REPLXX_STATIC
-#include <replxx.hxx>
-#endif
 extern bool DEBUGGER_MODE_IS_ENABLED;
 namespace fs = std::filesystem;
 using std::string;

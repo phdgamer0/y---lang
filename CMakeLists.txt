@@ -12,19 +12,47 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Add output directory for the compiled binary
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/release")
+# libylang_core sits next to ymm and is found relative to it ($ORIGIN / @loader_path),
+# so the binary still runs after being copied (yenv, release downloads)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/release")
+if(APPLE)
+    set(YLANG_RPATH "@loader_path")
+else()
+    set(YLANG_RPATH "\$ORIGIN")
+endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Use flags exactly as requested + CPU optimizations
+# Off by default: binaries built with -march=native crash ("illegal instruction") on other CPUs
+option(YLANG_NATIVE "Optimize for the build machine's CPU (-march=native)" OFF)
+# LTO makes the link step slow; turn off for quicker dev builds
+option(YLANG_LTO "Enable link-time optimization" ON)
+
 if(MSVC)
-    # MSVC specific flags for optimization
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W0 /O2 /GL /openmp")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /LTCG")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W0 /O2")
+    if(YLANG_LTO)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GL")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /LTCG")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /LTCG")
+    endif()
 else()
-    # GCC/Clang specific flags
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -O3 -flto -fopenmp -march=native -mtune=native")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fopenmp")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -O3")
+    if(YLANG_LTO)
+        # =auto runs the LTO link on all cores instead of one
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=auto")
+        else()
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto=thin")
+        endif()
+    endif()
+    if(YLANG_NATIVE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -mtune=native")
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -no-pie")
+    endif()
     if(NOT WIN32)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -no-pie -rdynamic")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -rdynamic")
     endif()
 endif()
 include(FetchContent)
@@ -55,8 +83,6 @@ else()
     set(REPLXX_LIBRARY replxx)
 endif()
 
-# System packages
-find_package(ZLIB REQUIRED)
 
 
 # Core Source files (everything except main/yrun)
@@ -68,15 +94,34 @@ set(CORE_SOURCES
     src/parser.cpp
     src/objects.cpp
     src/compiler.cpp
+    src/assembler.cpp
+    src/serialization.cpp
     src/transpiler.cpp
+    src/interpreter.cpp
+    src/methods.cpp
     src/vm.cpp
+    src/vm_ops.cpp
+    src/stdlib/builtins.cpp
+    src/stdlib/events.cpp
+    src/stdlib/ffi.cpp
+    src/stdlib/io.cpp
+    src/stdlib/math.cpp
+    src/stdlib/regex.cpp
+    src/stdlib/serial.cpp
+    src/stdlib/time.cpp
 )
 
-add_library(ylang_core SHARED ${CORE_SOURCES})
+# Windows: static, since MinGW can't import data (globals) from a DLL without dllimport annotations
+if(WIN32)
+    add_library(ylang_core STATIC ${CORE_SOURCES})
+else()
+    add_library(ylang_core SHARED ${CORE_SOURCES})
+endif()
 set_target_properties(ylang_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(ylang_core PUBLIC include/ylang include src ${replxx_SOURCE_DIR}/include)
 
 add_executable(ymm src/yrun.cpp)
+set_target_properties(ymm PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "${YLANG_RPATH}")
 
 # Include directories
 target_include_directories(ymm PRIVATE include/ylang include src)
@@ -86,29 +131,40 @@ if(WIN32)
     target_link_libraries(ylang_core PRIVATE
         ${REPLXX_LIBRARY}
     )
-    target_link_libraries(ylang_core PUBLIC
-        ZLIB::ZLIB zstd
-    )
+    target_link_libraries(ylang_core PUBLIC ws2_32)
 else()
     target_link_libraries(ylang_core PRIVATE
         ${REPLXX_LIBRARY}
     )
     target_link_libraries(ylang_core PUBLIC
-        ZLIB::ZLIB zstd
         m
         Threads::Threads
-        dl
-        X11
-        Xtst
-        rt
+        ${CMAKE_DL_LIBS}
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(ylang_core PUBLIC rt)
+    endif()
+    # X11/XTest only power the Events module; without them it builds as a no-op
+    find_package(X11)
+    if(X11_FOUND AND X11_XTest_FOUND)
+        target_compile_definitions(ylang_core PRIVATE YLANG_HAS_XTEST)
+        target_link_libraries(ylang_core PUBLIC X11::X11 X11::Xtst)
+    else()
+        message(STATUS "X11/XTest not found: Events module will be a no-op")
+    endif()
 endif()
 
 # Link the main executable to the core library
 target_link_libraries(ymm PUBLIC ylang_core ${REPLXX_LIBRARY})
 
 # Add a permanent target for transpiled scripts to avoid CMake reconfiguration overhead
-add_executable(transpiled_bin "${CMAKE_SOURCE_DIR}/build/release/transpiled.cpp")
+# yrun overwrites this file on every `ymm -t`; create a stub so a fresh clone configures
+set(TRANSPILED_SRC "${CMAKE_SOURCE_DIR}/build/release/transpiled.cpp")
+if(NOT EXISTS "${TRANSPILED_SRC}")
+    file(WRITE "${TRANSPILED_SRC}" "int main() { return 0; }\n")
+endif()
+# EXCLUDE_FROM_ALL: a broken transpile must not break `make`; yrun builds it by name
+add_executable(transpiled_bin EXCLUDE_FROM_ALL "${TRANSPILED_SRC}")
 target_include_directories(transpiled_bin PRIVATE include/ylang include src)
 target_link_libraries(transpiled_bin PUBLIC ylang_core)
 set_target_properties(transpiled_bin PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/release")
