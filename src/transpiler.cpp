@@ -1454,7 +1454,22 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 			output += "    return \"\";\n";
 		}
 
-		funcDef += output;
+		// a body that never touches current_env (all locals native) needs no Env: skip the per-call and per-block allocations
+		std::string body;
+		for (size_t pos = 0; pos < output.size();) {
+			size_t end = output.find('\n', pos);
+			end = (end == std::string::npos) ? output.size() : end + 1;
+			std::string_view line(output.data() + pos, end - pos);
+			if (line.find("EnvRestorer ") == std::string_view::npos)
+				body += line;
+			pos = end;
+		}
+		if (funcDef.find("current_env->set") == std::string::npos && body.find("current_env") == std::string::npos) {
+			funcDef.erase(funcDef.find("    auto current_env"));
+			funcDef += body;
+		} else {
+			funcDef += output;
+		}
 		funcDef += "}\n\n";
 
 		userFunctionDefs += funcDef;
