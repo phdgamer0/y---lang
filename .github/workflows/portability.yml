@@ -19,6 +19,7 @@ jobs:
           - { name: macos,   os: macos-latest }
           - { name: windows-msys2, os: windows-latest }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     container: ${{ matrix.container }}
     defaults:
       run:
@@ -73,6 +74,7 @@ jobs:
     name: yenv on ${{ matrix.os }}
     # installs y---lang from main, so it only reflects this repo's changes once they are merged
     continue-on-error: true
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -107,5 +109,5 @@ jobs:
           export PATH="$HOME/.yenv/bin:$PATH"
           mkdir proj && cd proj
           ../build/yenv init demo
-          ls -R
-          ../../build/yenv run || ../build/yenv run
+          cd demo
+          ../../build/yenv run
