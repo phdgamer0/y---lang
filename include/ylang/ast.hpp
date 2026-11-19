@@ -125,15 +125,17 @@ struct LambdaExpr : Expr {
 	ValueType returnType;
 	vector<Expr *> defaultRetArgs;
 	bool returnsConst;
+	bool returnsRef = false;
 	vector<Stmt *> body;
 	bool isCached;
 	LambdaExpr(const vector<ParamSpec> &p, ValueType rt, vector<Expr *> dra,
-		bool rc, const vector<Stmt *> &b, bool cached)
+		bool rc, const vector<Stmt *> &b, bool cached, bool rr = false)
 		 : Expr(ExprType::LAMBDA),
 			params(p),
 			returnType(rt),
 			defaultRetArgs(dra),
 			returnsConst(rc),
+			returnsRef(rr),
 			body(b),
 			isCached(cached) {}
 };
@@ -251,9 +253,10 @@ struct FuncStmt : Stmt {
 	vector<Stmt *> body;
 	ValueType returnType = ValueType::NOTYPE;
 	bool returnsConst;
+	bool returnsRef = false;
 	bool isCached;
 	FuncStmt(const string &n, const vector<ParamSpec> &p, vector<Expr *> dra,
-		const vector<Stmt *> &b, ValueType rt, bool rc, bool cached)
+		const vector<Stmt *> &b, ValueType rt, bool rc, bool cached, bool rr = false)
 		 : Stmt(StmtType::FUNC),
 			name(n),
 			params(p),
@@ -261,6 +264,7 @@ struct FuncStmt : Stmt {
 			body(b),
 			returnType(rt),
 			returnsConst(rc),
+			returnsRef(rr),
 			isCached(cached) {};
 };
 struct IfStmt : Stmt {

@@ -41,19 +41,6 @@
 #include <dlfcn.h>
 #include <termios.h>
 #include <fcntl.h>
-#define Font X11_Font
-#define Status X11_Status
-#define Success X11_Success
-#define None X11_None
-#define Bool X11_Bool
-#include <X11/Xlib.h>
-#include <X11/extensions/XTest.h>
-#include <X11/keysym.h>
-#undef Font
-#undef Status
-#undef Success
-#undef None
-#undef Bool
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -66,6 +53,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <climits>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -86,18 +74,21 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include "crypto.h"
+
 #ifdef _MSC_VER
 #include <intrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
+#ifdef __clang__
+#include <immintrin.h>
+#else
 #include <x86intrin.h>
+#endif
 #elif defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
 #ifndef _WIN32
 #define TRUE N_TRUE
 #define FALSE N_FALSE
-#include "ncurses.h"
 #undef TRUE
 #undef FALSE
 #endif
@@ -110,8 +101,6 @@
 #define KEY_UP RAY_UP
 #define KEY_BACKSPACE RAY_BACKSPACE
 #define KEY_END RAY_END
-#define Matrix RaylibMatrix
-#include "raylib.h"
 #undef KEY_ENTER
 #undef KEY_HOME
 #undef KEY_RIGHT
@@ -121,14 +110,14 @@
 #undef KEY_BACKSPACE
 #undef KEY_END
 #undef Matrix
-#include "qrcodegen.hpp"
-#include <nlohmann/json.hpp>
+
+
 #ifdef _WIN32
 #define IN
 #define CONST const
 #endif
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "httplib.h"
+#ifndef YLANG_NO_HEAVY_INCLUDES
+#endif
 #ifdef _WIN32
 #undef IN
 #undef CONST
@@ -146,16 +135,13 @@
 #undef LIGHTGRAY
 #undef GRAY
 #undef WHITE
-#define REPLXX_STATIC
-#include <replxx.hxx>
-#include <opennn/opennn.h>
 extern bool DEBUGGER_MODE_IS_ENABLED;
 namespace fs = std::filesystem;
 using std::string;
 using std::unordered_map;
 using std::vector;
-using json = nlohmann::json;
-using namespace qrcodegen;
+
+
 // -------------------- TOKENIZER --------------------
 enum class ValueType {
 	NOTYPE,
