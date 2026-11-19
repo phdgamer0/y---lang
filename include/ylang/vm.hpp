@@ -58,6 +58,9 @@ struct VM {
 	void gc_collect();
 	void run(Chunk &chunk);
 
+ public:
+	Value prepareIterable(Value collection, int line, int col); // also used by transpiled comprehensions
+
  private:
 	void callValue(Value callee, int argCount, int line, int col);
 	Value executeDefault(Chunk *defaultChunk, int line) {
@@ -71,7 +74,6 @@ struct VM {
 			return Value::None();
 		return tempVM.stack.back();
 	}
-	Value prepareIterable(Value collection, int line, int col);
 	inline Value pop() {
 		// if (stack.empty()) throw UnderflowError("Stack underflow", 0, 0);
 		Value v = stack.back();
@@ -84,4 +86,6 @@ std::pair<bool, Value> tryCastDunder(Value v, const std::string &dunderName, int
 bool lessValue(const Value &a, const Value &b, std::shared_ptr<Env> globals, std::function<Value(MethodCallExpr *)> methodResolver, std::function<void(std::string, std::vector<std::string>, std::shared_ptr<Env>)> importResolver);
 Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b);
 
+Value indexValue(Value base, const Value &index, int line, int col);
+bool errorTypeMatches(const std::string &errType, const std::string &catchType);
 #endif // YLANG_VM_HPP

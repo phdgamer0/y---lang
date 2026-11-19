@@ -1062,3 +1062,302 @@ Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 	}
 	throw std::runtime_error("Unsupported operand types for this operator");
 }
+
+// `catch X` matches X and every error type below it (also used by transpiled code)
+bool errorTypeMatches(const std::string &errType, const std::string &catchType) {
+	static const std::unordered_map<std::string, std::string>
+		parentMap = {// MathError Subtree
+			{"DivisionByZeroError", "MathError"},
+			{"OverflowError", "MathError"},
+			{"UnderflowError", "MathError"},
+			{"DomainError", "MathError"},
+			{"MathError", "RuntimeError"},
+	
+			// IOError Subtree
+			{"FileNotFoundError", "IOError"},
+			{"PermissionError", "IOError"},
+			{"EOFError", "IOError"},
+			{"FileClosedError", "IOError"},
+			{"IOError", "RuntimeError"},
+	
+			// ImportError Subtree
+			{"ModuleNotFoundError", "ImportError"},
+			{"CircularImportError", "ImportError"},
+			{"InvalidImportError", "ImportError"},
+			{"ImportError", "RuntimeError"},
+	
+			// ValueError/ConstError Subtrees
+			{"EmptyContainerError", "ValueError"},
+			{"ValueError", "RuntimeError"},
+			{"MutationError", "ConstError"},
+			{"ConstError", "RuntimeError"},
+	
+			// SystemError Subtree
+			{"OSError", "SystemError"},
+			{"EnvironmentError", "SystemError"},
+			{"SignalError", "SystemError"},
+			{"SystemError", "RuntimeError"},
+	
+			// ParseError Subtree
+			{"SyntaxError", "ParseError"},
+			{"IndentationError", "ParseError"},
+			{"UnexpectedTokenError", "ParseError"},
+			{"UnterminatedLiteralError", "ParseError"},
+			{"ParseError", "Error"},
+	
+			// ControlFlowError Subtree
+			{"ReturnSignal", "ControlFlowError"},
+			{"BreakSignal", "ControlFlowError"},
+			{"ContinueSignal", "ControlFlowError"},
+			{"ControlFlowError", "Error"},
+	
+			// Warning Subtree
+			{"DeprecationWarning", "Warning"},
+			{"RuntimeWarning", "Warning"},
+			{"ImportWarning", "Warning"},
+			{"Warning", "Error"},
+	
+			// Direct RuntimeError Children
+			{"NameError", "RuntimeError"},
+			{"AttributeError", "RuntimeError"},
+			{"TypeError", "RuntimeError"},
+			{"ArgumentError", "RuntimeError"},
+			{"OwnershipError", "RuntimeError"},
+			{"IndexError", "RuntimeError"},
+			{"KeyError", "RuntimeError"},
+			{"RangeError", "RuntimeError"},
+			{"AssertionError", "RuntimeError"},
+			{"RecursionError", "RuntimeError"},
+			{"CastError", "RuntimeError"},
+			{"IteratorError", "RuntimeError"},
+			{"TimeoutError", "RuntimeError"},
+			{"MemoryError", "RuntimeError"},
+	
+			// Roots
+			{"RuntimeError", "Error"},
+			{"InternalError", "Error"}};
+	if (catchType == "Error")
+		return true;
+	for (std::string cur = errType;;) {
+		if (cur == catchType)
+			return true;
+		auto it = parentMap.find(cur);
+		if (it == parentMap.end())
+			return false;
+		cur = it->second;
+	}
+}
+
+// base[index] without dunders: the VM's OP_GET_INDEX, also called by transpiled code
+Value indexValue(Value base, const Value &index, int line, int col) {
+	while (base.type == ValueType::REFERENCE) {
+		if (!base.get_ptr_safe())
+			throw RuntimeError("Dead-end reference", line, col);
+		base = *(base.get_ptr_safe());
+	}
+	auto getSliceIndices = [&](size_t rawLen) -> std::vector<long long> {
+		auto *s = static_cast<SliceObject *>(index.ref.get());
+		long long len = (long long)rawLen;
+		long long step = 1;
+		if (s->step.type == ValueType::INT)
+			step = s->step.asInt();
+		if (step == 0)
+			throw ValueError("Slice step cannot be zero", line,
+				col);
+		long long start, end;
+		if (step > 0) {
+			start = (s->start.type == ValueType::INT)
+						  ? s->start.asInt()
+						  : 0;
+			end = (s->end.type == ValueType::INT) ? s->end.asInt()
+															  : len;
+		} else {
+			start = (s->start.type == ValueType::INT)
+						  ? s->start.asInt()
+						  : len - 1;
+			end = (s->end.type == ValueType::INT) ? s->end.asInt()
+															  : -1;
+		}
+		if (s->start.type == ValueType::INT && start < 0)
+			start += len;
+		if (s->end.type == ValueType::INT && end < 0)
+			end += len;
+		if (step > 0) {
+			if (start < 0)
+				start = 0;
+			if (end < 0)
+				end = 0;
+			if (start > len)
+				start = len;
+			if (end > len)
+				end = len;
+		} else {
+			if (start > len - 1)
+				start = len - 1;
+			if (end > len - 1)
+				end = len - 1;
+			if (start < -1)
+				start = -1;
+			if (end < -1)
+				end = -1;
+		}
+		std::vector<long long> result;
+		if (step > 0) {
+			for (long long i = start; i < end; i += step)
+				if (i >= 0 && i < len)
+					result.push_back(i);
+		} else {
+			for (long long i = start; i > end; i += step)
+				if (i >= 0 && i < len)
+					result.push_back(i);
+		}
+		return result;
+	};
+		switch (base.type) {
+		case ValueType::LIST: {
+			auto *list = static_cast<ListObject *>(base.ref.get());
+			if (index.type == ValueType::SLICE) {
+				auto indices =
+					getSliceIndices(list->elements.size());
+				auto newList = std::make_shared<ListObject>();
+				newList->elements.reserve(indices.size());
+				for (long long i : indices)
+					newList->elements.push_back(list->elements[i]);
+				return (Value::List(newList->elements));
+			} else {
+				if (!index.isNumber())
+					throw TypeError("List index must be int or slice",
+						line, col);
+				long long idx = index.asInt();
+				if (idx < 0)
+					idx += list->elements.size();
+				if (idx < 0 ||
+					 idx >= (long long)list->elements.size())
+					throw IndexError("List index out of range", line,
+						col);
+				return (list->elements[idx]);
+			}
+			break;
+		}
+		case ValueType::SET: {
+			throw TypeError("Sets are unordered collections and do not support indexing or slicing.", line, col);
+		}
+		case ValueType::VECTOR: {
+			auto *vec = static_cast<VectorObject *>(base.ref.get());
+			if (index.type == ValueType::SLICE) {
+				auto indices = getSliceIndices(vec->elements.size());
+				std::vector<Value> newElems;
+				newElems.reserve(indices.size());
+				for (long long i : indices)
+					newElems.push_back(vec->elements[i]);
+				return (Value::Vector(newElems));
+			} else {
+				if (!index.isNumber())
+					throw TypeError(
+						"Vector index must be int or slice", line,
+						col);
+				long long idx = index.asInt();
+				if (idx < 0)
+					idx += vec->elements.size();
+				if (idx < 0 ||
+					 idx >= (long long)vec->elements.size())
+					throw IndexError("Vector index out of range",
+						line, col);
+				return (vec->elements[idx]);
+			}
+			break;
+		}
+		case ValueType::TUPLE: {
+			auto *tuple = static_cast<TupleObject *>(base.ref.get());
+			if (index.type == ValueType::SLICE) {
+				auto indices =
+					getSliceIndices(tuple->elements.size());
+				std::vector<Value> newElems;
+				newElems.reserve(indices.size());
+				for (long long i : indices)
+					newElems.push_back(tuple->elements[i]);
+				return (Value::Tuple(newElems));
+			} else {
+				if (!index.isNumber())
+					throw TypeError(
+						"Tuple index must be int or slice", line,
+						col);
+				long long idx = index.asInt();
+				if (idx < 0)
+					idx += tuple->elements.size();
+				if (idx < 0 ||
+					 idx >= (long long)tuple->elements.size())
+					throw IndexError("Tuple index out of range", line,
+						col);
+				return (tuple->elements[idx]);
+			}
+			break;
+		}
+		case ValueType::DICT: {
+			auto *dict = static_cast<DictObject *>(base.ref.get());
+			if (dict->items.count(index) == 0)
+				throw KeyError(
+					"Key not found: " + valueToString(index), line,
+					0);
+			return (dict->items.at(index));
+			break;
+		}
+		case ValueType::STRING: {
+			string s = base.asString();
+			if (index.type == ValueType::SLICE) {
+				auto indices = getSliceIndices(s.length());
+				string newStr = "";
+				newStr.reserve(indices.size());
+				for (long long i : indices)
+					newStr += s[i];
+				return (Value::String(newStr));
+			} else {
+				if (!index.isNumber())
+					throw TypeError(
+						"String index must be int or slice", line,
+						col);
+				long long idx = index.asInt();
+				if (idx < 0)
+					idx += s.length();
+				if (idx < 0 || idx >= (long long)s.length())
+					throw IndexError("String index out of range",
+						line, col);
+				return (Value::String(string(1, s[idx])));
+			}
+			break;
+		}
+		case ValueType::RANGE: {
+			auto *rng = static_cast<RangeObject *>(base.ref.get());
+			if (!index.isNumber())
+				throw TypeError("Range index must be a number", line,
+					col);
+			long long idx = index.asInt();
+			long long len =
+				(long long)((rng->end - rng->start) / rng->step);
+			if (!rng->endInclusive) {
+				if ((rng->step > 0 && rng->end > rng->start) ||
+					 (rng->step < 0 && rng->end < rng->start))
+					len = (long long)ceil((rng->end - rng->start) /
+												 rng->step);
+				else
+					len = 0;
+			} else
+				len++;
+			if (idx < 0)
+				throw IndexError("Range index cannot be negative",
+					line, col);
+			double val = rng->start + (idx * rng->step);
+			if (rng->step > 0 && val >= rng->end &&
+				 !rng->endInclusive)
+				throw IndexError("Range index out of range", line,
+					col);
+			return (rng->isFloat
+									 ? Value::Float(val)
+									 : Value::Int((long long)val));
+			break;
+		}
+		default:
+			throw TypeError("Object is not subscriptable", line, col);
+			break;
+		}
+}
