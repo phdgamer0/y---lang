@@ -4,6 +4,7 @@
 #include "ylang/compiler.hpp"
 #include "ylang/pystring.h"
 #include "ylang/serialization.hpp"
+#include "ylang/transpiler.hpp"
 #include "ylang/vm.hpp"
 #include <fstream>
 #include <iostream>
@@ -69,6 +70,7 @@ int main(int argc, char *argv[]) {
 
 	bool compileOnly = false;
 	bool humanReadable = false;
+	bool transpileToCpp = false;
 	std::vector<std::string> scriptArgs;
 
 	// flags only before the script path; everything after it belongs to the script
@@ -78,6 +80,8 @@ int main(int argc, char *argv[]) {
 			compileOnly = true;
 		} else if (scriptArgs.empty() && (arg == "-h" || arg == "--humanreadable")) {
 			humanReadable = true;
+		} else if (scriptArgs.empty() && (arg == "-t" || arg == "--transpile")) {
+			transpileToCpp = true;
 		} else {
 			scriptArgs.push_back(arg);
 		}
@@ -104,7 +108,7 @@ int main(int argc, char *argv[]) {
 		std::cerr << "Interpretation aborted...\n";
 		return 1;
 	}
-	if (compileOnly && ext != ".ymm") {
+	if ((compileOnly || transpileToCpp) && ext != ".ymm") {
 		std::cerr << "FATAL ERROR: -c compiles .ymm source files; " << n << " is already compiled.\n";
 		return 1;
 	}
@@ -178,7 +182,7 @@ int main(int argc, char *argv[]) {
 		}
 		Chunk chunk;
 		ByteCodeCompiler compiler(&chunk);
-		if (compileOnly) {
+		if (compileOnly || transpileToCpp) {
 			// compile-only mode checks names statically; declare top-level names so forward references resolve
 			compiler.isCompileOnly = true;
 			compiler.interp = &interp;
@@ -210,6 +214,29 @@ int main(int argc, char *argv[]) {
 		compiler.emitByte(OpCode::OP_NOTYPE, line, col);
 		compiler.emitByte(OpCode::OP_RETURN, line, col);
 
+		if (transpileToCpp) {
+			CppTranspiler transpiler(&chunk);
+			transpiler.generateConstants();
+			transpiler.prePass(program);
+			for (Stmt *stmt : program)
+				transpiler.transpileStmt(stmt);
+			std::string cppOut = transpiler.finalize(p.stem().string());
+			std::filesystem::path outCpp = p.parent_path() / (p.stem().string() + ".cpp");
+			std::ofstream(outCpp) << cppOut; // kept for the user to read
+			// the cached transpiled_bin target always builds this one file
+			std::ofstream(std::filesystem::absolute("build/release/transpiled.cpp")) << cppOut;
+			std::cout << "Successfully transpiled C++ code to " << outCpp.string() << "\n";
+			std::cout << "Compiling with CMake (linking y-- core)...\n";
+			std::string binName = p.stem().string();
+			int ret = system("cd build_cmake && ninja transpiled_bin > /dev/null 2>&1");
+			if (ret != 0) {
+				std::cerr << "C++ compilation of the transpiled code failed (run `ninja transpiled_bin` in build_cmake to see errors)\n";
+				return 1; // system() returns a wait status; 256 would wrap to exit code 0
+			}
+			std::filesystem::rename("build/release/transpiled_bin", "build/release/" + binName);
+			std::cout << "Successfully built native executable: build/release/" << binName << "\n";
+			return 0;
+		}
 		if (compileOnly) {
 			std::string outPath = p.stem().string() + (humanReadable ? ".yb" : ".ymc");
 			// serialize fully before touching the file so a failure leaves no half-written output

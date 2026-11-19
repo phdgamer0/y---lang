@@ -96,6 +96,7 @@ set(CORE_SOURCES
     src/compiler.cpp
     src/assembler.cpp
     src/serialization.cpp
+    src/transpiler.cpp
     src/interpreter.cpp
     src/methods.cpp
     src/vm.cpp
@@ -160,3 +161,22 @@ endif()
 # Link the main executable to the core library
 target_link_libraries(ymm PUBLIC ylang_core ${REPLXX_LIBRARY})
 
+# Add a permanent target for transpiled scripts to avoid CMake reconfiguration overhead
+# yrun overwrites this file on every `ymm -t`; create a stub so a fresh clone configures
+set(TRANSPILED_SRC "${CMAKE_SOURCE_DIR}/build/release/transpiled.cpp")
+if(NOT EXISTS "${TRANSPILED_SRC}")
+    file(WRITE "${TRANSPILED_SRC}" "int main() { return 0; }\n")
+endif()
+# EXCLUDE_FROM_ALL: a broken transpile must not break `make`; yrun builds it by name
+add_executable(transpiled_bin EXCLUDE_FROM_ALL "${TRANSPILED_SRC}")
+target_include_directories(transpiled_bin PRIVATE include/ylang include src)
+target_link_libraries(transpiled_bin PUBLIC ylang_core)
+set_target_properties(transpiled_bin PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/release")
+if (NOT MSVC)
+    target_compile_options(transpiled_bin PRIVATE -fno-lto)
+    target_link_options(transpiled_bin PRIVATE -fno-lto)
+endif()
+target_compile_definitions(transpiled_bin PRIVATE YLANG_NO_HEAVY_INCLUDES)
+
+# Use precompiled headers for massive speedup during repeated transpilation!
+target_precompile_headers(transpiled_bin PRIVATE include/ylang/objects.hpp include/ylang/vm.hpp)
