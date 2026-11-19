@@ -2145,9 +2145,9 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		auto astmt = static_cast<AssertStmt *>(s);
 		output += "    if (!" + transpileCond(astmt->condition) + ") {\n";
 		if (astmt->message) {
-			output += "        throw AssertionError(__y_val(" + transpileExpr(astmt->message) + ").asString(), 0, 0);\n";
+			output += "        throw AssertionError(__y_val(" + transpileExpr(astmt->message) + ").asString(), " + std::to_string(astmt->line) + ", 0);\n";
 		} else {
-			output += "        throw AssertionError(\"Assertion failed\", 0, 0);\n";
+			output += "        throw AssertionError(\"Assertion failed on line " + std::to_string(astmt->line) + "\", " + std::to_string(astmt->line) + ", 0);\n"; // the VM's default message
 		}
 		output += "    }\n";
 		break;
