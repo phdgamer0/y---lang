@@ -75,8 +75,6 @@ else()
     set(REPLXX_LIBRARY replxx)
 endif()
 
-# System packages
-find_package(ZLIB REQUIRED)
 
 
 # Core Source files (everything except main/yrun)
@@ -105,7 +103,12 @@ set(CORE_SOURCES
     src/stdlib/time.cpp
 )
 
-add_library(ylang_core SHARED ${CORE_SOURCES})
+# Windows: static, since MinGW can't import data (globals) from a DLL without dllimport annotations
+if(WIN32)
+    add_library(ylang_core STATIC ${CORE_SOURCES})
+else()
+    add_library(ylang_core SHARED ${CORE_SOURCES})
+endif()
 set_target_properties(ylang_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(ylang_core PUBLIC include/ylang include src ${replxx_SOURCE_DIR}/include)
 
@@ -119,15 +122,12 @@ if(WIN32)
     target_link_libraries(ylang_core PRIVATE
         ${REPLXX_LIBRARY}
     )
-    target_link_libraries(ylang_core PUBLIC
-        ZLIB::ZLIB zstd
-    )
+    target_link_libraries(ylang_core PUBLIC ws2_32)
 else()
     target_link_libraries(ylang_core PRIVATE
         ${REPLXX_LIBRARY}
     )
     target_link_libraries(ylang_core PUBLIC
-        ZLIB::ZLIB zstd
         m
         Threads::Threads
         ${CMAKE_DL_LIBS}
