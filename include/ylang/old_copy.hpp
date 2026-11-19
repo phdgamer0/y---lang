@@ -1,9 +1,0 @@
-#pragma once
-#include "types.hpp"
-#include "errors.hpp"
-#include "lexer.hpp"
-#include "ast.hpp"
-#include "parser.hpp"
-#include "objects.hpp"
-#include "compiler.hpp"
-#include "vm.hpp"

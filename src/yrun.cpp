@@ -1,3 +1,5 @@
+#define REPLXX_STATIC
+#include <replxx.hxx>
 #include "ylang/assembler.hpp"
 #include "ylang/compiler.hpp"
 #include "ylang/pystring.h"
@@ -82,10 +84,7 @@ int main(int argc, char *argv[]) {
 		vm.globals = interp.env;
 		vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
 		vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-			if (interp.modules.find(libName) != interp.modules.end())
-				interp.modules[libName](targetEnv, symbols);
-			else
-				throw ImportError("Unknown module '" + libName + "'", 0, 0);
+			interp.resolveImport(libName, symbols, targetEnv);
 		};
 		start = std::chrono::steady_clock::now();
 		vm.run(*chunk);
@@ -96,7 +95,9 @@ int main(int argc, char *argv[]) {
 				Chunk bootChunk;
 				ByteCodeCompiler bootCompiler(&bootChunk);
 				int passedArgs = 0;
-				for (size_t i = 1; i < scriptArgs.size(); i++) {
+				// main() with no params gets no argv
+				bool mainTakesArgs = !static_cast<FunctionObject *>(mainVal.ref.get())->params.empty();
+				for (size_t i = 1; mainTakesArgs && i < scriptArgs.size(); i++) {
 					bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
 					passedArgs++;
 				}
@@ -121,10 +122,7 @@ int main(int argc, char *argv[]) {
 		vm.globals = interp.env;
 		vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
 		vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-			if (interp.modules.find(libName) != interp.modules.end())
-				interp.modules[libName](targetEnv, symbols);
-			else
-				throw ImportError("Unknown module '" + libName + "'", 0, 0);
+			interp.resolveImport(libName, symbols, targetEnv);
 		};
 		start = std::chrono::steady_clock::now();
 		vm.run(*chunk);
@@ -135,7 +133,9 @@ int main(int argc, char *argv[]) {
 				Chunk bootChunk;
 				ByteCodeCompiler bootCompiler(&bootChunk);
 				int passedArgs = 0;
-				for (size_t i = 1; i < scriptArgs.size(); i++) {
+				// main() with no params gets no argv
+				bool mainTakesArgs = !static_cast<FunctionObject *>(mainVal.ref.get())->params.empty();
+				for (size_t i = 1; mainTakesArgs && i < scriptArgs.size(); i++) {
 					bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
 					passedArgs++;
 				}
@@ -241,10 +241,7 @@ int main(int argc, char *argv[]) {
 				return interp.Resolve_methods(m);
 			};
 			vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-				if (interp.modules.find(libName) != interp.modules.end())
-					interp.modules[libName](targetEnv, symbols);
-				else
-					throw ImportError("Unknown module '" + libName + "'", 0, 0);
+				interp.resolveImport(libName, symbols, targetEnv);
 			};
 
 			if (transpileToCpp) {
@@ -278,9 +275,9 @@ int main(int argc, char *argv[]) {
 					system(moveCmd.c_str());
 					std::cout << "Successfully built native executable: " << binName << "\n";
 				} else {
-					std::cerr << "g++ compilation failed with code " << ret << "\n";
+					std::cerr << "C++ compilation of the transpiled code failed (run `ninja transpiled_bin` in build_cmake to see errors)\n";
 				}
-				return ret;
+				return ret == 0 ? 0 : 1; // system() returns a wait status; 256 would wrap to exit code 0
 			}
 
 			if (compileOnly) {
@@ -304,7 +301,9 @@ int main(int argc, char *argv[]) {
 					Chunk bootChunk;
 					ByteCodeCompiler bootCompiler(&bootChunk);
 					int passedArgs = 0;
-					for (size_t i = 1; i < scriptArgs.size(); i++) {
+					// main() with no params gets no argv
+					bool mainTakesArgs = !static_cast<FunctionObject *>(mainVal.ref.get())->params.empty();
+					for (size_t i = 1; mainTakesArgs && i < scriptArgs.size(); i++) {
 						bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
 						passedArgs++;
 					}
@@ -332,9 +331,11 @@ int main(int argc, char *argv[]) {
 	} catch (const LangError &e) {
 		printErrorContext(code, e.line, e.col, p);
 		std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
-		std::cerr << "Program crashed with exit code " << e.code;
+		std::cerr << "Program crashed with exit code " << e.code << "\n";
+		return 1; // e.code doesn't fit an 8-bit process exit status
 	} catch (const std::exception &e) {
 		std::cerr << "Internal C++ Error: " << e.what() << "\n";
+		return 1;
 	}
 	return 0;
 }
@@ -374,10 +375,7 @@ void runREPL() {
 	vm.globals = interp.env;
 	vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
 	vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-		if (interp.modules.find(libName) != interp.modules.end())
-			interp.modules[libName](targetEnv, symbols);
-		else
-			throw ImportError("Unknown module '" + libName + "'", 0, 0);
+		interp.resolveImport(libName, symbols, targetEnv);
 	};
 	replxx::Replxx rx;
 	rx.install_window_change_handler();

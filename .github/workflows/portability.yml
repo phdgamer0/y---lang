@@ -33,7 +33,7 @@ jobs:
         run: dnf install -y gcc-c++ cmake ninja-build git libX11-devel libXtst-devel zlib-devel libzstd-devel libgomp
       - name: Deps (macOS)
         if: matrix.name == 'macos'
-        run: brew install ninja zstd libomp
+        run: brew install ninja zstd
       - uses: msys2/setup-msys2@v2
         if: matrix.name == 'windows-msys2'
         with:
@@ -42,16 +42,8 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-zstd git
 
-      - name: Configure (fresh clone, no workaround)
-        id: fresh
-        continue-on-error: true
-        run: cmake -S . -B b0 -GNinja -DCMAKE_BUILD_TYPE=Release
-
-      # transpiled_bin needs this gitignored file at configure time
-      - name: Configure (with transpiled.cpp stub)
-        run: |
-          mkdir -p build/release && echo 'int main(){}' > build/release/transpiled.cpp
-          cmake -S . -B b -GNinja -DCMAKE_BUILD_TYPE=Release
+      - name: Configure (fresh clone)
+        run: cmake -S . -B b -GNinja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build ymm
         run: cmake --build b --target ymm --parallel 4
@@ -64,7 +56,6 @@ jobs:
           grep -q '^42' out.txt
 
       - name: Regression - main() without params
-        continue-on-error: true
         run: |
           printf 'define function main():{\n   print(7)\n}\n' > nomain.ymm
           BIN=build/release/ymm; [ -f $BIN ] || BIN=build/release/ymm.exe
