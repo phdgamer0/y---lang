@@ -1,0 +1,12 @@
+define function main(args): {
+   try: { throw ValueError, "bad" } catch ValueError do: { print("caught") } finally do: { print("fin") }
+   try: { let z = 1 / 0 } catch ZeroDivisionError, RuntimeError do: { print("div") }
+   try: { print(1) } catch RuntimeError do: { print("no") } else do: { print("else") }
+   assert 1 == 1
+   switch 3: {
+     case 1 then do: { print("one") break }
+     case 3 then do: { print("three") break }
+     default do: { print("other") break }
+   }
+   switch "a": { case "b" then do: { print(1) break } case "a" do: { print("A") break } default do: { print("o") break } }
+}

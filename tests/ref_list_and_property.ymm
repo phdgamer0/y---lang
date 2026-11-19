@@ -1,0 +1,24 @@
+define class C: {
+   #public:
+      define function __construct__():{
+         let self.v = 1
+      }
+      define function bump(@x):{
+         x = x + 10
+      }
+   #protected:
+   #private:
+}
+define function inc(@x):{
+   x = x + 1
+}
+define function main():{
+   let l = [1,2,3]
+   inc(@l[1])
+   print(l)
+   let c = C()
+   c.bump(@c.v)
+   print(c.v)
+   let q = @l[2]
+   print(q + 0)
+}

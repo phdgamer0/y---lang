@@ -705,6 +705,16 @@ Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 	if (b.type == ValueType::REFERENCE && b.get_ptr_safe())
 		return EvaluateConstBinary(op, a, *b.get_ptr_safe());
 	if (op == TokenType::PLUS) {
+		if (a.type == ValueType::LIST && b.type == ValueType::LIST) {
+			// new list; elements are shared like any other list copy
+			const auto &x = static_cast<ListObject *>(a.ref.get())->elements;
+			const auto &y = static_cast<ListObject *>(b.ref.get())->elements;
+			std::vector<Value> out;
+			out.reserve(x.size() + y.size());
+			out.insert(out.end(), x.begin(), x.end());
+			out.insert(out.end(), y.begin(), y.end());
+			return Value::List(out);
+		}
 		if (a.type == ValueType::INT && b.type == ValueType::INT) {
 			long long res = a.iVal + b.iVal;
 			bool overflow = ((a.iVal ^ res) & (b.iVal ^ res)) < 0;

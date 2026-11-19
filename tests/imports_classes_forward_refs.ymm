@@ -1,0 +1,25 @@
+import * from Math
+import Time
+let g = 3
+define class P: {
+   #public:
+      define function __construct__():{
+         let self.v = Sqrt(16) + g
+      }
+   #protected:
+   #private:
+}
+define function main():{
+   print(Sqrt(16))
+   print(Time.Now() > 0)
+   let p = P()
+   print(p.v)
+   for let i = 0 if i < 2 then i++ do:{
+      let inner = i
+      print(inner)
+   }
+   later()
+}
+define function later():{
+   print("later")
+}

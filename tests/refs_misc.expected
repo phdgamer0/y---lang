@@ -1,0 +1,12 @@
+2
+[2, 2]
+7
+17
+20
+Uncaught NameError: Undefined variable 'c'
+Traceback (most recent call last): File refs_misc.Y, [line: 23 | col: 28]:
+    define function f(): { inc(@c) return c }
+                            ^
+NameError: Undefined variable 'c'
+Program crashed with exit code -3010000
+rc=1

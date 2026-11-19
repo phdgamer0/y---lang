@@ -1,0 +1,8 @@
+define function f():{
+   let z = 5
+   return @z
+}
+define function main():{
+   let r = f()
+   print(r)
+}

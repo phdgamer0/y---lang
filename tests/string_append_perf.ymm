@@ -1,0 +1,7 @@
+define function main():{
+   let s = ""
+   for let i = 0 if i < 200000 then i++ do:{
+      s += "ab"
+   }
+   print(length(s))
+}

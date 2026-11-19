@@ -1,0 +1,31 @@
+define function f(x) -> int(5):{
+   if x > 1: return 9
+}
+define function pick(@x) -> @int():{
+   return x
+}
+define function main():{
+   print("semi;colon \"quoted\" back\\slash")
+   print(0.1 + 0.2)
+   print(123456789012345678901234567890 + 1)
+   print(<1, 2> * 3)
+   print([1, 2, 3])
+   print((1, "a"))
+   print({1, 2, 3})
+   print({"k": [1, 2]})
+   print(f(0))
+   print(f(5))
+   let a = 1
+   let r = pick(@a)
+   r = 7
+   print(a)
+   let l = [1, 2, 3]
+   let q = @l[1]
+   q = 20
+   print(l)
+   try:{
+      throw ValueError, "boom"
+   } catch TypeError, ValueError do:{
+      print("caught")
+   }
+}

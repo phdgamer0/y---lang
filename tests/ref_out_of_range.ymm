@@ -1,0 +1,5 @@
+define function main():{
+   let l = [1,2,3]
+   let q = @l[7]
+   print(q)
+}

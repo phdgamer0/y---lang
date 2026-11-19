@@ -1,0 +1,7 @@
+Uncaught RecursionError: Stack Overflow Maximum call stack size exceeded.
+Traceback (most recent call last): File recursion_limit.Y, [line: 1 | col: 56]:
+define function d(n): { if n == 0: return 0 return 1 + d(n-1) }
+                                                        ^
+RecursionError: Stack Overflow Maximum call stack size exceeded.
+Program crashed with exit code -3120000
+rc=1

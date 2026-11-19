@@ -1,0 +1,21 @@
+define function main():{
+   let s = "a"
+   let t = s
+   s += "b"
+   print(t)
+   print(s)
+   let u = s + "c"
+   print(s)
+   let l = ["x"]
+   let m = l[0]
+   l[0] += "y"
+   print(m)
+   print(l)
+   s += s
+   print(s)
+   let d = {"k": "v"}
+   let w = d["k"]
+   w += "z"
+   print(d)
+   print(w)
+}

@@ -31,17 +31,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y g++ cmake ninja-build libx11-dev libxtst-dev zlib1g-dev libzstd-dev
       - name: Deps (Fedora)
         if: matrix.name == 'fedora'
-        run: dnf install -y gcc-c++ cmake ninja-build git libX11-devel libXtst-devel zlib-devel libzstd-devel libgomp
+        run: dnf install -y gcc-c++ cmake ninja-build git libX11-devel libXtst-devel diffutils
       - name: Deps (macOS)
         if: matrix.name == 'macos'
-        run: brew install ninja zstd
+        run: brew install ninja
       - uses: msys2/setup-msys2@v2
         if: matrix.name == 'windows-msys2'
         with:
           msystem: UCRT64
           install: >-
             mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-zstd git
+            git diffutils
 
       - name: Configure (fresh clone)
         run: cmake -S . -B b -GNinja -DCMAKE_BUILD_TYPE=Release
@@ -58,6 +58,9 @@ jobs:
           # bytecode (.ymc) and assembly (.yb) round trips must give the same result
           ./$BIN -c smoke.ymm && ./$BIN smoke.ymc | grep -q '^42'
           ./$BIN -c -h smoke.ymm && ./$BIN smoke.yb | grep -q '^42'
+
+      - name: Regression tests (source, .ymc and .yb)
+        run: bash tests/run.sh build/release/ymm
 
       - name: Regression - main() without params
         run: |

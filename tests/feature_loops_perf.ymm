@@ -1,0 +1,7 @@
+define function fib(n:int()) -> int(): { if n < 2: { return n } return fib(n-1)+fib(n-2) }
+define function main(args): {
+   let s = 0
+   for let i = 0 if i < 20000000 then i++ do: { s += i % 7 }
+   print(s)
+   print(fib(32))
+}

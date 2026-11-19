@@ -1,0 +1,16 @@
+let const G = "a"
+define function main():{
+   let const L = "x"
+   try:{
+      G += "b"
+   } catch ConstError do:{
+      print("blocked G")
+   }
+   try:{
+      L += "y"
+   } catch ConstError do:{
+      print("blocked L")
+   }
+   print(G)
+   print(L)
+}

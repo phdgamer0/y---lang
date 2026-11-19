@@ -1,0 +1,7 @@
+define function main():{
+   let l = [1,2,3]
+   let q = @l[1]
+   l.pop()
+   l.pop()
+   print(q)
+}

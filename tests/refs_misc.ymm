@@ -1,0 +1,36 @@
+~ no-compile: uses an undefined name on purpose (-c must reject it)
+define function inc(@x): { x = x + 1 }
+define function main(*_): {
+  let a = 1
+  inc(@a)
+  print(a)
+  let l = [1,2]
+  inc(l[0])
+  inc(@l[0])
+  print(l)
+  ~ default arg + ref
+  define function d(@x, y = 5): { x = x + y }
+  d(@a)
+  print(a)
+  d(@a, 10)
+  print(a)
+  ~ loop
+  for let i = 0 if i < 3 then i++ do: { inc(@a) }
+  print(a)
+  ~ closure
+  define function mk(): {
+    let c = 0
+    define function f(): { inc(@c) return c }
+    return f
+  }
+  let g = mk()
+  print(g()) print(g())
+  ~ aliasing
+  define function sw(@p, @q): { let t = p  p = q  q = t }
+  let u = 1 let v = 2
+  sw(@u, @u)
+  print(u)
+  sw(@u,@v) print(u, v)
+  ~ ref to temp
+  print(1)
+}

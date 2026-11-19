@@ -1,0 +1,10 @@
+[1, 2]
+55
+55
+Uncaught OwnershipError: Cannot return a reference to a local variable
+Traceback (most recent call last): File refs_functions.Y, [line: 4 | col: 51]:
+define function dangling() -> @int(): { let z = 5 return z }
+                                                   ^
+OwnershipError: Cannot return a reference to a local variable
+Program crashed with exit code -3070000
+rc=1

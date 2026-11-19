@@ -1,0 +1,11 @@
+define class P: {
+   #public:
+   define function __construct__(n:int()):{ let self.n = n }
+   define function get():{ return self.n }
+   #protected:
+   #private:
+}
+define function main(args): {
+   let p = P(4)
+   print(p.get())
+}

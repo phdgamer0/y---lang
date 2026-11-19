@@ -1,0 +1,14 @@
+define cached function f(n:int()) -> int(): { if n < 2: { return n } return f(n-1)+f(n-2) }
+define function main(args): {
+   print(f(40))
+   let l = [3,1,2]
+   let m = l
+   m.append(9)
+   print(l)
+   let r = @l
+   r.append(7)
+   print(l)
+   let d = $l
+   d.append(0)
+   print(l)
+}

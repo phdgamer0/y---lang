@@ -1,0 +1,4 @@
+define function d(n): { if n == 0: return 0 return 1 + d(n-1) }
+define function main(*_): {
+print(d(100000))
+}

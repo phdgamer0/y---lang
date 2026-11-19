@@ -1,0 +1,16 @@
+define function main():{
+   let a = [1, 2]
+   let b = [3, [4]]
+   let c = a + b
+   print(c)
+   print(a)
+   print([1] + [])
+   print([] + [])
+   print([1, 2] + [3])
+   a += [9]
+   print(a)
+   c[3].append(5)
+   print(b)
+   let t = "x" + [1]
+   print(t)
+}

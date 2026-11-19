@@ -1,0 +1,9 @@
+define function main():{
+   let a = 3037000500
+   print(a * a)
+   let b = 1
+   for let i = 0 if i < 70 then i++ do:{
+      b = b * 2
+   }
+   print(b)
+}

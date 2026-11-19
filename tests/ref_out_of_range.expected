@@ -1,0 +1,7 @@
+Uncaught IndexError: List index out of range
+Traceback (most recent call last): File ref_out_of_range.Y, [line: 3 | col: 11]:
+   let q = @l[7]
+           ^
+IndexError: List index out of range
+Program crashed with exit code -3080000
+rc=1

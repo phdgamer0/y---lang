@@ -1,0 +1,6 @@
+define function main():{
+   let l = [1,2,3]
+   let q = @l[-1]
+   q = 9
+   print(l)
+}

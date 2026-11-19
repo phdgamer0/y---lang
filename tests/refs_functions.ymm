@@ -1,0 +1,13 @@
+~ no-compile: uses an undefined name on purpose (-c must reject it)
+define function push(@lst, v): { lst.append(v) }
+define function rec(@n, k): { if k == 0: return n  n = n + k  return rec(@n, k-1) }
+define function dangling() -> @int(): { let z = 5 return z }
+define function main(*_): {
+  let l = []
+  push(@l, 1) push(@l, 2) print(l)
+  let n = 0 print(rec(@n, 10)) print(n)
+  let r = dangling() print(r)
+  let q = @n
+  print(q)
+  print(s)
+}

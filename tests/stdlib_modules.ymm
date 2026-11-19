@@ -1,0 +1,21 @@
+import Math
+import Time
+import Regex
+import FileStream
+import Os
+import System
+import Random
+import Vector
+define function main():{
+   print(Math.Sqrt(16))
+   print(Math.Abs(-3))
+   print(Time.Now() > 0)
+   print(Regex.match("a+b", "aaab"))
+   print(Os.Exists("/nonexistent", "x"))
+   print(typeof(Random))
+   print(typeof(Os))
+   print(typeof(System))
+   print(<1,2> + <3,4>)
+   print(int("42") + 1)
+   print(length([1,2,3]))
+}
