@@ -1,0 +1,19 @@
+define function add(a:int(), b:int()) -> int(): { return a + b }
+define function fib(n:int()) -> int(): { if n < 2: { return n } return fib(n-1)+fib(n-2) }
+define function main(args): {
+   let x = 5
+   let y = 2.5
+   let s = "hi"
+   print(add(x, 3))
+   print(fib(15))
+   print(x * y)
+   print(f"{s} there {x}")
+   let i = 0
+   while i < 3 do: { print(i) i++ }
+   for let j = 0 if j < 3 then j++ do: { print(j*j) }
+   do: { i-- } while i > 0
+   print(i)
+   print("big" if x > 3 else "small")
+   print(2 ** 10, 7 // 2, 7 % 3, 2**70)
+   print(x === 5 and not (y < 1))
+}

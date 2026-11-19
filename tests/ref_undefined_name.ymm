@@ -1,0 +1,6 @@
+define function inc(@x):{
+   x = x + 1
+}
+define function main():{
+   inc(@zzz)
+}

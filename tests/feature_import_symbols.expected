@@ -1,0 +1,7 @@
+Uncaught InvalidImportError: Module 'Math' does not export 'sqrt'
+Traceback (most recent call last): File feature_import_symbols.Y, [line: 1 | col: 0]:
+import sqrt, pow from Math
+^
+InvalidImportError: Module 'Math' does not export 'sqrt'
+Program crashed with exit code -3200300
+rc=1

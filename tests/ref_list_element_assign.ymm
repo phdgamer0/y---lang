@@ -1,0 +1,6 @@
+define function main(*_):{
+   let l = [1,2,3]
+   let q = @l[0]
+   q = 7
+   print(l)
+}

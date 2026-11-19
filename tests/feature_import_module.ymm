@@ -1,0 +1,4 @@
+import Math
+define function main(args): {
+   print(Math.sqrt(16))
+}

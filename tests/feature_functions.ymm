@@ -1,0 +1,14 @@
+define function inc(@x:int()): { x += 1 }
+define function va(*args, **kwargs): { print(args) print(kwargs) }
+define function dflt(a, b = 10): { return a + b }
+define function main(args): {
+   let n = 1
+   inc(n)
+   print(n)
+   va(1,2,3, k=4)
+   print(dflt(1))
+   print(dflt(b=3, a=1))
+   
+   let f = define lambda function(x) -> int(): { return x * 2 }
+   print(f(4))
+}

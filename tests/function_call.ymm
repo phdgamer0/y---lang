@@ -1,0 +1,7 @@
+define function add(a, b):{
+   return a + b
+}
+define function main():{
+   let x = 40
+   print(add(x, 2))
+}

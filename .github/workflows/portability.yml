@@ -1,0 +1,113 @@
+name: Portability check
+
+on:
+  push:
+    branches: [ main, 'ci/**', feature-transpiler ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ymm:
+    name: ymm on ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu,  os: ubuntu-latest }
+          - { name: ubuntu-arm, os: ubuntu-24.04-arm }
+          - { name: fedora,  os: ubuntu-latest, container: 'fedora:latest' }
+          - { name: macos,   os: macos-latest }
+          - { name: windows-msys2, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: ${{ matrix.name == 'windows-msys2' && 'msys2 {0}' || 'bash' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps (Ubuntu)
+        if: startsWith(matrix.name, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y g++ cmake ninja-build libx11-dev libxtst-dev zlib1g-dev libzstd-dev
+      - name: Deps (Fedora)
+        if: matrix.name == 'fedora'
+        run: dnf install -y gcc-c++ cmake ninja-build git libX11-devel libXtst-devel diffutils
+      - name: Deps (macOS)
+        if: matrix.name == 'macos'
+        run: brew install ninja
+      - uses: msys2/setup-msys2@v2
+        if: matrix.name == 'windows-msys2'
+        with:
+          msystem: UCRT64
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+            git diffutils
+
+      - name: Configure (fresh clone)
+        run: cmake -S . -B b -GNinja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build ymm
+        run: cmake --build b --target ymm --parallel 4
+
+      - name: Smoke test
+        run: |
+          printf 'define function add(a, b):{\n   return a + b\n}\ndefine function main(*args):{\n   print(add(40, 2))\n}\n' > smoke.ymm
+          BIN=build/release/ymm; [ -f $BIN ] || BIN=build/release/ymm.exe
+          ./$BIN smoke.ymm | tee out.txt
+          grep -q '^42' out.txt
+          # bytecode (.ymc) and assembly (.yb) round trips must give the same result
+          ./$BIN -c smoke.ymm && ./$BIN smoke.ymc | grep -q '^42'
+          ./$BIN -c -h smoke.ymm && ./$BIN smoke.yb | grep -q '^42'
+
+      - name: Regression tests (source, .ymc and .yb)
+        run: bash tests/run.sh build/release/ymm
+
+      - name: Regression - main() without params
+        run: |
+          printf 'define function main():{\n   print(7)\n}\n' > nomain.ymm
+          BIN=build/release/ymm; [ -f $BIN ] || BIN=build/release/ymm.exe
+          ./$BIN nomain.ymm 2>&1 | tee out2.txt
+          grep -q '^7' out2.txt
+
+  yenv:
+    name: yenv on ${{ matrix.os }}
+    # installs y---lang from main, so it only reflects this repo's changes once they are merged
+    continue-on-error: true
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: phdgamer0/yenv
+      - name: Deps (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y g++ cmake ninja-build libx11-dev libxtst-dev zlib1g-dev libzstd-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+      - name: Deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install zstd libomp
+      - name: Build yenv
+        run: |
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel 4
+      - name: yenv install ymm (real user flow, pulls y---lang main)
+        if: runner.os != 'Windows'
+        run: |
+          ./build/yenv install ymm
+          ls -la ~/.yenv/bin
+          test -x ~/.yenv/bin/ymm || test -x ~/.yenv/bin/y_lang_new
+      - name: yenv init + build + run
+        if: runner.os != 'Windows'
+        run: |
+          export PATH="$HOME/.yenv/bin:$PATH"
+          mkdir proj && cd proj
+          ../build/yenv init demo
+          cd demo
+          ../../build/yenv run

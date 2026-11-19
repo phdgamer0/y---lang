@@ -1,0 +1,7 @@
+Uncaught AttributeError: 'Math' object has no attribute 'sqrt'
+Traceback (most recent call last): File feature_import_module.Y, [line: 3 | col: 13]:
+   print(Math.sqrt(16))
+             ^
+AttributeError: 'Math' object has no attribute 'sqrt'
+Program crashed with exit code -3020000
+rc=1

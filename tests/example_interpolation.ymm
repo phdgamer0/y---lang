@@ -1,0 +1,107 @@
+import Math
+let const tb = {
+   -2.4 : 3.688,
+   -1.1 : 4.7345,
+   -0.5 : 2.9375,
+   0.2 : 0.204,
+   0.9 : -2.2355,
+   1.3 : -3.1015,
+   1.8 : -3.284,
+   2.1 : -2.7695,
+   2.5 : -1.1875,
+   2.9 : 1.5945
+}
+
+define function calculate_forward_diff(table:dict())->dict():{
+   let x = tuple(table.keys().sort())
+   let y = (table[x_] for x_ in x)
+   let res = {"x" : x, "y0" : y}
+   let key = "y0"
+   let i = 1
+   while i < length(y) do:{
+      let r = [None] * i
+      for let j = i if j < length(res[key]) then j++ do:{
+         let diff = res[key][j] - res[key][j - 1]
+         r.append(diff)
+      }
+      key = 'y' + string(i)
+      res[key] = tuple(r)
+      i++
+   }
+   return res
+}
+define function calculate_backward_diff(table:dict())->dict():{
+   let x = tuple(table.keys().sort())
+   let y = (table[x_] for x_ in x)
+   let res = {"x" : x, "y0" : y}
+   let key = "y0"
+   let i = 0
+   while i < length(y) - 1 do:{
+      i++
+      let r = [None] * length(y)
+      for let j = 0 if j < length(res[key]) - i then j++ do:{
+         let diff = res[key][j + 1] - res[key][j]
+         r[j] = diff
+      }
+      key = "y" + string(i)
+      res[key] = tuple(r)
+   }
+   return res
+}
+define function F(point:float()) -> float():{
+   return Math.Log(point) * Math.Tan(point)
+}
+define function N1f(point:float(), step:float(), func:function()) -> float():{
+   return float((func(point + step) - func(point - step)) / (2 * step))
+}
+define function richardson(point:float(), step:float(), iter:int(), N1:function(), func:function()) -> float():{
+   if iter === 1: return N1(point, step, func)
+   return richardson(point, step / 2, iter - 1, N1, func) + float(1 /((4 ** (iter - 1)) - 1)) * (richardson(point, step / 2, iter - 1, N1, func) - richardson(point, step, iter - 1, N1, func))
+}
+define function simpson(start:float(), end:float(), tb:dict()) -> float():{
+   let sKys = tb.keys().sort()
+   let h = sKys[1] - sKys[0]
+   let i = 1
+   let res := tb[sKys[0]] + tb[sKys[-1]]
+   if length(sKys) % 3 === 1:{
+      while i < length(sKys) - 1 and h == sKys[i + 1] - sKys[i] do:{
+         if i % 3: res += 3 * tb[sKys[i]]
+         else: res += 2 * tb[sKys[i]]
+         i++
+      }
+      if i < length(sKys) - 1 and h != sKys[i + 1] - sKys[i]: throw RangeError, "Cannot perform on non equal ranges"
+      res *= 3.0 / 8.0
+   }
+   elif length(sKys) % 2:{
+      while i < length(sKys) - 1 and h == sKys[i + 1] - sKys[i] do:{
+         if i % 2: res += 4 * tb[sKys[i]]
+         else: res += 2 * tb[sKys[i]]
+         i++
+      }
+      if i < length(sKys) - 1 and h != sKys[i + 1] - sKys[i]: throw RangeError, "Cannot perform on non equal ranges"
+      res /= 3
+   }
+   return res * h
+}
+define function main():{
+   let tb_one_third = {
+      0.0: 0.0,
+      1.0: 1.0,
+      2.0: 4.0,
+      3.0: 9.0,
+      4.0: 16.0
+   }
+   ~ Should output approx 21.333
+   let result1 = simpson(0.0, 4.0, tb_one_third)
+   print(result1)
+   let tb_three_eighths = {
+      0.0: 0.0,
+      1.0: 1.0,
+      2.0: 8.0,
+      3.0: 27.0
+   }
+
+   ~ Should output exactly 20.25
+   let result2 = simpson(0.0, 3.0, tb_three_eighths)
+   print(result2)
+}

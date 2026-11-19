@@ -1,0 +1,8 @@
+define function g(@x) -> @int():{
+   return x
+}
+define function main():{
+   let a = 1
+   let r = g(@a)
+   print(r)
+}

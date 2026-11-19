@@ -1,0 +1,7 @@
+Uncaught NameError: Undefined variable 'zzz'
+Traceback (most recent call last): File ref_undefined_name.Y, [line: 5 | col: 4]:
+   inc(@zzz)
+    ^
+NameError: Undefined variable 'zzz'
+Program crashed with exit code -3010000
+rc=1

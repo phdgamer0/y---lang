@@ -1,0 +1,101 @@
+
+define class TEST_CLASS: {
+   #public:
+      
+   #protected:
+      define function __construct__(name:string(), age:int()):{
+         let self.name = name
+         let self.age = age
+      }
+      define function __display__():{
+         return f"{self.name.capitalize()} is {self.age} years old"
+      }
+      define function __inspect__():{
+         return self.__display__()
+      }
+      define function __less__(other:object()):{
+         return self.age < other.age
+      }
+      define function __less__(other:int()):{
+         return self.age < other
+      }
+      define function __to_int__():{
+         return self.age
+      }
+      define function __to_bool__():{
+         return self.age >= 18
+      }
+   #private:
+      
+}
+define class CHILD_TEST_CLASS: inherits TEST_CLASS:{
+   #public:
+   #protected:
+      define function __construct__(name:string(), age:int(), height:int(), weigth:int()):{
+         super().__construct__(name, age)
+         let self.height = height
+         let self.weigth = weigth
+      }
+      define function __display__():{
+         return super().__display__() + f' and is {self.height} cm tall'
+      }
+      define function __count__():{
+         return self.height
+      }
+   #private:
+}
+define class DataContainer: {
+   #private:
+      define function __construct__(factor):{
+         let self.elements = [10, 20, 30, 40]
+         let self.factor = factor
+      }
+      define function __at__(index):{
+         return self.elements[index]
+      }
+      define function __put__(index, value):{
+         self.elements[index] = value
+      }
+      define function __call__(multiplier):{
+         return self.factor * multiplier
+      }
+      define function __count__():{
+         return length(self.elements)
+      }
+   #public:
+   #protected:
+}
+define class CustomList: {
+   #public:
+      
+   #private:
+      define function __construct__():{
+         let self.data = [10, 20, 30, 40, 50]
+      }
+      define function __traverse__():{
+         return self
+      }
+      define function __advance__(index):{
+         if index >= length(self.data): {
+            throw IteratorError, "End of loop"
+         }
+         return self.data[index]
+      }
+   #protected:
+      
+}
+define class NAME: {
+   #public:
+      define function __construct__():{
+         return self
+      }
+      let private self.secret_stuff = "you shouldnt see this, we explicitly made this private"
+   #private:
+      let public self.other_stuff = "you should see this since we explicitly set it as public so the label under it shouldnt matter"   
+   #protected:
+      let self.stuff = "you shouldnt see this because the publicity isnt explicit and it takes the publicity of the lable (protected)"
+}
+define function main():{
+   let n = NAME()
+   print(n.other_stuff)
+}

@@ -1,0 +1,7 @@
+Uncaught OwnershipError: Cannot return a reference to a local variable
+Traceback (most recent call last): File return_ref_type_local.Y, [line: 3 | col: 4]:
+   return z
+    ^
+OwnershipError: Cannot return a reference to a local variable
+Program crashed with exit code -3070000
+rc=1

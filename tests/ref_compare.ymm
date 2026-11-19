@@ -1,0 +1,9 @@
+define function main():{
+   let a = 1
+   let x = @a * 5 - 2
+   let e = @a == 1
+   let c = @a < 2
+   print(x)
+   print(e)
+   print(c)
+}

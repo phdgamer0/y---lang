@@ -1,0 +1,6 @@
+define function f(x): { x = x + 1 }
+define function main(*_): {
+  let a = 1
+  f(a)
+  print(a)
+}

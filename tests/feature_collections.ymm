@@ -1,0 +1,26 @@
+define function main(args): {
+   let l = [1,2,3]
+   l.append(4)
+   print(l)
+   print(l[1])
+   let d = {"a": 1, "b": 2}
+   print(d["a"])
+   for v in l do: { print(v) }
+   let n = 0
+   for k, v in d do: { n += v }
+   print(n)
+   for p, q in l, l do: { print(p+q) }
+   let t = (1,2,3)
+   print(t)
+   print(l[1:3])
+   print([i*2 for i in l])
+   print("abc".upper())
+   print(length(l))
+   let a, b = 1, 2
+   print(a+b)
+   a, b = b, a
+   print(a)
+   print(0...5)
+   for r in 0...4 do: { if r == 1: { continue } if r == 3: { break } print(r) }
+   print(length({1,2,2}))
+}
