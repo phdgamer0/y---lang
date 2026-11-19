@@ -11,6 +11,10 @@
 #include <utility>
 #include <stdexcept>
 #include <memory>
+#include <iostream>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 // --- Value Constructor / Identity Helpers ---
 inline Value __y_val(const Value& v) { return v; }
@@ -54,12 +58,51 @@ template <class T> inline T &__y_tmp_lvalue(T &&v) { return v; }
 inline long long __y_ck_add(long long a, long long b) { long long r; if (__builtin_add_overflow(a, b, &r)) __y_int_overflow(); return r; }
 inline long long __y_ck_sub(long long a, long long b) { long long r; if (__builtin_sub_overflow(a, b, &r)) __y_int_overflow(); return r; }
 inline long long __y_ck_mul(long long a, long long b) { long long r; if (__builtin_mul_overflow(a, b, &r)) __y_int_overflow(); return r; }
-inline long long __y_imod(long long a, long long b) { if (b == 0) throw std::runtime_error("Modulo by zero"); return a % b; }
-inline long long __y_ifloordiv(long long a, long long b) { if (b == 0) throw std::runtime_error("Division by zero"); return a / b; }
-inline double __y_fdiv(double a, double b) { if (b == 0.0) throw std::runtime_error("Division by zero"); return a / b; }
-inline long long __y_ffloordiv(double a, double b) { if (b == 0.0) throw std::runtime_error("Division by zero"); return (long long)std::floor(a / b); }
-inline double __y_fmod(double a, double b) { if (b == 0.0) throw std::runtime_error("Modulo by zero"); return std::fmod(a, b); }
-inline long long __y_shr(long long a, long long b) { if (b < 0) throw std::runtime_error("Negative shift count"); return b >= 63 ? (a < 0 ? -1 : 0) : a >> b; }
+inline long long __y_imod(long long a, long long b) { if (b == 0) throw DivisionByZeroError("Modulo by zero", 0, 0); return a % b; }
+inline long long __y_ifloordiv(long long a, long long b) { if (b == 0) throw DivisionByZeroError("Division by zero", 0, 0); return a / b; }
+inline double __y_fdiv(double a, double b) { if (b == 0.0) throw DivisionByZeroError("Division by zero", 0, 0); return a / b; }
+inline long long __y_ffloordiv(double a, double b) { if (b == 0.0) throw DivisionByZeroError("Division by zero", 0, 0); return (long long)std::floor(a / b); }
+inline double __y_fmod(double a, double b) { if (b == 0.0) throw DivisionByZeroError("Modulo by zero", 0, 0); return std::fmod(a, b); }
+inline long long __y_shr(long long a, long long b) { if (b < 0) throw ValueError("Negative shift count", 0, 0); return b >= 63 ? (a < 0 ? -1 : 0) : a >> b; }
+
+// --- Errors: same types and report as the VM ---
+// the error being handled, as a LangError (vm_ops throws plain runtime_errors; the VM converts them per opcode)
+inline LangError __y_current_error() {
+    try {
+        throw;
+    } catch (const LangError &e) {
+        return e;
+    } catch (const std::exception &e) {
+        std::string m = e.what();
+        if (m.find("zero") != std::string::npos) return DivisionByZeroError(m, 0, 0);
+        return ValueError(m, 0, 0);
+    }
+}
+inline int __y_report_uncaught() {
+    LangError e = __y_current_error();
+    std::cout.flush();
+    std::cerr << "Uncaught " << e.type << ": " << e.message << "\n";
+    std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
+    std::cerr << "Program crashed with exit code " << e.code << "\n";
+    return 1;
+}
+
+// deep recursion: throw the VM's RecursionError before the native stack runs out
+inline char *__y_stack_base = nullptr;
+inline long __y_stack_room = 0;
+inline void __y_stack_init(char *base) {
+    __y_stack_base = base;
+    long size = 1L << 20; // Windows default
+#if !defined(_WIN32)
+    struct rlimit rl;
+    size = (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) ? (long)rl.rlim_cur : 8L << 20;
+#endif
+    __y_stack_room = size - (256L << 10);
+}
+inline void __y_stack_check() {
+    if (__y_stack_base - (char *)__builtin_frame_address(0) > __y_stack_room)
+        throw RecursionError("Stack Overflow Maximum call stack size exceeded.", 0, 0);
+}
 
 // --- Untyped locals kept as a C++ Value instead of in current_env (mirror Env::get / Env::assign) ---
 inline Value &__y_rd(Value &v) {
@@ -98,39 +141,59 @@ inline std::string __y_to_str(const char* v) { return std::string(v); }
 inline std::string __y_to_str(const Value& v) { return v.asString(); }
 
 // --- Environment Reference Lookups ---
+// Env::lookup hands back a shared dummy for unknown names; the VM raises NameError instead
+inline Var &__y_lookup(const std::shared_ptr<Env>& env, const std::string& name) {
+    for (Env *e = env.get(); e; e = e->parent.get()) {
+        auto it = e->vars.find(name);
+        if (it != e->vars.end()) return it->second;
+    }
+    throw NameError("Undefined variable '" + name + "'", 0, 0);
+}
+inline Value __y_get(const std::shared_ptr<Env>& env, const std::string& name) {
+    __y_lookup(env, name);
+    return env->get(name);
+}
+inline void __y_assign(const std::shared_ptr<Env>& env, const std::string& name, Value v) {
+    Var &var = __y_lookup(env, name);
+    if (var.isLocked) { // the VM's error for a type change of a `:=` variable
+        const Value *cur = var.alias ? var.alias : (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) ? var.value.get_ptr_safe() : &var.value;
+        if (cur->type != v.type) throw ConstError("Cannot change type of locked variable", 0, 0);
+    }
+    env->assign(name, std::move(v));
+}
 inline Value __y_make_ref(const std::shared_ptr<Env>& env, const std::string& name) {
-    auto& var = env->lookup(name);
+    auto& var = __y_lookup(env, name);
     if (var.alias) return Value::Reference(var.alias, nullptr);
     if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value;
     return Value::FromExisting(std::make_shared<VarRefObject>(env, name), ValueType::REFERENCE);
 }
 
 inline long long& __y_env_int_ref(const std::shared_ptr<Env>& env, const std::string& name) {
-    auto& var = env->lookup(name);
+    auto& var = __y_lookup(env, name);
     if (var.alias) return var.alias->iVal;
     if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe()->iVal;
     return var.value.iVal;
 }
 inline double& __y_env_float_ref(const std::shared_ptr<Env>& env, const std::string& name) {
-    auto& var = env->lookup(name);
+    auto& var = __y_lookup(env, name);
     if (var.alias) return var.alias->fVal;
     if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe()->fVal;
     return var.value.fVal;
 }
 inline bool& __y_env_bool_ref(const std::shared_ptr<Env>& env, const std::string& name) {
-    auto& var = env->lookup(name);
+    auto& var = __y_lookup(env, name);
     if (var.alias) return var.alias->bVal;
     if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe()->bVal;
     return var.value.bVal;
 }
 inline Value& __y_env_val_ref(const std::shared_ptr<Env>& env, const std::string& name) {
-    auto& var = env->lookup(name);
+    auto& var = __y_lookup(env, name);
     if (var.alias) return *var.alias;
     if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return *var.value.get_ptr_safe();
     return var.value;
 }
 inline Value* __y_env_ptr(const std::shared_ptr<Env>& env, const std::string& name) {
-    auto& var = env->lookup(name);
+    auto& var = __y_lookup(env, name);
     if (var.alias) return var.alias;
     if (var.value.type == ValueType::REFERENCE && var.value.get_ptr_safe()) return var.value.get_ptr_safe();
     return &var.value;
@@ -423,20 +486,20 @@ inline Value __y_mul(const Value& a, const Value& b) {
 }
 
 inline Value __y_div(long long a, long long b) {
-    if (b == 0) throw std::runtime_error("Division by zero");
+    if (b == 0) throw DivisionByZeroError("Division by zero", 0, 0);
     return Value::Float((double)a / (double)b);
 }
 inline Value __y_div(long long a, const Value& b) { return __y_div(Value::Int(a), b); }
 inline Value __y_div(const Value& a, long long b) {
-    if (b == 0) throw std::runtime_error("Division by zero");
+    if (b == 0) throw DivisionByZeroError("Division by zero", 0, 0);
     return __y_div(a, Value::Float((double)b));
 }
 inline Value __y_div(double a, double b) {
-    if (b == 0.0) throw std::runtime_error("Division by zero");
+    if (b == 0.0) throw DivisionByZeroError("Division by zero", 0, 0);
     return Value::Float(a / b);
 }
 inline Value __y_div(const Value& a, double b) {
-    if (b == 0.0) throw std::runtime_error("Division by zero");
+    if (b == 0.0) throw DivisionByZeroError("Division by zero", 0, 0);
     return __y_div(a, Value::Float(b));
 }
 inline Value __y_div(double a, const Value& b) { return __y_div(Value::Float(a), b); }
@@ -444,7 +507,7 @@ inline Value __y_div(double a, const Value& b) { return __y_div(Value::Float(a),
 inline Value __y_div(const Value& a, const Value& b) {
     if (a.isNumber() && b.isNumber()) {
         double db = b.asFloat();
-        if (db == 0.0) throw std::runtime_error("Division by zero");
+        if (db == 0.0) throw DivisionByZeroError("Division by zero", 0, 0);
         return Value::Float(a.asFloat() / db);
     }
     return EvaluateConstBinary(TokenType::SLASH, a, b);
@@ -535,42 +598,34 @@ inline std::vector<Value> __y_to_vector(const Value& val) {
 }
 
 // --- Optimized Indexing ---
+// same lookup and errors as the VM's OP_GET_INDEX (slices included)
+inline Value __y_get_index(const Value& base, const Value& index) { return indexValue(base, index, 0, 0); }
 inline Value __y_get_index(const Value& base, long long idx) {
-    if (const auto* vec = __y_get_vector_ptr(base)) {
-        if (idx < 0) idx += (long long)vec->size();
-        if (idx >= 0 && idx < (long long)vec->size()) return (*vec)[idx];
-        return Value::None();
+    if (base.type == ValueType::LIST) {
+        const auto &el = static_cast<ListObject *>(base.ref.get())->elements;
+        if (idx >= 0 && idx < (long long)el.size()) return el[idx];
     }
-    if (base.type == ValueType::STRING) {
-        std::string s = base.asString();
-        if (idx < 0) idx += (long long)s.size();
-        if (idx >= 0 && idx < (long long)s.size()) return Value::String(std::string(1, s[idx]));
-    }
-    return Value::None();
+    return indexValue(base, Value::Int(idx), 0, 0);
 }
-
-inline Value __y_get_index(const Value& base, const Value& index) {
-    if (index.type == ValueType::INT) {
-        return __y_get_index(base, index.iVal);
-    }
-    if (const auto* dict = __y_get_dict_ptr(base)) {
-        auto it = dict->find(index);
-        if (it != dict->end()) return it->second;
-        return Value::None();
-    }
-    if (const auto* vec = __y_get_vector_ptr(base)) {
-        long long idx = index.asInt();
-        if (idx < 0) idx += (long long)vec->size();
-        if (idx >= 0 && idx < (long long)vec->size()) return (*vec)[idx];
-        return Value::None();
-    }
-    if (base.type == ValueType::STRING) {
-        std::string s = base.asString();
-        long long idx = index.asInt();
-        if (idx < 0) idx += (long long)s.size();
-        if (idx >= 0 && idx < (long long)s.size()) return Value::String(std::string(1, s[idx]));
-    }
-    return Value::None();
+inline Value __y_slice(const Value& start, const Value& end, const Value& step) {
+    Value v;
+    v.type = ValueType::SLICE;
+    v.ref = std::make_shared<SliceObject>(start, end, step);
+    return v;
+}
+inline Value __y_range(const Value& start, const Value& end, const Value& step, bool si, bool ei) {
+    bool isFloat = start.type == ValueType::FLOAT || end.type == ValueType::FLOAT || step.type == ValueType::FLOAT;
+    return Value::Range(start.asFloat(), end.asFloat(), step.asFloat(), si, ei, isFloat);
+}
+// @l[i]: a reference to a list element (negative i counts from the end, as in the VM)
+inline Value __y_list_ref(Value base, long long i) {
+    while (base.type == ValueType::REFERENCE && base.get_ptr_safe()) base = *base.get_ptr_safe();
+    if (base.type != ValueType::LIST) throw TypeError("Only list elements can be referenced", 0, 0);
+    auto list = std::static_pointer_cast<ListObject>(base.ref);
+    long long n = (long long)list->elements.size();
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) throw IndexError("List index out of range", 0, 0);
+    return Value::FromExisting(std::make_shared<ListRefObject>(list, (int)i), ValueType::REFERENCE);
 }
 
 inline void __y_set_index(Value& base, long long idx, const Value& val) {

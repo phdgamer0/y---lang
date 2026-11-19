@@ -45,7 +45,7 @@ struct NativeVar {
 struct LocalDecl {
 	enum Kind { ENV, NATIVE, VALUE, CONST } kind = ENV;
 	std::string type = "?"; // "?" not known yet, "long long" / "double" / "bool", "Value" = dynamic
-	bool locked = false, escapes = false, fixed = false, incDec = false;
+	bool locked = false, escapes = false, fixed = false, incDec = false, refParam = false;
 	Expr *init = nullptr;
 	std::vector<struct AssignStmt *> stores;
 };
@@ -83,9 +83,13 @@ struct CppTranspiler {
 		for (auto it = constScopes.rbegin(); it != constScopes.rend(); ++it) {
 			auto found = it->find(name);
 			if (found != it->end())
-				return &found->second;
+				return found->second.cppName.empty() ? nullptr : &found->second; // "" = a non-const local shadows it
 		}
 		return nullptr;
+	}
+	void shadowConst(const std::string &name) {
+		if (!constScopes.empty())
+			constScopes.back()[name] = {"", ConstType::VALUE, false};
 	}
 
 	const NativeVar *lookupNativeVar(const std::string &name) const {
@@ -111,6 +115,9 @@ struct CppTranspiler {
 	std::vector<int> envScopeStack;
 	std::vector<char> envNeeded;
 	std::string beginScope(const std::string &restorerVar);
+	int funcDepth = 0; // > 0 inside a function or lambda body
+	std::string globalDecls = "";
+	void declConst(const std::string &type, const std::string &cppVar, const std::string &init);
 	void endScope(bool hadRestorer);
 	void markEnvDecl() {
 		if (!envScopeStack.empty())
@@ -118,6 +125,7 @@ struct CppTranspiler {
 	}
 	void shadowWithEnv(const std::string &name) {
 		markEnvDecl();
+		shadowConst(name);
 		if (!nativeScopes.empty())
 			nativeScopes.back()[name] = {"", false, false};
 	}

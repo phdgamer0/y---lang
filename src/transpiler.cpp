@@ -5,6 +5,28 @@
 
 using namespace std;
 
+// a C++ string literal with the same bytes as s
+static std::string cppStr(const std::string &s) {
+	std::string out = "\"";
+	for (unsigned char c : s) {
+		if (c == '"' || c == '\\')
+			out += '\\', out += (char)c;
+		else if (c == '\n')
+			out += "\\n";
+		else if (c == '\r')
+			out += "\\r";
+		else if (c == '\t')
+			out += "\\t";
+		else if (c < 0x20 || c == 0x7f) {
+			char buf[8];
+			snprintf(buf, sizeof buf, "\\%03o", c);
+			out += buf;
+		} else
+			out += (char)c;
+	}
+	return out + "\"";
+}
+
 static std::string serializeValue(const Value &val) {
 	switch (val.type) {
 	case ValueType::INT:
@@ -14,7 +36,7 @@ static std::string serializeValue(const Value &val) {
 	case ValueType::BOOL:
 		return "Value::Bool(" + std::string(val.isTruthy() ? "true" : "false") + ")";
 	case ValueType::STRING:
-		return "Value::String(\"" + val.asString() + "\")";
+		return "Value::String(" + cppStr(val.asString()) + ")";
 	case ValueType::NONE:
 		return "Value::None()";
 	case ValueType::LIST: {
@@ -188,6 +210,15 @@ std::string CppTranspiler::exprType(Expr *e, bool checked) {
 		std::string t = exprType(id->expr, checked);
 		return (t == "long long" || t == "double" || t == "?") ? t : "";
 	}
+	case ExprType::TERNARY: {
+		auto t = static_cast<TernaryExpr *>(e);
+		std::string a = exprType(t->trueBranch, checked), b = exprType(t->falseBranch, checked);
+		if (a.empty() || b.empty())
+			return "";
+		if (a == "?" || b == "?")
+			return "?";
+		return a == b ? a : "";
+	}
 	case ExprType::BINARY: {
 		auto b = static_cast<BinExpr *>(e);
 		std::string r = exprType(b->right, checked);
@@ -312,6 +343,16 @@ std::string CppTranspiler::operand(Expr *e) {
 	return (t == "bool" || t == "double") ? "__y_val(" + code + ")" : code;
 }
 
+// a const local, or a file-scope variable for a global const so functions can read it too
+void CppTranspiler::declConst(const std::string &type, const std::string &cppVar, const std::string &init) {
+	if (funcDepth == 0) {
+		globalDecls += "static " + type + " " + cppVar + ";\n";
+		output += "    " + cppVar + " = " + init + ";\n";
+	} else {
+		output += "    const " + type + " " + cppVar + " = " + init + ";\n";
+	}
+}
+
 std::string CppTranspiler::beginScope(const std::string &restorerVar) {
 	constScopes.push_back({});
 	nativeScopes.push_back({});
@@ -355,6 +396,7 @@ void CppTranspiler::analyzeFunction(FuncStmt *func) {
 		const auto &p = func->params[i];
 		LocalDecl d;
 		d.fixed = true;
+		d.refParam = p.mode == CopyMode::REF;
 		std::string t = baseCppType(info.paramTypeStrs[i]);
 		if (isNativeType(t) || t == "std::string") {
 			d.kind = LocalDecl::NATIVE; // already a typed C++ param
@@ -655,6 +697,9 @@ void CppTranspiler::analyzeFunction(FuncStmt *func) {
 		case StmtType::SKIP:
 			walkE(static_cast<SkipStmt *>(s)->count);
 			break;
+		case StmtType::FUNC:
+			sc.back()[static_cast<FuncStmt *>(s)->name] = -1;
+			break;
 		default:
 			break;
 		}
@@ -918,7 +963,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 	}
 	case ExprType::STRING: {
 		auto str = static_cast<StringExpr *>(e);
-		return "Value::String(\"" + str->val + "\")";
+		return "Value::String(" + cppStr(str->val) + ")";
 	}
 	case ExprType::BOOL: {
 		auto b = static_cast<BoolExpr *>(e);
@@ -938,7 +983,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 			return cs->cppName;
 		}
 		// Dynamic variable lookup
-		return "current_env->get(\"" + v->name + "\")";
+		return "__y_get(current_env, \"" + v->name + "\")";
 	}
 	case ExprType::CALL: {
 		auto call = static_cast<CallExpr *>(e);
@@ -1033,6 +1078,9 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 						} else {
 							return "__y_env_val_ref(current_env, \"" + v->name + "\")";
 						}
+					} else if (mode == CopyMode::REF && argExpr && argExpr->type == ExprType::INDEX) {
+						auto idx = static_cast<IndexExpr *>(argExpr); // @l[i]: the callee aliases the element
+						return "__y_tmp_lvalue(__y_list_ref(__y_val(" + transpileExpr(idx->base) + "), __y_to_int(" + transpileExpr(idx->index) + ")))";
 					} else {
 						return "__y_val(" + transpileExpr(argExpr) + ")";
 					}
@@ -1128,7 +1176,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 			return targetFunc + "(" + argsStr + ")";
 		}
 
-		string calleeStr = "current_env->get(\"" + call->name + "\")";
+		string calleeStr = "__y_get(current_env, \"" + call->name + "\")";
 		string argsStr = "";
 		for (size_t i = 0; i < call->args.size(); i++) {
 			CopyMode mode = (i < call->modes.size()) ? call->modes[i] : CopyMode::SHALLOW;
@@ -1136,7 +1184,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 				if (auto v = dynamic_cast<VarExpr *>(call->args[i])) {
 					argsStr += "__y_make_ref(current_env, \"" + v->name + "\")";
 				} else if (auto idx = dynamic_cast<IndexExpr *>(call->args[i])) {
-					argsStr += "Value::FromExisting(std::make_shared<ListRefObject>(std::static_pointer_cast<ListObject>(" + transpileExpr(idx->base) + ".ref), " + "__y_to_int(" + transpileExpr(idx->index) + ")), ValueType::REFERENCE)";
+					argsStr += "__y_list_ref(__y_val(" + transpileExpr(idx->base) + "), __y_to_int(" + transpileExpr(idx->index) + "))";
 				} else {
 					argsStr += "__y_val(" + transpileExpr(call->args[i]) + ")";
 				}
@@ -1160,6 +1208,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 
 		size_t pos_idx = 0;
 		for (const auto &p : lambda->params) {
+			shadowConst(p.name);
 			bool isLocked = (p.type != ValueType::NOTYPE);
 			bool isConst = p.isConst;
 			if (p.isVariadic) {
@@ -1212,6 +1261,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 		auto oldNativeScopes = nativeScopes;
 		auto oldEnvScopes = envScopeStack; // the lambda has its own Env
 		envScopeStack.clear();
+		funcDepth++;
 		currentFuncReturnsConst = lambda->returnsConst;
 		currentFuncReturnsRef = lambda->returnsRef;
 		currentFuncNativeReturnType = "Value"; // the generated C++ lambda always returns Value
@@ -1238,6 +1288,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 		currentFuncDefaultRet = oldDefaultRet;
 		nativeScopes = oldNativeScopes;
 		envScopeStack = oldEnvScopes;
+		funcDepth--;
 
 		lambdaStr += bodyOutput;
 		lambdaStr += "    })";
@@ -1289,9 +1340,9 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 			string varName = "\"" + varExpr->name + "\"";
 			string helper = incDec->isIncrement ? "__y_add" : "__y_sub";
 			if (incDec->isPrefix) {
-				return "[&]() { Value tmp = " + helper + "(current_env->get(" + varName + "), Value::Int(1LL)); current_env->assign(" + varName + ", tmp); return tmp; }()";
+				return "[&]() { Value tmp = " + helper + "(__y_get(current_env, " + varName + "), Value::Int(1LL)); __y_assign(current_env, " + varName + ", tmp); return tmp; }()";
 			} else {
-				return "[&]() { Value tmp = current_env->get(" + varName + "); current_env->assign(" + varName + ", " + helper + "(tmp, Value::Int(1LL))); return tmp; }()";
+				return "[&]() { Value tmp = __y_get(current_env, " + varName + "); __y_assign(current_env, " + varName + ", " + helper + "(tmp, Value::Int(1LL))); return tmp; }()";
 			}
 		}
 		return "Value::None() /* Unsupported IncDec expr */";
@@ -1313,7 +1364,7 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 			if (auto v = dynamic_cast<VarExpr *>(o->expr)) {
 				return "__y_make_ref(current_env, \"" + v->name + "\")";
 			} else if (auto idx = dynamic_cast<IndexExpr *>(o->expr)) {
-				return "Value::FromExisting(std::make_shared<ListRefObject>(std::static_pointer_cast<ListObject>(" + transpileExpr(idx->base) + ".ref), " + "__y_to_int(" + transpileExpr(idx->index) + ")), ValueType::REFERENCE)";
+				return "__y_list_ref(__y_val(" + transpileExpr(idx->base) + "), __y_to_int(" + transpileExpr(idx->index) + "))";
 			}
 		} else if (o->mode == CopyMode::DEEP) {
 			return "deepCopy(__y_val(" + transpileExpr(o->expr) + "))";
@@ -1403,6 +1454,56 @@ std::string CppTranspiler::transpileExpr(Expr *e) {
 		s += "})";
 		return s;
 	}
+	case ExprType::VECTOR:
+	case ExprType::SET: {
+		const auto &els = e->type == ExprType::VECTOR ? static_cast<VectorExpr *>(e)->elements : static_cast<SetExpr *>(e)->elements;
+		std::string items;
+		for (size_t i = 0; i < els.size(); i++)
+			items += (i ? ", " : "") + std::string("__y_val(") + transpileExpr(els[i]) + ")";
+		if (e->type == ExprType::VECTOR)
+			return "Value::Vector(std::vector<Value>{" + items + "})";
+		return "Value::Set(std::unordered_set<Value, ValueHash, ValueEqual>{" + items + "})";
+	}
+	case ExprType::TERNARY: {
+		auto t = static_cast<TernaryExpr *>(e);
+		if (isNativeType(exprType(e, false)))
+			return "(" + transpileCond(t->condition) + " ? " + emitNative(t->trueBranch, false) + " : " + emitNative(t->falseBranch, false) + ")";
+		return "(" + transpileCond(t->condition) + " ? __y_val(" + transpileExpr(t->trueBranch) + ") : __y_val(" + transpileExpr(t->falseBranch) + "))";
+	}
+	case ExprType::RANGE: {
+		auto r = static_cast<RangeExpr *>(e);
+		std::string step = r->step ? "__y_val(" + transpileExpr(r->step) + ")" : "Value::Int(1LL)";
+		return "__y_range(__y_val(" + transpileExpr(r->start) + "), __y_val(" + transpileExpr(r->end) + "), " + step + ", " +
+				 (r->startInclusive ? "true" : "false") + ", " + (r->endInclusive ? "true" : "false") + ")";
+	}
+	case ExprType::SLICE: {
+		auto sl = static_cast<SliceExpr *>(e);
+		auto part = [&](Expr *x) { return x ? "__y_val(" + transpileExpr(x) + ")" : std::string("Value::None()"); };
+		return "__y_slice(" + part(sl->start) + ", " + part(sl->end) + ", " + part(sl->step) + ")";
+	}
+	case ExprType::COMPREHENSION: {
+		// same as the VM: iterate the stream, bind the variable in a fresh scope, filter, collect
+		auto c = static_cast<CompExpr *>(e);
+		bool isDict = c->typeToken == TokenType::LBRACE && c->valueExpr;
+		bool isSet = c->typeToken == TokenType::LBRACE && !isDict;
+		std::string iter = "__y_to_vector(transpiled_vm.prepareIterable(__y_val(" + transpileExpr(c->iterable) + "), 0, 0))";
+		beginScope("");
+		nativeScopes.back()[c->varName] = {"", false, false}; // the loop variable lives in current_env
+		std::string body = "        EnvRestorer _comp_env(current_env);\n";
+		body += "        current_env->set(" + cppStr(c->varName) + ", _it, false, false);\n";
+		if (c->filter)
+			body += "        if (!(" + transpileCond(c->filter) + ")) continue;\n";
+		if (isDict)
+			body += "        _out[__y_val(" + transpileExpr(c->expression) + ")] = __y_val(" + transpileExpr(c->valueExpr) + ");\n";
+		else if (isSet)
+			body += "        _out.insert(__y_val(" + transpileExpr(c->expression) + "));\n";
+		else
+			body += "        _out.push_back(__y_val(" + transpileExpr(c->expression) + "));\n";
+		endScope(false);
+		std::string container = isDict ? "std::unordered_map<Value, Value, ValueHash, ValueEqual>" : isSet ? "std::unordered_set<Value, ValueHash, ValueEqual>" : "std::vector<Value>";
+		std::string make = isDict ? "Value::Dict(_out)" : isSet ? "Value::Set(_out)" : c->typeToken == TokenType::LPAREN ? "Value::Tuple(_out)" : c->typeToken == TokenType::LT ? "Value::Vector(_out)" : "Value::List(_out)";
+		return "([&]() -> Value {\n        " + container + " _out;\n        for (const Value &_it : " + iter + ") {\n" + body + "        }\n        return " + make + ";\n    })()";
+	}
 	case ExprType::FSTRING: {
 		auto fs = static_cast<FStringExpr *>(e);
 		string s = "([&]() -> Value { std::string _res = \"\"; ";
@@ -1488,6 +1589,7 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 				output += "    Value " + cpp + " = __y_val(" + val + ");\n";
 			}
 			nativeScopes.back()[let->name] = {d.kind == LocalDecl::NATIVE ? d.type : "Value", false, false, cpp};
+			shadowConst(let->name);
 			break;
 		}
 		if (let->isConst && let->value) {
@@ -1496,7 +1598,7 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 			if (let->value->type == ExprType::NUMBER) {
 				auto num = static_cast<NumberExpr *>(let->value);
 				if (num->isFloat) {
-					output += "    constexpr double " + cppVar + " = " + to_string(num->val) + ";\n";
+					declConst("double", cppVar, emitNative(num, false));
 					output += "    current_env->set(\"" + let->name + "\", Value::Float(" + cppVar + "), true, true);\n";
 					constScopes.back()[let->name] = {cppVar, ConstType::FLOAT, true};
 				} else {
@@ -1508,11 +1610,11 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 						isBig = true;
 					}
 					if (!isBig) {
-						output += "    constexpr long long " + cppVar + " = " + rawVal + "LL;\n";
+						declConst("long long", cppVar, rawVal + "LL");
 						output += "    current_env->set(\"" + let->name + "\", Value::Int(" + cppVar + "), true, true);\n";
 						constScopes.back()[let->name] = {cppVar, ConstType::INT, true};
 					} else {
-						output += "    const Value " + cppVar + " = Value::BigInt(\"" + rawVal + "\");\n";
+						declConst("Value", cppVar, "Value::BigInt(\"" + rawVal + "\")");
 						output += "    current_env->set(\"" + let->name + "\", " + cppVar + ", true, true);\n";
 						constScopes.back()[let->name] = {cppVar, ConstType::VALUE, false};
 					}
@@ -1520,17 +1622,17 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 			} else if (let->value->type == ExprType::BOOL) {
 				auto b = static_cast<BoolExpr *>(let->value);
 				std::string bStr = b->value ? "true" : "false";
-				output += "    constexpr bool " + cppVar + " = " + bStr + ";\n";
+				declConst("bool", cppVar, bStr);
 				output += "    current_env->set(\"" + let->name + "\", Value::Bool(" + cppVar + "), true, true);\n";
 				constScopes.back()[let->name] = {cppVar, ConstType::BOOL, true};
 			} else if (let->value->type == ExprType::STRING) {
 				auto str = static_cast<StringExpr *>(let->value);
-				output += "    const std::string " + cppVar + " = \"" + str->val + "\";\n";
+				declConst("std::string", cppVar, cppStr(str->val));
 				output += "    current_env->set(\"" + let->name + "\", Value::String(" + cppVar + "), true, true);\n";
 				constScopes.back()[let->name] = {cppVar, ConstType::STRING, false};
 			} else {
 				std::string valStr = letValue(let->value, transpileExpr(let->value));
-				output += "    const Value " + cppVar + " = " + valStr + ";\n";
+				declConst("Value", cppVar, valStr);
 				output += "    current_env->set(\"" + let->name + "\", " + cppVar + ", true, true);\n";
 				constScopes.back()[let->name] = {cppVar, ConstType::VALUE, false};
 			}
@@ -1579,7 +1681,7 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 				if (val->type == ExprType::NUMBER) {
 					auto num = static_cast<NumberExpr *>(val);
 					if (num->isFloat) {
-						output += "    constexpr double " + cppVar + " = " + to_string(num->val) + ";\n";
+						declConst("double", cppVar, emitNative(num, false));
 						output += "    current_env->set(\"" + name + "\", Value::Float(" + cppVar + "), true, true);\n";
 						constScopes.back()[name] = {cppVar, ConstType::FLOAT, true};
 					} else {
@@ -1591,11 +1693,11 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 							isBig = true;
 						}
 						if (!isBig) {
-							output += "    constexpr long long " + cppVar + " = " + rawVal + "LL;\n";
+							declConst("long long", cppVar, rawVal + "LL");
 							output += "    current_env->set(\"" + name + "\", Value::Int(" + cppVar + "), true, true);\n";
 							constScopes.back()[name] = {cppVar, ConstType::INT, true};
 						} else {
-							output += "    const Value " + cppVar + " = Value::BigInt(\"" + rawVal + "\");\n";
+							declConst("Value", cppVar, "Value::BigInt(\"" + rawVal + "\")");
 							output += "    current_env->set(\"" + name + "\", " + cppVar + ", true, true);\n";
 							constScopes.back()[name] = {cppVar, ConstType::VALUE, false};
 						}
@@ -1603,17 +1705,17 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 				} else if (val->type == ExprType::BOOL) {
 					auto b = static_cast<BoolExpr *>(val);
 					std::string bStr = b->value ? "true" : "false";
-					output += "    constexpr bool " + cppVar + " = " + bStr + ";\n";
+					declConst("bool", cppVar, bStr);
 					output += "    current_env->set(\"" + name + "\", Value::Bool(" + cppVar + "), true, true);\n";
 					constScopes.back()[name] = {cppVar, ConstType::BOOL, true};
 				} else if (val->type == ExprType::STRING) {
 					auto str = static_cast<StringExpr *>(val);
-					output += "    const std::string " + cppVar + " = \"" + str->val + "\";\n";
+					declConst("std::string", cppVar, cppStr(str->val));
 					output += "    current_env->set(\"" + name + "\", Value::String(" + cppVar + "), true, true);\n";
 					constScopes.back()[name] = {cppVar, ConstType::STRING, false};
 				} else {
 					std::string valStr = transpileExpr(val);
-					output += "    const Value " + cppVar + " = " + valStr + ";\n";
+					declConst("Value", cppVar, valStr);
 					output += "    current_env->set(\"" + name + "\", " + cppVar + ", true, true);\n";
 					constScopes.back()[name] = {cppVar, ConstType::VALUE, false};
 				}
@@ -1631,12 +1733,12 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		if (assign->target->type == ExprType::VAR) {
 			auto v = static_cast<VarExpr *>(assign->target);
 			if (lookupConst(v->name)) {
-				output += "    throw RuntimeError(\"Cannot reassign a constant variable '" + v->name + "'\", 0, 0);\n";
+				output += "    throw ConstError(\"Cannot reassign a constant variable '" + v->name + "'\", 0, 0);\n";
 				break;
 			}
 			if (auto *nv = lookupNativeVar(v->name)) {
 				if (nv->isConst) {
-					output += "    throw RuntimeError(\"Cannot reassign a constant variable '" + v->name + "'\", 0, 0);\n";
+					output += "    throw ConstError(\"Cannot reassign a constant variable '" + v->name + "'\", 0, 0);\n";
 					break;
 				}
 				std::string cpp = nv->cppName.empty() ? v->name : nv->cppName;
@@ -1685,17 +1787,17 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 			string valStr = transpileExpr(assign->value);
 			string varName = "\"" + v->name + "\"";
 			if (assign->op == TokenType::ASSIGN) {
-				output += "    current_env->assign(" + varName + ", __y_val(" + valStr + "));\n";
+				output += "    __y_assign(current_env, " + varName + ", __y_val(" + valStr + "));\n";
 			} else if (assign->op == TokenType::PLUS_EQ) {
-				output += "    current_env->assign(" + varName + ", __y_add(current_env->get(" + varName + "), __y_val(" + valStr + ")));\n";
+				output += "    __y_assign(current_env, " + varName + ", __y_add(__y_get(current_env, " + varName + "), __y_val(" + valStr + ")));\n";
 			} else if (assign->op == TokenType::MINUS_EQ) {
-				output += "    current_env->assign(" + varName + ", __y_sub(current_env->get(" + varName + "), __y_val(" + valStr + ")));\n";
+				output += "    __y_assign(current_env, " + varName + ", __y_sub(__y_get(current_env, " + varName + "), __y_val(" + valStr + ")));\n";
 			} else if (assign->op == TokenType::STAR_EQ) {
-				output += "    current_env->assign(" + varName + ", __y_mul(current_env->get(" + varName + "), __y_val(" + valStr + ")));\n";
+				output += "    __y_assign(current_env, " + varName + ", __y_mul(__y_get(current_env, " + varName + "), __y_val(" + valStr + ")));\n";
 			} else if (assign->op == TokenType::DIV_EQ) {
-				output += "    current_env->assign(" + varName + ", __y_div(current_env->get(" + varName + "), __y_val(" + valStr + ")));\n";
+				output += "    __y_assign(current_env, " + varName + ", __y_div(__y_get(current_env, " + varName + "), __y_val(" + valStr + ")));\n";
 			} else {
-				output += "    current_env->assign(" + varName + ", __y_val(" + valStr + "));\n";
+				output += "    __y_assign(current_env, " + varName + ", __y_val(" + valStr + "));\n";
 			}
 		} else if (assign->target->type == ExprType::INDEX) {
 			auto idx = static_cast<IndexExpr *>(assign->target);
@@ -1707,6 +1809,28 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 				valStr = std::string(helper) + "(__y_get_index(" + baseStr + ", " + idxStr + "), " + valStr + ")";
 			output += "    __y_set_index(" + baseStr + ", " + idxStr + ", " + valStr + ");\n";
 		}
+		break;
+	}
+	case StmtType::MULTI_ASSIGN: {
+		// `a, b = b, a`: evaluate every value first, then assign each target (as the VM does)
+		auto ma = static_cast<MultiAssignStmt *>(s);
+		output += "    {\n";
+		beginScope("");
+		std::vector<std::string> temps;
+		for (size_t i = 0; i < ma->values.size(); i++) {
+			std::string tmp = getUniqueVar("_ma");
+			output += "    Value " + tmp + " = __y_val(" + transpileExpr(ma->values[i]) + ");\n";
+			temps.push_back(tmp);
+		}
+		for (size_t i = 0; i < ma->targets.size() && i < temps.size(); i++) {
+			std::string name = "__ma_value_" + std::to_string(i);
+			nativeScopes.back()[name] = {"Value", false, false, temps[i]};
+			VarExpr tmpVar(name);
+			AssignStmt as(ma->targets[i], TokenType::ASSIGN, &tmpVar);
+			transpileStmt(&as);
+		}
+		endScope(false);
+		output += "    }\n";
 		break;
 	}
 	case StmtType::IF: {
@@ -1920,16 +2044,30 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		}
 
 		Expr *retExpr = ret->value ? ret->value : currentFuncDefaultRet;
+		// returning a reference to this call's own local: the VM raises OwnershipError
+		Expr *refTarget = (currentFuncReturnsRef && ret->value) ? ret->value : nullptr;
+		if (ret->value && ret->value->type == ExprType::OWNERSHIP && static_cast<OwnershipExpr *>(ret->value)->mode == CopyMode::REF)
+			refTarget = static_cast<OwnershipExpr *>(ret->value)->expr;
+		if (refTarget && refTarget->type == ExprType::VAR) {
+			auto it = varDecl.find(refTarget);
+			if (it != varDecl.end() && !decls[it->second].refParam && funcDepth > 0) {
+				output += "    throw OwnershipError(\"Cannot return a reference to a local variable\", 0, 0);\n";
+				break;
+			}
+		}
 		string valStr;
 		if (currentFuncReturnsRef && ret->value) {
 			if (auto v = dynamic_cast<VarExpr *>(ret->value)) {
+				std::string rt = baseCppType(currentFuncNativeReturnType);
 				if (lookupNativeVar(v->name)) {
 					valStr = v->name;
+				} else if (currentFuncNativeReturnType.back() == '&') { // bind the caller's variable itself
+					valStr = std::string(rt == "long long" ? "__y_env_int_ref" : rt == "double" ? "__y_env_float_ref" : rt == "bool" ? "__y_env_bool_ref" : "__y_env_val_ref") + "(current_env, \"" + v->name + "\")";
 				} else {
 					valStr = "__y_make_ref(current_env, \"" + v->name + "\")";
 				}
 			} else if (auto idx = dynamic_cast<IndexExpr *>(ret->value)) {
-				valStr = "Value::FromExisting(std::make_shared<ListRefObject>(std::static_pointer_cast<ListObject>(" + transpileExpr(idx->base) + ".ref), " + "__y_to_int(" + transpileExpr(idx->index) + ")), ValueType::REFERENCE)";
+				valStr = "__y_list_ref(__y_val(" + transpileExpr(idx->base) + "), __y_to_int(" + transpileExpr(idx->index) + "))";
 			} else {
 				valStr = transpileExpr(ret->value);
 			}
@@ -2027,19 +2165,28 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 			transpileStmt(stmt);
 		endScope(true);
 		output += "    }\n";
-		for (const auto &catchBlock : tstmt->catches) {
-			// YLang exceptions are C++ exceptions (e.g. RuntimeError)
-			// Catch block types are string names of exceptions
-			// We will catch std::exception for simplicity and check type, or generate specific catch blocks
-			// For simplicity in C++, we can catch the base class `YError` or standard exceptions
-			output += "    catch (std::exception& e) {\n";
-			output += beginScope("env_restorer");
-			shadowWithEnv("e");
-			output += "        current_env->set(\"e\", Value::String(e.what()), false, false);\n";
-			for (auto stmt : catchBlock.body)
-				transpileStmt(stmt);
-			endScope(true);
+		if (!tstmt->catches.empty()) {
+			output += "    catch (...) {\n";
+			output += "        LangError _err = __y_current_error();\n";
+			bool first = true;
+			for (const auto &catchBlock : tstmt->catches) {
+				std::string cond;
+				for (const auto &t : catchBlock.types)
+					cond += (cond.empty() ? "" : " || ") + std::string("errorTypeMatches(_err.type, ") + cppStr(t) + ")";
+				output += std::string(first ? "        if (" : "        else if (") + (cond.empty() ? "true" : cond) + ") {\n";
+				first = false;
+				output += beginScope("env_restorer");
+				shadowWithEnv("e");
+				output += "        current_env->set(\"e\", Value::String(_err.what()), false, false);\n";
+				for (auto stmt : catchBlock.body)
+					transpileStmt(stmt);
+				endScope(true);
+				output += "        }\n";
+			}
+			output += "        else throw;\n";
 			output += "    }\n";
+		} else {
+			output += "    catch (...) { throw; }\n"; // C++ needs a handler; finally-only try
 		}
 		if (!tstmt->finallyBlock.empty()) {
 			output += "    // NOTE: C++ doesn't have finally block natively for try/catch, using RAII or scope exit in future.\n";
@@ -2059,6 +2206,17 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 	}
 	case StmtType::FUNC: {
 		auto func = reinterpret_cast<struct FuncStmt *>(s);
+		if (funcDepth > 0) {
+			LambdaExpr lam(func->params, func->returnType, func->defaultRetArgs, func->returnsConst, func->body, func->isCached, func->returnsRef);
+			std::string fenv = getUniqueVar("_fenv");
+			std::string code = transpileExpr(&lam);
+			code.replace(code.find("[current_env]"), 13, "[current_env = " + fenv + "]");
+			output += "    auto " + fenv + " = std::make_shared<Env>();\n";
+			output += "    " + fenv + "->parent = y_transpile_globals;\n";
+			output += "    { Value _fv = " + code + "; " + fenv + "->set(" + cppStr(func->name) + ", _fv, false, false); current_env->set(" + cppStr(func->name) + ", _fv, false, false); }\n";
+			shadowWithEnv(func->name);
+			break;
+		}
 		auto it = userFunctions.find(func->name);
 		if (it == userFunctions.end())
 			break;
@@ -2073,16 +2231,19 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		}
 
 		funcDef += "inline auto " + info.cppName + "(" + paramsStr + ") -> " + info.returnTypeStr + " {\n";
+		funcDef += "    __y_stack_check();\n";
 		funcDef += "    auto current_env = std::make_shared<Env>();\n";
 		funcDef += "    current_env->parent = y_transpile_globals;\n";
 
 		analyzeFunction(func);
+		funcDepth++;
 		nativeScopes.push_back({});
 		constScopes.push_back({});
 
 		for (size_t i = 0; i < info.params.size(); i++) {
 			const auto &p = info.params[i];
 			const std::string &pType = info.paramTypeStrs[i];
+			shadowConst(p.name); // a param hides a global const of the same name
 
 			if (p.isVariadic) {
 				funcDef += "    current_env->set(\"" + p.name + "\", " + p.name + ", false, true);\n";
@@ -2165,6 +2326,7 @@ void CppTranspiler::transpileStmt(Stmt *s) {
 		userFunctionDefs += funcDef;
 
 		output = saved_output;
+		funcDepth--;
 		nativeScopes.pop_back();
 		constScopes.pop_back();
 		currentFuncReturnsConst = oldReturnsConst;
@@ -2256,6 +2418,7 @@ std::string CppTranspiler::finalize(const std::string &scriptName) {
 	ss << "// Auto generated by y-- transpiler DO NOT EDIT THIS FILE!!!\n";
 	ss << "#include \"ylang/transpiler_runtime.hpp\"\n\n";
 
+	ss << "// --- Global Constants ---\n" << globalDecls << "\n";
 	ss << "// --- User Function Declarations ---\n";
 	ss << userFunctionDecls << "\n";
 	ss << "// --- User Function Definitions ---\n";
@@ -2264,6 +2427,8 @@ std::string CppTranspiler::finalize(const std::string &scriptName) {
 	ss << constantsBlock;
 
 	ss << "int main(int argc, char* argv[]) {\n";
+	ss << "    __y_stack_init((char *)__builtin_frame_address(0));\n";
+	ss << "    try {\n";
 	ss << "    Interpreter transpiled_interp;\n";
 	ss << "    y_transpile_globals = transpiled_interp.env;\n";
 	ss << "    transpiled_vm.globals = y_transpile_globals;\n";
@@ -2285,11 +2450,14 @@ std::string CppTranspiler::finalize(const std::string &scriptName) {
 		} else {
 			ss << "    y_user_main(";
 			for (size_t i = 0; i < params.size(); i++)
-				ss << (i ? ", " : "") << "(" << i << " < argc ? Value::String(argv[" << i << "]) : Value::None())";
+				ss << (i ? ", " : "") << (i == 0 ? "Value::String(" + cppStr(scriptName + ".ymm") + ")" : "(" + std::to_string(i) + " < argc ? Value::String(argv[" + std::to_string(i) + "]) : Value::None())");
 			ss << ");\n";
 		}
 	}
 
+	ss << "    } catch (...) {\n";
+	ss << "        return __y_report_uncaught();\n";
+	ss << "    }\n";
 	ss << "    return 0;\n";
 	ss << "}\n";
 	// drop the block EnvRestorers whose block never declared anything in current_env
