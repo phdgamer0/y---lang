@@ -172,8 +172,11 @@ void ByteCodeCompiler::compileStmt(Stmt *s) {
 		chunk->write(0xff, t->line, 0);
 		chunk->write(0xff, t->line, 0);
 		chunk->write(0xff, t->line, 0);
+		// own scope: a throw before a `let` is pushed must not leave the compiler's locals ahead of the stack
+		beginScope();
 		for (auto st : t->tryBlock)
 			compileStmt(st);
+		endScope(t->line, 0);
 		emitByte(OpCode::OP_TRY_EXIT, t->line, 0);
 		int skipCatchJump = emitJump(OpCode::OP_JUMP, t->line, 0);
 		int catchStartAddr = (int)chunk->code.size();
