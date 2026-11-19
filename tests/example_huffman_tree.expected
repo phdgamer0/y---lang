@@ -1,3 +1,8 @@
-{"E" : "111", "B" : "1101", "A" : "1100", "D" : "101", "C" : "100", "F" : "0"}
+A 1100
+B 1101
+C 100
+D 101
+E 111
+F 0
 Program finished successfully in X seconds with code 0
 rc=0

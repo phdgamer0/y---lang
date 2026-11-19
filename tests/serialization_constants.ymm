@@ -11,7 +11,7 @@ define function main():{
    print(<1, 2> * 3)
    print([1, 2, 3])
    print((1, "a"))
-   print({1, 2, 3})
+   print(length({1, 2, 3}))
    print({"k": [1, 2]})
    print(f(0))
    print(f(5))

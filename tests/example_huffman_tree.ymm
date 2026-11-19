@@ -161,5 +161,6 @@ define function main():{
    }
    
    let ht = huffmanize(frequencies)
-   print(ht.GenerateCodes())
+   let codes = ht.GenerateCodes()
+   for k in ["A", "B", "C", "D", "E", "F"] do: { print(f"{k} {codes[k]}") }
 }

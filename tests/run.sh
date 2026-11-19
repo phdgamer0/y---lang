@@ -34,9 +34,9 @@ for f in *.ymm; do
 	out="$(run "$f" | norm)"
 	if [ $update = 1 ]; then
 		printf '%s\n' "$out" > "$here/$name.expected"
-	elif [ "$out" != "$(cat "$here/$name.expected")" ]; then
+	elif [ "$out" != "$(norm < "$here/$name.expected")" ]; then # norm: git may check out CRLF on Windows
 		echo "FAIL $name: output differs from $name.expected"
-		diff <(printf '%s\n' "$out") "$here/$name.expected" | head -8
+		diff <(printf '%s\n' "$out") <(norm < "$here/$name.expected") | head -8
 		fail=$((fail + 1)); continue
 	fi
 
