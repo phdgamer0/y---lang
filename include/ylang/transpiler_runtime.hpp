@@ -48,6 +48,38 @@ template <typename Target, typename Source>
 // lvalue view of a temporary, valid until the end of the full expression (the call it is passed to)
 template <class T> inline T &__y_tmp_lvalue(T &&v) { return v; }
 
+// --- Native arithmetic for inferred int/float locals (same errors as the VM) ---
+// only emitted when storing into a type-locked int: the VM would turn the result into a BigInt, which a locked int rejects
+[[noreturn]] inline void __y_int_overflow() { throw ConstError("Cannot change type of locked variable", 0, 0); }
+inline long long __y_ck_add(long long a, long long b) { long long r; if (__builtin_add_overflow(a, b, &r)) __y_int_overflow(); return r; }
+inline long long __y_ck_sub(long long a, long long b) { long long r; if (__builtin_sub_overflow(a, b, &r)) __y_int_overflow(); return r; }
+inline long long __y_ck_mul(long long a, long long b) { long long r; if (__builtin_mul_overflow(a, b, &r)) __y_int_overflow(); return r; }
+inline long long __y_imod(long long a, long long b) { if (b == 0) throw std::runtime_error("Modulo by zero"); return a % b; }
+inline long long __y_ifloordiv(long long a, long long b) { if (b == 0) throw std::runtime_error("Division by zero"); return a / b; }
+inline double __y_fdiv(double a, double b) { if (b == 0.0) throw std::runtime_error("Division by zero"); return a / b; }
+inline long long __y_ffloordiv(double a, double b) { if (b == 0.0) throw std::runtime_error("Division by zero"); return (long long)std::floor(a / b); }
+inline double __y_fmod(double a, double b) { if (b == 0.0) throw std::runtime_error("Modulo by zero"); return std::fmod(a, b); }
+inline long long __y_shr(long long a, long long b) { if (b < 0) throw std::runtime_error("Negative shift count"); return b >= 63 ? (a < 0 ? -1 : 0) : a >> b; }
+
+// --- Untyped locals kept as a C++ Value instead of in current_env (mirror Env::get / Env::assign) ---
+inline Value &__y_rd(Value &v) {
+    if (v.type == ValueType::REFERENCE)
+        if (Value *t = v.get_ptr_safe()) return *t;
+    return v;
+}
+inline void __y_assign_local(Value &var, Value v) {
+    if (var.type == ValueType::REFERENCE)
+        if (Value *t = var.get_ptr_safe()) {
+            if (t->isConst) throw RuntimeError("Cannot assign to const variable via reference", 0, 0);
+            bool c = t->isConst, l = t->isLocked;
+            *t = std::move(v);
+            t->isConst = c;
+            t->isLocked = l;
+            return;
+        }
+    var = std::move(v);
+}
+
 inline long long __y_to_int(long long v) { return v; }
 inline long long __y_to_int(double v) { return (long long)v; }
 inline long long __y_to_int(bool v) { return v ? 1LL : 0LL; }
@@ -188,23 +220,9 @@ inline bool __y_gte(long long a, const Value& b) {
     return EvaluateConstBinary(TokenType::GTE, Value::Int(a), b).isTruthy();
 }
 
-inline bool __y_eq(long long a, long long b) { return a == b; }
-inline bool __y_eq(double a, double b) { return a == b; }
-inline bool __y_eq(const Value& a, const Value& b) {
-    if (a.type == b.type) return a.strictEquals(b);
-    if (a.isNumber() && b.isNumber()) return a.asFloat() == b.asFloat();
-    return a.looseEquals(b);
-}
-inline bool __y_eq(const Value& a, long long b) {
-    if (a.type == ValueType::INT) return a.iVal == b;
-    if (a.isNumber()) return a.asFloat() == (double)b;
-    return false;
-}
-inline bool __y_eq(long long a, const Value& b) { return __y_eq(b, a); }
-
-inline bool __y_neq(long long a, long long b) { return a != b; }
-inline bool __y_neq(double a, double b) { return a != b; }
-inline bool __y_neq(const Value& a, const Value& b) { return !__y_eq(a, b); }
+// `==` is truthiness equality (Value::looseEquals, as OP_EQ); `===` compares values
+template <typename A, typename B> inline bool __y_eq(const A& a, const B& b) { return __y_is_truthy(a) == __y_is_truthy(b); }
+template <typename A, typename B> inline bool __y_neq(const A& a, const B& b) { return !__y_eq(a, b); }
 
 // --- Strict Equality Helpers ---
 inline bool __y_strict_eq(const Value& a, const Value& b) { return a.strictEquals(b); }
