@@ -224,17 +224,19 @@ int main(int argc, char *argv[]) {
 			std::filesystem::path outCpp = p.parent_path() / (p.stem().string() + ".cpp");
 			std::ofstream(outCpp) << cppOut; // kept for the user to read
 			// the cached transpiled_bin target always builds this one file
-			std::ofstream(std::filesystem::absolute("build/release/transpiled.cpp")) << cppOut;
+			// shortcut: paths are baked in at build time, so -t needs ymm's source/build tree to still exist
+			const std::filesystem::path srcDir = YLANG_SOURCE_DIR, buildDir = YLANG_BUILD_DIR;
+			std::ofstream(srcDir / "build/release/transpiled.cpp") << cppOut;
 			std::cout << "Successfully transpiled C++ code to " << outCpp.string() << "\n";
 			std::cout << "Compiling with CMake (linking y-- core)...\n";
-			std::string binName = p.stem().string();
-			int ret = system("cd build_cmake && ninja transpiled_bin > /dev/null 2>&1");
-			if (ret != 0) {
-				std::cerr << "C++ compilation of the transpiled code failed (run `ninja transpiled_bin` in build_cmake to see errors)\n";
+			std::string cmd = "cmake --build \"" + buildDir.string() + "\" --target transpiled_bin > /dev/null 2>&1";
+			if (system(cmd.c_str()) != 0) {
+				std::cerr << "C++ compilation of the transpiled code failed (run `cmake --build " << buildDir.string() << " --target transpiled_bin` to see errors)\n";
 				return 1; // system() returns a wait status; 256 would wrap to exit code 0
 			}
-			std::filesystem::rename("build/release/transpiled_bin", "build/release/" + binName);
-			std::cout << "Successfully built native executable: build/release/" << binName << "\n";
+			std::filesystem::path outBin = p.parent_path() / p.stem();
+			std::filesystem::copy_file(srcDir / "build/release/transpiled_bin", outBin, std::filesystem::copy_options::overwrite_existing);
+			std::cout << "Successfully built native executable: " << outBin.string() << "\n";
 			return 0;
 		}
 		if (compileOnly) {

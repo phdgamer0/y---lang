@@ -121,6 +121,8 @@ set_target_properties(ylang_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(ylang_core PUBLIC include/ylang include src ${replxx_SOURCE_DIR}/include)
 
 add_executable(ymm src/yrun.cpp)
+# ymm -t rebuilds transpiled_bin in this tree, whatever the caller's working directory
+target_compile_definitions(ymm PRIVATE YLANG_SOURCE_DIR="${CMAKE_SOURCE_DIR}" YLANG_BUILD_DIR="${CMAKE_BINARY_DIR}")
 set_target_properties(ymm PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "${YLANG_RPATH}")
 if(MINGW)
     # self-contained .exe: no libstdc++/libgcc/winpthread DLLs needed next to it
