@@ -1050,5 +1050,5 @@ Value EvaluateConstBinary(TokenType op, const Value &a, const Value &b) {
 	} else if (op == TokenType::OR) {
 		return Value::Bool(a.isTruthy() || b.isTruthy());
 	}
-	throw std::runtime_error("Cannot fold this operation at compile time.");
+	throw std::runtime_error("Unsupported operand types for this operator");
 }

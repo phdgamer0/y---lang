@@ -95,7 +95,7 @@ define class HuffmanTree: {
       define function GenerateCodes(node = None, path = "", res = None) -> dict():{
          if res is None: res = dict()
          if node is None: node = self.root
-         if node is None: return code_dict
+         if node is None: return res
          
          ~ LEAF NODE CHECK
          if node.left is None and node.right is None:{

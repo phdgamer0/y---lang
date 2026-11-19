@@ -1,534 +1,81 @@
 #include "ylang/assembler.hpp"
 
+// Mnemonics are the opcode names without "OP_", so every opcode has a unique one.
 std::string opToMnemonic(OpCode op) {
-	switch (op) {
-	case OpCode::OP_CONSTANT:
-		return "CONS";
-	case OpCode::OP_CONSTANT_LONG:
-		return "CL";
-	case OpCode::OP_TRUE:
-		return "TRUE";
-	case OpCode::OP_FALSE:
-		return "FALS";
-	case OpCode::OP_NONE:
-		return "NONE";
-	case OpCode::OP_NOTYPE:
-		return "NOTY";
-	case OpCode::OP_DEFINE_VAR:
-		return "DVAR";
-	case OpCode::OP_GET_VAR:
-		return "GVAR";
-	case OpCode::OP_SET_VAR:
-		return "SVAR";
-	case OpCode::OP_DEEP_COPY:
-		return "DCOP";
-	case OpCode::OP_REF_LOCAL:
-		return "RLOC";
-	case OpCode::OP_DEFINE_REF:
-		return "DFREF";
-	case OpCode::OP_REF_VAR:
-		return "RVAR";
-	case OpCode::OP_REF_INDEX:
-		return "RIND";
-	case OpCode::OP_SET_REF:
-		return "SREF";
-	case OpCode::OP_SHALLOW_COPY:
-		return "SCOP";
-	case OpCode::OP_MULTI_SET:
-		return "MSET";
-	case OpCode::OP_GET_LOCAL:
-		return "GLOC";
-	case OpCode::OP_SET_LOCAL:
-		return "SLOC";
-	case OpCode::OP_INC_LOCAL:
-		return "IL";
-	case OpCode::OP_SET_FLAGS:
-		return "SFLA";
-	case OpCode::OP_REF_PROPERTY:
-		return "RPRO";
-	case OpCode::OP_DELETE:
-		return "DELE";
-	case OpCode::OP_ADD:
-		return "ADD";
-	case OpCode::OP_FAST_IADD:
-		return "FADD";
-	case OpCode::OP_FAST_ISUB:
-		return "FISUB";
-	case OpCode::OP_FAST_IMUL:
-		return "FIMUL";
-	case OpCode::OP_FAST_IDIV:
-		return "FIDIV";
-	case OpCode::OP_FAST_FADD:
-		return "FADD";
-	case OpCode::OP_FAST_FSUB:
-		return "FSUB";
-	case OpCode::OP_FAST_FMUL:
-		return "FMUL";
-	case OpCode::OP_FAST_FDIV:
-		return "FDIV";
-	case OpCode::OP_FAST_SADD:
-		return "FADD";
-	case OpCode::OP_CTLE_TICK:
-		return "CT";
-	case OpCode::OP_SUB:
-		return "SUB";
-	case OpCode::OP_MUL:
-		return "MUL";
-	case OpCode::OP_DIV:
-		return "DIV";
-	case OpCode::OP_FLOOR_DIV:
-		return "FDIV";
-	case OpCode::OP_MOD:
-		return "MOD";
-	case OpCode::OP_POW:
-		return "POW";
-	case OpCode::OP_IADD:
-		return "IADD";
-	case OpCode::OP_ISUB:
-		return "ISUB";
-	case OpCode::OP_IMUL:
-		return "IMUL";
-	case OpCode::OP_IDIV:
-		return "IDIV";
-	case OpCode::OP_IFLOOR_DIV:
-		return "IDIV";
-	case OpCode::OP_IMOD:
-		return "IMOD";
-	case OpCode::OP_IPOW:
-		return "IPOW";
-	case OpCode::OP_DUP:
-		return "DUP";
-	case OpCode::OP_DUP_2:
-		return "D2UP";
-	case OpCode::OP_EQ:
-		return "EQ";
-	case OpCode::OP_NEQ:
-		return "NEQ";
-	case OpCode::OP_LT:
-		return "LT";
-	case OpCode::OP_GT:
-		return "GT";
-	case OpCode::OP_LTE:
-		return "LTE";
-	case OpCode::OP_GTE:
-		return "GTE";
-	case OpCode::OP_COLON:
-		return "COLO";
-	case OpCode::OP_STRICT_NEQ:
-		return "SNEQ";
-	case OpCode::OP_NOT:
-		return "NOT";
-	case OpCode::OP_AND:
-		return "AND";
-	case OpCode::OP_OR:
-		return "OR";
-	case OpCode::OP_XOR:
-		return "XOR";
-	case OpCode::OP_IS:
-		return "IS";
-	case OpCode::OP_IN:
-		return "IN";
-	case OpCode::OP_IS_NOT:
-		return "ISNT";
-	case OpCode::OP_STRICT_EQ:
-		return "SEQ";
-	case OpCode::OP_IS_IN:
-		return "ISIN";
-	case OpCode::OP_IS_NOT_IN:
-		return "ISNTIN";
-	case OpCode::OP_NXOR:
-		return "XNOR";
-	case OpCode::OP_NAND:
-		return "NAND";
-	case OpCode::OP_NOR:
-		return "NOR";
-	case OpCode::OP_NEGATE:
-		return "NEGA";
-	case OpCode::OP_INCREMENT:
-		return "INCR";
-	case OpCode::OP_DECREMENT:
-		return "DECR";
-	case OpCode::OP_BITWISE_AND:
-		return "BAND";
-	case OpCode::OP_BITWISE_OR:
-		return "BOR";
-	case OpCode::OP_BITWISE_XOR:
-		return "BXOR";
-	case OpCode::OP_BITWISE_NOT:
-		return "BNOT";
-	case OpCode::OP_BITWISE_SHL:
-		return "BSHL";
-	case OpCode::OP_BITWISE_SHR:
-		return "BSHR";
-	case OpCode::OP_PRE_INCREMENT:
-		return "PINCR";
-	case OpCode::OP_PRE_DECREMENT:
-		return "PDECR";
-	case OpCode::OP_BUILD_LIST:
-		return "BLIS";
-	case OpCode::OP_BUILD_TUPLE:
-		return "BTUP";
-	case OpCode::OP_BUILD_SET:
-		return "BSET";
-	case OpCode::OP_BUILD_DICT:
-		return "BDIC";
-	case OpCode::OP_UNPACK_DICT:
-		return "UDIC";
-	case OpCode::OP_BUILD_RANGE:
-		return "BRAN";
-	case OpCode::OP_BUILD_VECTOR:
-		return "BVEC";
-	case OpCode::OP_BUILD_FSTRING:
-		return "BFST";
-	case OpCode::OP_BUILD_FILE:
-		return "BFIL";
-	case OpCode::OP_BUILD_SLICE:
-		return "BSLI";
-	case OpCode::OP_CLASS:
-		return "CLAS";
-	case OpCode::OP_METHOD:
-		return "METH";
-	case OpCode::OP_GET_PROPERTY:
-		return "GPRO";
-	case OpCode::OP_SET_PROPERTY:
-		return "SPRO";
-	case OpCode::OP_CLASS_FIELD:
-		return "CFLD";
-	case OpCode::OP_SUPER:
-		return "SUPE";
-	case OpCode::OP_LIST_APPEND:
-		return "LAPP";
-	case OpCode::OP_SET_ADD:
-		return "SADD";
-	case OpCode::OP_DICT_SET:
-		return "DSET";
-	case OpCode::OP_LIST_TO_TUPLE:
-		return "LTT";
-	case OpCode::OP_LIST_TO_VECTOR:
-		return "LTV";
-	case OpCode::OP_GET_INDEX:
-		return "GIND";
-	case OpCode::OP_SET_INDEX:
-		return "SIND";
-	case OpCode::OP_INVOKE:
-		return "INVO";
-	case OpCode::OP_CALL:
-		return "CALL";
-	case OpCode::OP_JUMP:
-		return "JUMP";
-	case OpCode::OP_JUMP_IF_FALSE:
-		return "JMPF";
-	case OpCode::OP_LOOP:
-		return "LOOP";
-	case OpCode::OP_RETURN:
-		return "RETU";
-	case OpCode::OP_TO_STREAM:
-		return "TS";
-	case OpCode::OP_JUMP_IF_NOT_LT:
-		return "JMPN";
-	case OpCode::OP_BREAK:
-		return "BREA";
-	case OpCode::OP_CONTINUE:
-		return "CONT";
-	case OpCode::OP_SKIP:
-		return "SKIP";
-	case OpCode::OP_OMIT:
-		return "OMIT";
-	case OpCode::OP_FOR_ITER:
-		return "F4ITR";
-	case OpCode::OP_SKIP_ITER:
-		return "SITR";
-	case OpCode::OP_SWITCH_TABLE:
-		return "STBL";
-	case OpCode::OP_THROW:
-		return "THRO";
-	case OpCode::OP_ASSERT:
-		return "ASSE";
-	case OpCode::OP_IMPORT:
-		return "IMPO";
-	case OpCode::OP_POP:
-		return "POP";
-	case OpCode::OP_DEBUG_NAME:
-		return "DN";
-	case OpCode::OP_REPL_PRINT:
-		return "RP";
-	case OpCode::OP_TRY_ENTER:
-		return "TE";
-	case OpCode::OP_TRY_EXIT:
-		return "TX";
-	case OpCode::OP_CATCH:
-		return "CATC";
-	case OpCode::OP_RETHROW:
-		return "RETH";
-	case OpCode::OP_END_FINALLY:
-		return "EF";
-	default:
-		return "UNKN";
-	}
+	return OpCodeToString(op).substr(3);
 }
 
 OpCode mnemonicToOp(const std::string &mn) {
-	if (mn == "CONS")
-		return OpCode::OP_CONSTANT;
-	if (mn == "CL")
-		return OpCode::OP_CONSTANT_LONG;
-	if (mn == "TRUE")
-		return OpCode::OP_TRUE;
-	if (mn == "FALS")
-		return OpCode::OP_FALSE;
-	if (mn == "NONE")
-		return OpCode::OP_NONE;
-	if (mn == "NOTY")
-		return OpCode::OP_NOTYPE;
-	if (mn == "DV")
-		return OpCode::OP_DEFINE_VAR;
-	if (mn == "GVAR")
-		return OpCode::OP_GET_VAR;
-	if (mn == "SVAR")
-		return OpCode::OP_SET_VAR;
-	if (mn == "DC")
-		return OpCode::OP_DEEP_COPY;
-	if (mn == "RLOC")
-		return OpCode::OP_REF_LOCAL;
-	if (mn == "DR")
-		return OpCode::OP_DEFINE_REF;
-	if (mn == "RVAR")
-		return OpCode::OP_REF_VAR;
-	if (mn == "RIND")
-		return OpCode::OP_REF_INDEX;
-	if (mn == "SREF")
-		return OpCode::OP_SET_REF;
-	if (mn == "SC")
-		return OpCode::OP_SHALLOW_COPY;
-	if (mn == "MS")
-		return OpCode::OP_MULTI_SET;
-	if (mn == "GLOC")
-		return OpCode::OP_GET_LOCAL;
-	if (mn == "SLOC")
-		return OpCode::OP_SET_LOCAL;
-	if (mn == "IL")
-		return OpCode::OP_INC_LOCAL;
-	if (mn == "SFLA")
-		return OpCode::OP_SET_FLAGS;
-	if (mn == "RPRO")
-		return OpCode::OP_REF_PROPERTY;
-	if (mn == "DELE")
-		return OpCode::OP_DELETE;
-	if (mn == "ADD")
-		return OpCode::OP_ADD;
-	if (mn == "FI")
-		return OpCode::OP_FAST_IADD;
-	if (mn == "FI1")
-		return OpCode::OP_FAST_ISUB;
-	if (mn == "FI2")
-		return OpCode::OP_FAST_IMUL;
-	if (mn == "FI3")
-		return OpCode::OP_FAST_IDIV;
-	if (mn == "FF")
-		return OpCode::OP_FAST_FADD;
-	if (mn == "FF1")
-		return OpCode::OP_FAST_FSUB;
-	if (mn == "FF2")
-		return OpCode::OP_FAST_FMUL;
-	if (mn == "FF3")
-		return OpCode::OP_FAST_FDIV;
-	if (mn == "FS")
-		return OpCode::OP_FAST_SADD;
-	if (mn == "CT")
-		return OpCode::OP_CTLE_TICK;
-	if (mn == "SUB")
-		return OpCode::OP_SUB;
-	if (mn == "MUL")
-		return OpCode::OP_MUL;
-	if (mn == "DIV")
-		return OpCode::OP_DIV;
-	if (mn == "FD")
-		return OpCode::OP_FLOOR_DIV;
-	if (mn == "MOD")
-		return OpCode::OP_MOD;
-	if (mn == "POW")
-		return OpCode::OP_POW;
-	if (mn == "IADD")
-		return OpCode::OP_IADD;
-	if (mn == "ISUB")
-		return OpCode::OP_ISUB;
-	if (mn == "IMUL")
-		return OpCode::OP_IMUL;
-	if (mn == "IDIV")
-		return OpCode::OP_IDIV;
-	if (mn == "ID")
-		return OpCode::OP_IFLOOR_DIV;
-	if (mn == "IMOD")
-		return OpCode::OP_IMOD;
-	if (mn == "IPOW")
-		return OpCode::OP_IPOW;
-	if (mn == "DUP")
-		return OpCode::OP_DUP;
-	if (mn == "D2")
-		return OpCode::OP_DUP_2;
-	if (mn == "EQ")
-		return OpCode::OP_EQ;
-	if (mn == "NEQ")
-		return OpCode::OP_NEQ;
-	if (mn == "LT")
-		return OpCode::OP_LT;
-	if (mn == "GT")
-		return OpCode::OP_GT;
-	if (mn == "LTE")
-		return OpCode::OP_LTE;
-	if (mn == "GTE")
-		return OpCode::OP_GTE;
-	if (mn == "COLO")
-		return OpCode::OP_COLON;
-	if (mn == "SN")
-		return OpCode::OP_STRICT_NEQ;
-	if (mn == "NOT")
-		return OpCode::OP_NOT;
-	if (mn == "AND")
-		return OpCode::OP_AND;
-	if (mn == "OR")
-		return OpCode::OP_OR;
-	if (mn == "XOR")
-		return OpCode::OP_XOR;
-	if (mn == "IS")
-		return OpCode::OP_IS;
-	if (mn == "IN")
-		return OpCode::OP_IN;
-	if (mn == "IN1")
-		return OpCode::OP_IS_NOT;
-	if (mn == "SE")
-		return OpCode::OP_STRICT_EQ;
-	if (mn == "II")
-		return OpCode::OP_IS_IN;
-	if (mn == "INI")
-		return OpCode::OP_IS_NOT_IN;
-	if (mn == "NXOR")
-		return OpCode::OP_NXOR;
-	if (mn == "NAND")
-		return OpCode::OP_NAND;
-	if (mn == "NOR")
-		return OpCode::OP_NOR;
-	if (mn == "NEGA")
-		return OpCode::OP_NEGATE;
-	if (mn == "INCR")
-		return OpCode::OP_INCREMENT;
-	if (mn == "DECR")
-		return OpCode::OP_DECREMENT;
-	if (mn == "BA")
-		return OpCode::OP_BITWISE_AND;
-	if (mn == "BO")
-		return OpCode::OP_BITWISE_OR;
-	if (mn == "BX")
-		return OpCode::OP_BITWISE_XOR;
-	if (mn == "BN")
-		return OpCode::OP_BITWISE_NOT;
-	if (mn == "BS")
-		return OpCode::OP_BITWISE_SHL;
-	if (mn == "BS1")
-		return OpCode::OP_BITWISE_SHR;
-	if (mn == "PI")
-		return OpCode::OP_PRE_INCREMENT;
-	if (mn == "PD")
-		return OpCode::OP_PRE_DECREMENT;
-	if (mn == "BLIS")
-		return OpCode::OP_BUILD_LIST;
-	if (mn == "BTUP")
-		return OpCode::OP_BUILD_TUPLE;
-	if (mn == "BSET")
-		return OpCode::OP_BUILD_SET;
-	if (mn == "BDIC")
-		return OpCode::OP_BUILD_DICT;
-	if (mn == "UD")
-		return OpCode::OP_UNPACK_DICT;
-	if (mn == "BRAN")
-		return OpCode::OP_BUILD_RANGE;
-	if (mn == "BVEC")
-		return OpCode::OP_BUILD_VECTOR;
-	if (mn == "BFST")
-		return OpCode::OP_BUILD_FSTRING;
-	if (mn == "BFIL")
-		return OpCode::OP_BUILD_FILE;
-	if (mn == "BSLI")
-		return OpCode::OP_BUILD_SLICE;
-	if (mn == "CLAS")
-		return OpCode::OP_CLASS;
-	if (mn == "METH")
-		return OpCode::OP_METHOD;
-	if (mn == "GPRO")
-		return OpCode::OP_GET_PROPERTY;
-	if (mn == "SPRO")
-		return OpCode::OP_SET_PROPERTY;
-	if (mn == "CF")
-		return OpCode::OP_CLASS_FIELD;
-	if (mn == "SUPE")
-		return OpCode::OP_SUPER;
-	if (mn == "LA")
-		return OpCode::OP_LIST_APPEND;
-	if (mn == "SADD")
-		return OpCode::OP_SET_ADD;
-	if (mn == "DS")
-		return OpCode::OP_DICT_SET;
-	if (mn == "LTT")
-		return OpCode::OP_LIST_TO_TUPLE;
-	if (mn == "LTV")
-		return OpCode::OP_LIST_TO_VECTOR;
-	if (mn == "GIND")
-		return OpCode::OP_GET_INDEX;
-	if (mn == "SIND")
-		return OpCode::OP_SET_INDEX;
-	if (mn == "INVO")
-		return OpCode::OP_INVOKE;
-	if (mn == "CALL")
-		return OpCode::OP_CALL;
-	if (mn == "JUMP")
-		return OpCode::OP_JUMP;
-	if (mn == "JMPF")
-		return OpCode::OP_JUMP_IF_FALSE;
-	if (mn == "LOOP")
-		return OpCode::OP_LOOP;
-	if (mn == "RETU")
-		return OpCode::OP_RETURN;
-	if (mn == "TS")
-		return OpCode::OP_TO_STREAM;
-	if (mn == "JMPN")
-		return OpCode::OP_JUMP_IF_NOT_LT;
-	if (mn == "BREA")
-		return OpCode::OP_BREAK;
-	if (mn == "CONT")
-		return OpCode::OP_CONTINUE;
-	if (mn == "SKIP")
-		return OpCode::OP_SKIP;
-	if (mn == "OMIT")
-		return OpCode::OP_OMIT;
-	if (mn == "FI4")
-		return OpCode::OP_FOR_ITER;
-	if (mn == "SI")
-		return OpCode::OP_SKIP_ITER;
-	if (mn == "ST")
-		return OpCode::OP_SWITCH_TABLE;
-	if (mn == "THRO")
-		return OpCode::OP_THROW;
-	if (mn == "ASSE")
-		return OpCode::OP_ASSERT;
-	if (mn == "IMPO")
-		return OpCode::OP_IMPORT;
-	if (mn == "POP")
-		return OpCode::OP_POP;
-	if (mn == "DN")
-		return OpCode::OP_DEBUG_NAME;
-	if (mn == "RP")
-		return OpCode::OP_REPL_PRINT;
-	if (mn == "TE")
-		return OpCode::OP_TRY_ENTER;
-	if (mn == "TE1")
-		return OpCode::OP_TRY_EXIT;
-	if (mn == "CATC")
-		return OpCode::OP_CATCH;
-	if (mn == "RETH")
-		return OpCode::OP_RETHROW;
-	if (mn == "EF")
-		return OpCode::OP_END_FINALLY;
-	return OpCode::OP_NOTYPE;
+	static const std::unordered_map<std::string, OpCode> table = [] {
+		std::unordered_map<std::string, OpCode> t;
+		for (int i = 0; i <= (int)OpCode::OP_END_FINALLY; i++)
+			t[opToMnemonic((OpCode)i)] = (OpCode)i;
+		return t;
+	}();
+	auto it = table.find(mn);
+	if (it == table.end())
+		throw std::runtime_error("unknown instruction '" + mn + "' in .yb file");
+	return it->second;
+}
+
+// Number of operand bytes after the opcode at code[i]. Must match how VM::run decodes each instruction.
+static size_t operandBytes(const std::vector<uint8_t> &code, size_t i) {
+	auto at = [&](size_t k) -> size_t { return k < code.size() ? code[k] : 0; };
+	switch ((OpCode)code[i]) {
+	case OpCode::OP_BUILD_DICT:
+	case OpCode::OP_BUILD_FSTRING:
+	case OpCode::OP_BUILD_LIST:
+	case OpCode::OP_BUILD_RANGE:
+	case OpCode::OP_BUILD_SET:
+	case OpCode::OP_BUILD_TUPLE:
+	case OpCode::OP_BUILD_VECTOR:
+	case OpCode::OP_CALL:
+	case OpCode::OP_CLASS:
+	case OpCode::OP_CONSTANT:
+	case OpCode::OP_DEBUG_NAME:
+	case OpCode::OP_DICT_SET:
+	case OpCode::OP_GET_LOCAL:
+	case OpCode::OP_GET_PROPERTY:
+	case OpCode::OP_GET_VAR:
+	case OpCode::OP_IMPORT:
+	case OpCode::OP_INC_LOCAL:
+	case OpCode::OP_LIST_APPEND:
+	case OpCode::OP_METHOD:
+	case OpCode::OP_REF_LOCAL:
+	case OpCode::OP_REF_PROPERTY:
+	case OpCode::OP_REF_VAR:
+	case OpCode::OP_SET_ADD:
+	case OpCode::OP_SET_FLAGS:
+	case OpCode::OP_SET_LOCAL:
+	case OpCode::OP_SET_VAR:
+	case OpCode::OP_SKIP_ITER:
+		return 1;
+	case OpCode::OP_CLASS_FIELD:
+	case OpCode::OP_CONSTANT_LONG:
+	case OpCode::OP_DEFINE_VAR:
+	case OpCode::OP_INC_INDEX:
+	case OpCode::OP_INVOKE:
+	case OpCode::OP_JUMP:
+	case OpCode::OP_JUMP_IF_FALSE:
+	case OpCode::OP_LOOP:
+	case OpCode::OP_SET_PROPERTY:
+		return 2;
+	case OpCode::OP_FOR_ITER:
+	case OpCode::OP_INC_PROPERTY:
+		return 3;
+	case OpCode::OP_JUMP_IF_NOT_LT:
+	case OpCode::OP_TRY_ENTER:
+		return 4;
+	case OpCode::OP_CATCH: // count, then one constant index per caught type
+		return 1 + at(i + 1);
+	case OpCode::OP_SWITCH_TABLE: // min constant, count, then a 2-byte offset per entry
+		return 2 + 2 * at(i + 2);
+	case OpCode::OP_DEFINE_REF: // name, sub-op, and a target name only for variable refs
+	case OpCode::OP_SET_REF:
+		return 2 + ((OpCode)at(i + 2) == OpCode::OP_REF_VAR ? 1 : 0);
+	default:
+		return 0;
+	}
 }
 
 std::string escapeString(const std::string &s) {
@@ -601,6 +148,75 @@ void AssemblyState::collect(Chunk *c) {
 		}
 	}
 
+static void writeConst(std::ostream &os, const Value &v, AssemblyState &state) {
+	auto seq = [&](const char *tag, const std::vector<Value> &el) {
+		os << tag << " " << el.size();
+		for (const auto &e : el) {
+			os << " ";
+			writeConst(os, e, state);
+		}
+	};
+	switch (v.type) {
+	case ValueType::INT:
+		os << "INT " << v.iVal;
+		break;
+	case ValueType::FLOAT:
+		if (std::isfinite(v.fVal)) {
+			char buf[40];
+			std::snprintf(buf, sizeof buf, "%.17g", v.fVal); // exact round trip
+			os << "FLOAT " << buf;
+		} else
+			os << "FLOAT " << (std::isnan(v.fVal) ? "nan" : (v.fVal > 0 ? "inf" : "-inf"));
+		break;
+	case ValueType::BOOL:
+		os << "BOOL " << (v.bVal ? "true" : "false");
+		break;
+	case ValueType::STRING:
+		os << "STR \"" << escapeString(v.asString()) << "\"";
+		break;
+	case ValueType::BIGINT:
+		os << "BIG " << bigIntToString(static_cast<BigIntObject *>(v.ref.get()));
+		break;
+	case ValueType::NONE:
+		os << "NONE";
+		break;
+	case ValueType::NOTYPE:
+		os << "NOTY";
+		break;
+	case ValueType::OMIT_MARKER:
+		os << "OMIT";
+		break;
+	case ValueType::FUNCTION:
+		os << "FUNC " << state.getId(static_cast<FunctionObject *>(v.ref.get()));
+		break;
+	case ValueType::LIST:
+		seq("LIST", static_cast<ListObject *>(v.ref.get())->elements);
+		break;
+	case ValueType::TUPLE:
+		seq("TUPLE", static_cast<TupleObject *>(v.ref.get())->elements);
+		break;
+	case ValueType::VECTOR:
+		seq("VEC", static_cast<VectorObject *>(v.ref.get())->elements);
+		break;
+	case ValueType::SET: {
+		auto &el = static_cast<SetObject *>(v.ref.get())->elements;
+		seq("SET", std::vector<Value>(el.begin(), el.end()));
+		break;
+	}
+	case ValueType::DICT: {
+		std::vector<Value> flat;
+		for (const auto &kv : static_cast<DictObject *>(v.ref.get())->items) {
+			flat.push_back(kv.first);
+			flat.push_back(kv.second);
+		}
+		seq("DICT", flat);
+		break;
+	}
+	default:
+		throw std::runtime_error("cannot write a constant of type " + std::to_string((int)v.type) + " to .yb");
+	}
+}
+
 void saveChunkAssembly(Chunk *chunk, std::ostream &os, AssemblyState &state, std::string indent) {
 	if (!chunk) {
 		os << indent << ".nullchunk\n";
@@ -608,64 +224,32 @@ void saveChunkAssembly(Chunk *chunk, std::ostream &os, AssemblyState &state, std
 	}
 	os << indent << ".const\n";
 	for (size_t i = 0; i < chunk->constants.size(); i++) {
-		os << indent << std::left << std::setw(4) << i << ": ";
-		const Value &v = chunk->constants[i];
-		if (v.type == ValueType::INT)
-			os << std::setw(8) << "INT" << v.iVal << "\n";
-		else if (v.type == ValueType::FLOAT)
-			os << std::setw(8) << "FLOAT" << v.fVal << "\n";
-		else if (v.type == ValueType::BOOL)
-			os << std::setw(8) << "BOOL" << (v.bVal ? "true" : "false") << "\n";
-		else if (v.type == ValueType::STRING)
-			os << std::setw(8) << "STR" << "\"" << escapeString(v.asString()) << "\"\n";
-		else if (v.type == ValueType::NONE)
-			os << std::setw(8) << "NONE\n";
-		else if (v.type == ValueType::FUNCTION && v.ref) {
-			os << std::setw(8) << "FUNC" << state.funcToId[static_cast<FunctionObject *>(v.ref.get())] << "\n";
-		} else if (v.type == ValueType::OMIT_MARKER) {
-			os << std::setw(8) << "OMIT\n";
-		} else
-			os << std::setw(8) << "UNKN" << "\n";
+		os << indent << i << " : ";
+		writeConst(os, chunk->constants[i], state);
+		os << "\n";
 	}
+	// one instruction per line: address, mnemonic, raw operand bytes, @source-line, ; note
 	os << indent << ".code\n";
-	for (size_t i = 0; i < chunk->code.size();) {
-		uint8_t instruction = chunk->code[i];
-		OpCode op = static_cast<OpCode>(instruction);
-		os << indent << std::setw(4) << std::setfill('0') << i << "    " << std::setfill(' ');
-		os << std::left << std::setw(8) << opToMnemonic(op);
-		int args = 0;
-		switch (op) {
-		case OpCode::OP_CONSTANT:
-		case OpCode::OP_GET_VAR:
-		case OpCode::OP_SET_VAR:
-		case OpCode::OP_DEFINE_VAR:
-		case OpCode::OP_GET_LOCAL:
-		case OpCode::OP_SET_LOCAL:
-		case OpCode::OP_CALL:
-		case OpCode::OP_BUILD_LIST:
-		case OpCode::OP_BUILD_TUPLE:
-		case OpCode::OP_BUILD_SET:
-		case OpCode::OP_BUILD_DICT:
-		case OpCode::OP_IMPORT:
-			if (i + 1 < chunk->code.size()) {
-				os << (int)chunk->code[i + 1];
-				args = 1;
-			}
-			break;
-		case OpCode::OP_JUMP:
-		case OpCode::OP_JUMP_IF_FALSE:
-		case OpCode::OP_LOOP:
-			if (i + 2 < chunk->code.size()) {
-				uint16_t jmp = (chunk->code[i + 1] << 8) | chunk->code[i + 2];
-				os << jmp;
-				args = 2;
-			}
-			break;
-		default:
-			break;
+	const auto &code = chunk->code;
+	for (size_t i = 0; i < code.size();) {
+		OpCode op = static_cast<OpCode>(code[i]);
+		size_t n = operandBytes(code, i);
+		os << indent << std::right << std::setw(4) << std::setfill('0') << i << std::setfill(' ') << "  " << opToMnemonic(op);
+		for (size_t k = 1; k <= n && i + k < code.size(); k++)
+			os << " " << (int)code[i + k];
+		if (i < chunk->lines.size())
+			os << " @" << chunk->lines[i];
+		if (n >= 2 && (op == OpCode::OP_JUMP || op == OpCode::OP_JUMP_IF_FALSE || op == OpCode::OP_LOOP)) {
+			size_t off = (code[i + 1] << 8) | code[i + 2];
+			os << "  ; -> " << (op == OpCode::OP_LOOP ? i + 3 - off : i + 3 + off);
+		} else if (n >= 1 && (op == OpCode::OP_CONSTANT || op == OpCode::OP_GET_VAR || op == OpCode::OP_SET_VAR || op == OpCode::OP_DEFINE_VAR ||
+										op == OpCode::OP_GET_PROPERTY || op == OpCode::OP_SET_PROPERTY || op == OpCode::OP_INVOKE || op == OpCode::OP_IMPORT)) {
+			size_t k = code[i + 1];
+			if (k < chunk->constants.size() && chunk->constants[k].type == ValueType::STRING)
+				os << "  ; " << escapeString(chunk->constants[k].asString());
 		}
 		os << "\n";
-		i += 1 + args;
+		i += 1 + n;
 	}
 	os << indent << ".endchunk\n";
 }
@@ -688,6 +272,7 @@ void saveAssembly(Chunk *mainChunk, std::ostream &os) {
 		os << "  .returnType " << (int)f->returnType << "\n";
 		os << "  .returnsConst " << f->returnsConst << "\n";
 		os << "  .isCached " << f->isCached << "\n";
+		os << "  .returnsRef " << f->returnsRef << "\n";
 		os << "  .retChunks " << f->defaultRetChunks.size() << "\n";
 		for (auto *rc : f->defaultRetChunks) {
 			os << "    .retchunk\n";
@@ -702,126 +287,164 @@ void saveAssembly(Chunk *mainChunk, std::ostream &os) {
 	saveChunkAssembly(mainChunk, os, state, "  ");
 }
 
+// Drops a trailing "; comment" but keeps ';' that are inside string literals.
+static std::string stripComment(const std::string &line) {
+	bool inStr = false;
+	for (size_t i = 0; i < line.size(); i++) {
+		if (inStr && line[i] == '\\')
+			i++;
+		else if (line[i] == '"')
+			inStr = !inStr;
+		else if (!inStr && line[i] == ';')
+			return line.substr(0, i);
+	}
+	return line;
+}
+
+static std::string trim(std::string line) {
+	line.erase(0, line.find_first_not_of(" \t\r\n"));
+	line.erase(line.find_last_not_of(" \t\r\n") + 1);
+	return line;
+}
+
+// Splits on spaces; a "quoted string" (with escapes) is one token, returned unescaped and marked by a leading '"'.
+static std::vector<std::string> tokens(const std::string &s) {
+	std::vector<std::string> out;
+	for (size_t i = 0; i < s.size();) {
+		if (isspace((unsigned char)s[i])) {
+			i++;
+		} else if (s[i] == '"') {
+			std::string raw;
+			for (i++; i < s.size() && s[i] != '"'; i++) {
+				if (s[i] == '\\' && i + 1 < s.size())
+					raw += s[i++];
+				raw += s[i];
+			}
+			i++;
+			out.push_back("\"" + unescapeString(raw));
+		} else {
+			size_t j = s.find_first_of(" \t", i);
+			if (j == std::string::npos)
+				j = s.size();
+			out.push_back(s.substr(i, j - i));
+			i = j;
+		}
+	}
+	return out;
+}
+
+static Value readConst(const std::vector<std::string> &t, size_t &k, std::map<int, FunctionObject *> &funcs) {
+	if (k >= t.size())
+		throw std::runtime_error("truncated constant in .yb file");
+	const std::string tag = t[k++];
+	auto next = [&]() -> const std::string & {
+		if (k >= t.size())
+			throw std::runtime_error("truncated constant in .yb file");
+		return t[k++];
+	};
+	auto seq = [&]() {
+		size_t n = std::stoul(next());
+		std::vector<Value> el;
+		for (size_t i = 0; i < n; i++)
+			el.push_back(readConst(t, k, funcs));
+		return el;
+	};
+	if (tag == "INT")
+		return Value::Int(std::stoll(next()));
+	if (tag == "FLOAT")
+		return Value::Float(std::strtod(next().c_str(), nullptr));
+	if (tag == "BOOL")
+		return Value::Bool(next() == "true");
+	if (tag == "STR") {
+		const std::string &s = next();
+		return Value::String(s.empty() ? s : s.substr(1));
+	}
+	if (tag == "BIG")
+		return Value::BigInt(next());
+	if (tag == "NONE")
+		return Value::None();
+	if (tag == "NOTY")
+		return Value::NoType();
+	if (tag == "OMIT") {
+		Value v;
+		v.type = ValueType::OMIT_MARKER;
+		return v;
+	}
+	if (tag == "FUNC") {
+		int id = std::stoi(next());
+		if (!funcs.count(id))
+			throw std::runtime_error("unknown function id " + std::to_string(id) + " in .yb file");
+		Value v;
+		v.type = ValueType::FUNCTION;
+		v.ref = std::shared_ptr<HeapObject>(funcs[id]);
+		return v;
+	}
+	if (tag == "LIST")
+		return Value::List(seq());
+	if (tag == "TUPLE")
+		return Value::Tuple(seq());
+	if (tag == "VEC")
+		return Value::Vector(seq());
+	if (tag == "SET") {
+		auto el = seq();
+		return Value::Set(std::unordered_set<Value, ValueHash, ValueEqual>(el.begin(), el.end()));
+	}
+	if (tag == "DICT") {
+		auto flat = seq();
+		std::unordered_map<Value, Value, ValueHash, ValueEqual> m;
+		for (size_t i = 0; i + 1 < flat.size(); i += 2)
+			m[flat[i]] = flat[i + 1];
+		return Value::Dict(m);
+	}
+	throw std::runtime_error("unknown constant type '" + tag + "' in .yb file");
+}
+
 Chunk *loadChunkAssembly(std::istream &is, std::map<int, FunctionObject *> &funcs) {
 	Chunk *chunk = new Chunk();
 	std::string line;
 	bool inConst = false, inCode = false;
 
 	while (std::getline(is, line)) {
-		size_t commentPos = line.find(';');
-		if (commentPos != std::string::npos)
-			line = line.substr(0, commentPos);
-		line.erase(0, line.find_first_not_of(" \t\r\n"));
-		line.erase(line.find_last_not_of(" \t\r\n") + 1);
+		line = trim(stripComment(line));
 		if (line.empty())
 			continue;
-
-		if (line == ".endchunk" || line == ".nullchunk") {
-			if (line == ".nullchunk") {
-				delete chunk;
-				return nullptr;
-			}
+		if (line == ".nullchunk") {
+			delete chunk;
+			return nullptr;
+		}
+		if (line == ".endchunk")
 			break;
-		}
-		if (line == ".const") {
-			inConst = true;
-			inCode = false;
+		if (line == ".const" || line == ".code") {
+			inConst = line == ".const";
+			inCode = !inConst;
 			continue;
 		}
-		if (line == ".code") {
-			inConst = false;
-			inCode = true;
-			continue;
-		}
-
 		if (inConst) {
 			size_t colon = line.find(':');
 			if (colon == std::string::npos)
 				continue;
-			std::stringstream ss(line.substr(colon + 1));
-			std::string typeStr;
-			ss >> typeStr;
-
-			if (typeStr == "INT") {
-				long long v;
-				ss >> v;
-				chunk->constants.push_back(Value::Int(v));
-			} else if (typeStr == "FLOAT") {
-				double v;
-				ss >> v;
-				chunk->constants.push_back(Value::Float(v));
-			} else if (typeStr == "BOOL") {
-				std::string v;
-				ss >> v;
-				chunk->constants.push_back(Value::Bool(v == "true"));
-			} else if (typeStr == "STR") {
-				std::string v;
-				std::getline(ss, v);
-				v.erase(0, v.find_first_not_of(" \t\""));
-				if (!v.empty() && v.back() == '"')
-					v.pop_back();
-				chunk->constants.push_back(Value::String(unescapeString(v)));
-			} else if (typeStr == "NONE")
-				chunk->constants.push_back(Value::None());
-			else if (typeStr == "OMIT") {
-				Value v;
-				v.type = ValueType::OMIT_MARKER;
-				chunk->constants.push_back(v);
-			} else if (typeStr == "FUNC") {
-				int id;
-				ss >> id;
-				Value v;
-				v.type = ValueType::FUNCTION;
-				v.ref = std::shared_ptr<HeapObject>(funcs[id]);
-				chunk->constants.push_back(v);
-			}
+			auto t = tokens(line.substr(colon + 1));
+			size_t k = 0;
+			chunk->constants.push_back(readConst(t, k, funcs));
 		} else if (inCode) {
-			std::stringstream ss(line);
-			std::string addr, mn;
-			ss >> addr >> mn;
-			OpCode op = mnemonicToOp(mn);
-			chunk->write(static_cast<uint8_t>(op), 0, 0);
-
-			int args = 0;
-			switch (op) {
-			case OpCode::OP_CONSTANT:
-			case OpCode::OP_GET_VAR:
-			case OpCode::OP_SET_VAR:
-			case OpCode::OP_DEFINE_VAR:
-			case OpCode::OP_GET_LOCAL:
-			case OpCode::OP_SET_LOCAL:
-			case OpCode::OP_CALL:
-			case OpCode::OP_BUILD_LIST:
-			case OpCode::OP_BUILD_TUPLE:
-			case OpCode::OP_BUILD_SET:
-			case OpCode::OP_BUILD_DICT:
-			case OpCode::OP_IMPORT:
-				args = 1;
-				break;
-			case OpCode::OP_JUMP:
-			case OpCode::OP_JUMP_IF_FALSE:
-			case OpCode::OP_LOOP:
-				args = 2;
-				break;
-			default:
-				break;
-			}
-			if (args == 1) {
-				int v;
-				if (ss >> v)
-					chunk->write(v, 0, 0);
-				else
-					chunk->write(0, 0, 0);
-			} else if (args == 2) {
-				int v;
-				if (ss >> v) {
-					chunk->write((v >> 8) & 0xFF, 0, 0);
-					chunk->write(v & 0xFF, 0, 0);
-				} else {
-					chunk->write(0, 0, 0);
-					chunk->write(0, 0, 0);
+			// "addr MNEMONIC b1 b2 ... @line": every number after the mnemonic is one operand byte
+			auto t = tokens(line);
+			if (t.size() < 2)
+				throw std::runtime_error("bad instruction line in .yb file: " + line);
+			int srcLine = 0;
+			std::vector<uint8_t> bytes = {static_cast<uint8_t>(mnemonicToOp(t[1]))};
+			for (size_t k = 2; k < t.size(); k++) {
+				if (t[k][0] == '@') {
+					srcLine = std::stoi(t[k].substr(1));
+					continue;
 				}
+				int b = std::stoi(t[k]);
+				if (b < 0 || b > 255)
+					throw std::runtime_error("operand out of byte range in .yb file: " + line);
+				bytes.push_back((uint8_t)b);
 			}
+			for (uint8_t b : bytes)
+				chunk->write(b, srcLine, 0);
 		}
 	}
 	return chunk;
@@ -848,11 +471,7 @@ Chunk *loadAssembly(std::istream &is) {
 	// Second pass: parse everything
 	Chunk *mainChunk = nullptr;
 	while (std::getline(is, line)) {
-		size_t commentPos = line.find(';');
-		if (commentPos != std::string::npos)
-			line = line.substr(0, commentPos);
-		line.erase(0, line.find_first_not_of(" \t\r\n"));
-		line.erase(line.find_last_not_of(" \t\r\n") + 1);
+		line = trim(stripComment(line));
 		if (line.empty())
 			continue;
 
@@ -863,11 +482,7 @@ Chunk *loadAssembly(std::istream &is) {
 			FunctionObject *f = funcs[id];
 
 			while (std::getline(is, line)) {
-				size_t cPos = line.find(';');
-				if (cPos != std::string::npos)
-					line = line.substr(0, cPos);
-				line.erase(0, line.find_first_not_of(" \t\r\n"));
-				line.erase(line.find_last_not_of(" \t\r\n") + 1);
+				line = trim(stripComment(line));
 				if (line.empty())
 					continue;
 
@@ -916,6 +531,8 @@ Chunk *loadAssembly(std::istream &is) {
 					std::stringstream pss(line.substr(13));
 					pss >> v;
 					f->returnsConst = v;
+				} else if (line.substr(0, 11) == ".returnsRef") {
+					f->returnsRef = std::stoi(line.substr(11));
 				} else if (line.substr(0, 9) == ".isCached") {
 					int v;
 					std::stringstream pss(line.substr(9));

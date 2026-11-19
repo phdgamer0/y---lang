@@ -28,4 +28,8 @@ void saveValue(const Value &v, std::ostream &os);
 
 Value loadValue(std::istream &is);
 
+void saveValues(const std::vector<Value> &vals, std::ostream &os);
+
+std::vector<Value> loadValues(std::istream &is);
+
 #endif // SERIALIZATION_HPP

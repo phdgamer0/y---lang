@@ -55,6 +55,9 @@ jobs:
           BIN=build/release/ymm; [ -f $BIN ] || BIN=build/release/ymm.exe
           ./$BIN smoke.ymm | tee out.txt
           grep -q '^42' out.txt
+          # bytecode (.ymc) and assembly (.yb) round trips must give the same result
+          ./$BIN -c smoke.ymm && ./$BIN smoke.ymc | grep -q '^42'
+          ./$BIN -c -h smoke.ymm && ./$BIN smoke.yb | grep -q '^42'
 
       - name: Regression - main() without params
         run: |

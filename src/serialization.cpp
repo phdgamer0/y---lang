@@ -103,6 +103,7 @@ void saveFunction(FunctionObject *func, std::ostream &os) {
 
 	os.write(reinterpret_cast<const char *>(&func->returnsConst), sizeof(func->returnsConst));
 	os.write(reinterpret_cast<const char *>(&func->isCached), sizeof(func->isCached));
+	os.write(reinterpret_cast<const char *>(&func->returnsRef), sizeof(func->returnsRef));
 	saveString(func->name, os);
 
 	bool hasChunk = func->chunk != nullptr;
@@ -147,6 +148,8 @@ FunctionObject *loadFunction(std::istream &is) {
 	is.read(reinterpret_cast<char *>(&returnsConst), sizeof(returnsConst));
 	bool isCached;
 	is.read(reinterpret_cast<char *>(&isCached), sizeof(isCached));
+	bool returnsRef = false;
+	is.read(reinterpret_cast<char *>(&returnsRef), sizeof(returnsRef));
 	std::string name = loadString(is);
 
 	bool hasChunk = false;
@@ -155,7 +158,7 @@ FunctionObject *loadFunction(std::istream &is) {
 	if (hasChunk)
 		chunk = loadChunk(is);
 
-	FunctionObject *func = new FunctionObject(params, returnType, std::vector<Expr *>(), returnsConst, std::vector<Stmt *>(), nullptr, isCached, chunk);
+	FunctionObject *func = new FunctionObject(params, returnType, std::vector<Expr *>(), returnsConst, std::vector<Stmt *>(), nullptr, isCached, chunk, returnsRef);
 	func->defaultRetChunks = defaultRetChunks;
 	func->name = name;
 	return func;
@@ -182,14 +185,61 @@ void saveValue(const Value &v, std::ostream &os) {
 	case ValueType::FUNCTION:
 		saveFunction(static_cast<FunctionObject *>(v.ref.get()), os);
 		break;
+	case ValueType::BIGINT: {
+		auto *big = static_cast<BigIntObject *>(v.ref.get());
+		os.write(reinterpret_cast<const char *>(&big->isNegative), sizeof(big->isNegative));
+		uint32_t n = big->chunks.size();
+		os.write(reinterpret_cast<const char *>(&n), sizeof(n));
+		os.write(reinterpret_cast<const char *>(big->chunks.data()), n * sizeof(uint32_t));
+		break;
+	}
+	case ValueType::LIST:
+		saveValues(static_cast<ListObject *>(v.ref.get())->elements, os);
+		break;
+	case ValueType::TUPLE:
+		saveValues(static_cast<TupleObject *>(v.ref.get())->elements, os);
+		break;
+	case ValueType::VECTOR:
+		saveValues(static_cast<VectorObject *>(v.ref.get())->elements, os);
+		break;
+	case ValueType::SET: {
+		auto &el = static_cast<SetObject *>(v.ref.get())->elements;
+		saveValues(std::vector<Value>(el.begin(), el.end()), os);
+		break;
+	}
+	case ValueType::DICT: {
+		std::vector<Value> flat;
+		for (const auto &kv : static_cast<DictObject *>(v.ref.get())->items) {
+			flat.push_back(kv.first);
+			flat.push_back(kv.second);
+		}
+		saveValues(flat, os);
+		break;
+	}
 	case ValueType::NOTYPE:
 	case ValueType::NONE:
 	case ValueType::OMIT_MARKER:
 		break;
 	default:
-		std::cerr << "Warning: Serialization of ValueType " << (int)v.type << " is not supported.\n";
-		break;
+		// a silently skipped constant would corrupt the file; fail the compile instead
+		throw std::runtime_error("cannot save a constant of type " + std::to_string((int)v.type) + " to bytecode");
 	}
+}
+
+void saveValues(const std::vector<Value> &vals, std::ostream &os) {
+	uint32_t n = vals.size();
+	os.write(reinterpret_cast<const char *>(&n), sizeof(n));
+	for (const auto &e : vals)
+		saveValue(e, os);
+}
+
+std::vector<Value> loadValues(std::istream &is) {
+	uint32_t n = 0;
+	is.read(reinterpret_cast<char *>(&n), sizeof(n));
+	std::vector<Value> vals;
+	for (uint32_t i = 0; i < n && is; i++)
+		vals.push_back(loadValue(is));
+	return vals;
 }
 
 Value loadValue(std::istream &is) {
@@ -238,9 +288,40 @@ Value loadValue(std::istream &is) {
 	case ValueType::OMIT_MARKER:
 		v.type = ValueType::OMIT_MARKER;
 		break;
-	default:
-		v = Value::None();
+	case ValueType::BIGINT: {
+		bool neg = false;
+		uint32_t n = 0;
+		is.read(reinterpret_cast<char *>(&neg), sizeof(neg));
+		is.read(reinterpret_cast<char *>(&n), sizeof(n));
+		std::vector<uint32_t> chunks(n);
+		is.read(reinterpret_cast<char *>(chunks.data()), n * sizeof(uint32_t));
+		v = Value::BigInt(chunks, neg);
 		break;
+	}
+	case ValueType::LIST:
+		v = Value::List(loadValues(is));
+		break;
+	case ValueType::TUPLE:
+		v = Value::Tuple(loadValues(is));
+		break;
+	case ValueType::VECTOR:
+		v = Value::Vector(loadValues(is));
+		break;
+	case ValueType::SET: {
+		auto el = loadValues(is);
+		v = Value::Set(std::unordered_set<Value, ValueHash, ValueEqual>(el.begin(), el.end()));
+		break;
+	}
+	case ValueType::DICT: {
+		auto flat = loadValues(is);
+		std::unordered_map<Value, Value, ValueHash, ValueEqual> m;
+		for (size_t i = 0; i + 1 < flat.size(); i += 2)
+			m[flat[i]] = flat[i + 1];
+		v = Value::Dict(m);
+		break;
+	}
+	default:
+		throw std::runtime_error("corrupt or unsupported bytecode file (value type " + std::to_string((int)type) + ")");
 	}
 	v.isConst = isConst;
 	return v;

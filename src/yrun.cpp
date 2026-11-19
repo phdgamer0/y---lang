@@ -23,6 +23,44 @@ struct ASTCleaner {
 	}
 };
 
+// Runs the top-level code, then main() if the program defines one. Shared by .ymm, .ymc and .yb.
+static void runProgram(Chunk &chunk, VM &vm, const std::vector<std::string> &scriptArgs) {
+	auto start = std::chrono::steady_clock::now();
+	vm.run(chunk);
+	if (!vm.globals->exists("main"))
+		return;
+	Value mainVal = vm.globals->get("main");
+	if (mainVal.type == ValueType::FUNCTION) {
+		Chunk bootChunk;
+		ByteCodeCompiler bootCompiler(&bootChunk);
+		int passedArgs = 0;
+		// main() with no params gets no argv
+		bool mainTakesArgs = !static_cast<FunctionObject *>(mainVal.ref.get())->params.empty();
+		for (size_t i = 1; mainTakesArgs && i < scriptArgs.size(); i++) {
+			bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
+			passedArgs++;
+		}
+		bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
+		bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
+		bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
+		bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
+		bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
+		bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
+		vm.run(bootChunk);
+	}
+	std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start;
+	std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
+	vm.globals->clear();
+}
+
+static void setupVM(VM &vm, Interpreter &interp) {
+	vm.globals = interp.env;
+	vm.methodResolver = [&interp](MethodCallExpr *m) { return interp.Resolve_methods(m); };
+	vm.importResolver = [&interp](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
+		interp.resolveImport(libName, symbols, targetEnv);
+	};
+}
+
 int main(int argc, char *argv[]) {
 	if (argc == 1) {
 		runREPL();
@@ -33,11 +71,12 @@ int main(int argc, char *argv[]) {
 	bool humanReadable = false;
 	std::vector<std::string> scriptArgs;
 
+	// flags only before the script path; everything after it belongs to the script
 	for (int i = 1; i < argc; i++) {
 		std::string arg = argv[i];
-		if (arg == "-c" || arg == "--compile") {
+		if (scriptArgs.empty() && (arg == "-c" || arg == "--compile")) {
 			compileOnly = true;
-		} else if (arg == "-h" || arg == "--humanreadable") {
+		} else if (scriptArgs.empty() && (arg == "-h" || arg == "--humanreadable")) {
 			humanReadable = true;
 		} else {
 			scriptArgs.push_back(arg);
@@ -46,7 +85,11 @@ int main(int argc, char *argv[]) {
 
 	if (scriptArgs.empty()) {
 		std::cerr << "FATAL ERROR: No input file provided.\n";
-		std::cerr << "Usage: yrun [flags] <file.ymm> [args...]\n";
+		std::cerr << "Usage: ymm [-c [-h]] <file.ymm|file.ymc|file.yb> [args...]\n";
+		return 1;
+	}
+	if (humanReadable && !compileOnly) {
+		std::cerr << "FATAL ERROR: -h only applies together with -c (ymm -c -h file.ymm writes file.yb)\n";
 		return 1;
 	}
 
@@ -61,6 +104,10 @@ int main(int argc, char *argv[]) {
 		std::cerr << "Interpretation aborted...\n";
 		return 1;
 	}
+	if (compileOnly && ext != ".ymm") {
+		std::cerr << "FATAL ERROR: -c compiles .ymm source files; " << n << " is already compiled.\n";
+		return 1;
+	}
 
 	std::ifstream file(path, std::ios::binary);
 	if (!file) {
@@ -70,92 +117,23 @@ int main(int argc, char *argv[]) {
 
 	DEBUGGER_MODE_IS_ENABLED = false;
 	enableColors();
-	std::chrono::steady_clock::time_point start;
-	std::chrono::steady_clock::time_point end;
 
-	if (ext == ".ymc") {
-		Chunk *chunk = loadChunk(file);
-		VM vm;
-		Interpreter interp;
-		vm.globals = interp.env;
-		vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
-		vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-			interp.resolveImport(libName, symbols, targetEnv);
-		};
-		start = std::chrono::steady_clock::now();
-		vm.run(*chunk);
-
-		if (vm.globals->exists("main")) {
-			Value mainVal = vm.globals->get("main");
-			if (mainVal.type == ValueType::FUNCTION) {
-				Chunk bootChunk;
-				ByteCodeCompiler bootCompiler(&bootChunk);
-				int passedArgs = 0;
-				// main() with no params gets no argv
-				bool mainTakesArgs = !static_cast<FunctionObject *>(mainVal.ref.get())->params.empty();
-				for (size_t i = 1; mainTakesArgs && i < scriptArgs.size(); i++) {
-					bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
-					passedArgs++;
-				}
-				bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
-				bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
-				bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
-				bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
-				bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
-				bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
-				vm.run(bootChunk);
-			}
-		}
-		end = std::chrono::steady_clock::now();
-		std::chrono::duration<double> elapsed = end - start;
-		std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
-		delete chunk;
-		return 0;
-	} else if (ext == ".yb") {
-		Chunk *chunk = loadAssembly(file);
-		VM vm;
-		Interpreter interp;
-		vm.globals = interp.env;
-		vm.methodResolver = [&](MethodCallExpr *m) { return interp.Resolve_methods(m); };
-		vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-			interp.resolveImport(libName, symbols, targetEnv);
-		};
-		start = std::chrono::steady_clock::now();
-		vm.run(*chunk);
-
-		if (vm.globals->exists("main")) {
-			Value mainVal = vm.globals->get("main");
-			if (mainVal.type == ValueType::FUNCTION) {
-				Chunk bootChunk;
-				ByteCodeCompiler bootCompiler(&bootChunk);
-				int passedArgs = 0;
-				// main() with no params gets no argv
-				bool mainTakesArgs = !static_cast<FunctionObject *>(mainVal.ref.get())->params.empty();
-				for (size_t i = 1; mainTakesArgs && i < scriptArgs.size(); i++) {
-					bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
-					passedArgs++;
-				}
-				bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
-				bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
-				bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
-				bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
-				bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
-				bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
-				vm.run(bootChunk);
-			}
-		}
-		end = std::chrono::steady_clock::now();
-		std::chrono::duration<double> elapsed = end - start;
-		std::cout << "Program finished successfully in " << elapsed.count() << " seconds with code 0\n";
-		delete chunk;
-		return 0;
-	}
-
-	std::stringstream ss;
-	ss << file.rdbuf();
-	std::string code = ss.str();
-
+	std::string code; // source text, for error context (empty for .ymc/.yb)
 	try {
+		if (ext == ".ymc" || ext == ".yb") {
+			std::unique_ptr<Chunk> chunk(ext == ".ymc" ? loadChunk(file) : loadAssembly(file));
+			if (!chunk)
+				throw std::runtime_error("cannot read " + n);
+			VM vm;
+			Interpreter interp;
+			setupVM(vm, interp);
+			runProgram(*chunk, vm, scriptArgs);
+			return 0;
+		}
+
+		std::stringstream ss;
+		ss << file.rdbuf();
+		code = ss.str();
 		auto tokens = tokenize(code);
 		Parser parser(tokens);
 		vector<Stmt *> program;
@@ -184,110 +162,74 @@ int main(int argc, char *argv[]) {
 		useVM = 1;
 #endif
 		Interpreter interp;
-		start = std::chrono::steady_clock::now();
 		if (!useVM) {
 			interp.interpret(program);
-			end = std::chrono::steady_clock::now();
 			std::cout << "Program finished successfully with code 0";
-		} else {
+			return 0;
+		}
 #ifndef VM_DEBUG_MODE
-			if (useVM == 2) {
-				std::cout << "\n[Notice: Fast Release Build active. Debugging disabled. Running standard VM]\n";
-				useVM = 1;
-			}
+		if (useVM == 2) {
+			std::cout << "\n[Notice: Fast Release Build active. Debugging disabled. Running standard VM]\n";
+			useVM = 1;
+		}
 #endif
-			if (useVM == 2) {
-				DEBUGGER_MODE_IS_ENABLED = true;
-			}
-			Chunk chunk;
-			ByteCodeCompiler compiler(&chunk);
-			if (compileOnly) {
-				compiler.isCompileOnly = true;
-				compiler.interp = &interp;
-				for (Stmt *stmt : program) {
-					if (!stmt)
-						continue;
-					if (stmt->type == StmtType::FUNC) {
-						auto f = static_cast<FuncStmt *>(stmt);
-						interp.env->set(f->name, Value::NoType(), false);
-					} else if (stmt->type == StmtType::LET) {
-						auto l = static_cast<LetStmt *>(stmt);
-						interp.env->set(l->name, Value::NoType(), false);
-					} else if (stmt->type == StmtType::MULTI_LET) {
-						auto ml = static_cast<MultiLetStmt *>(stmt);
-						for (const auto &name : ml->names) {
-							interp.env->set(name, Value::NoType(), false);
-						}
-					} else if (stmt->type == StmtType::CLASS) {
-						auto c = static_cast<ClassStmt *>(stmt);
-						interp.env->set(c->name, Value::NoType(), false);
-					}
-				}
-			}
+		if (useVM == 2) {
+			DEBUGGER_MODE_IS_ENABLED = true;
+		}
+		Chunk chunk;
+		ByteCodeCompiler compiler(&chunk);
+		if (compileOnly) {
+			// compile-only mode checks names statically; declare top-level names so forward references resolve
+			compiler.isCompileOnly = true;
+			compiler.interp = &interp;
 			for (Stmt *stmt : program) {
-				compiler.compileStmt(stmt);
-			}
-			int line = program.empty() ? 0 : program.back()->line;
-			int col = program.empty() ? 0 : program.back()->col;
-			compiler.emitByte(OpCode::OP_NOTYPE, line, col);
-			compiler.emitByte(OpCode::OP_RETURN, line, col);
-			VM vm;
-			vm.globals = interp.env;
-			vm.methodResolver = [&](MethodCallExpr *m) {
-				return interp.Resolve_methods(m);
-			};
-			vm.importResolver = [&](std::string libName, std::vector<std::string> symbols, std::shared_ptr<Env> targetEnv) {
-				interp.resolveImport(libName, symbols, targetEnv);
-			};
-
-			if (compileOnly) {
-				if (!humanReadable) {
-					std::string outPath = p.stem().string() + ".ymc";
-					std::ofstream outFile(outPath, std::ios::binary);
-					saveChunk(&chunk, outFile);
-					std::cout << "Successfully compiled to " << outPath << "\n";
-				} else {
-					std::string outPath = p.stem().string() + ".yb";
-					std::ofstream outFile(outPath);
-					saveAssembly(&chunk, outFile);
-					std::cout << "Successfully compiled to " << outPath << "\n";
-				}
-				return 0;
-			}
-			vm.run(chunk);
-			if (vm.globals->exists("main")) {
-				Value mainVal = vm.globals->get("main");
-				if (mainVal.type == ValueType::FUNCTION) {
-					Chunk bootChunk;
-					ByteCodeCompiler bootCompiler(&bootChunk);
-					int passedArgs = 0;
-					// main() with no params gets no argv
-					bool mainTakesArgs = !static_cast<FunctionObject *>(mainVal.ref.get())->params.empty();
-					for (size_t i = 1; mainTakesArgs && i < scriptArgs.size(); i++) {
-						bootCompiler.emitConstant(Value::String(scriptArgs[i]), 0, 0);
-						passedArgs++;
+				if (!stmt)
+					continue;
+				if (stmt->type == StmtType::FUNC) {
+					auto f = static_cast<FuncStmt *>(stmt);
+					interp.env->set(f->name, Value::NoType(), false);
+				} else if (stmt->type == StmtType::LET) {
+					auto l = static_cast<LetStmt *>(stmt);
+					interp.env->set(l->name, Value::NoType(), false);
+				} else if (stmt->type == StmtType::MULTI_LET) {
+					auto ml = static_cast<MultiLetStmt *>(stmt);
+					for (const auto &name : ml->names) {
+						interp.env->set(name, Value::NoType(), false);
 					}
-					bootCompiler.emitIdentifier(OpCode::OP_GET_VAR, "main", 0, 0);
-					bootCompiler.emitByte(OpCode::OP_CALL, 0, 0);
-					bootCompiler.chunk->write((uint8_t)passedArgs, 0, 0);
-					bootCompiler.emitByte(OpCode::OP_POP, 0, 0);
-					bootCompiler.emitByte(OpCode::OP_NOTYPE, 0, 0);
-					bootCompiler.emitByte(OpCode::OP_RETURN, 0, 0);
-					vm.run(bootChunk);
+				} else if (stmt->type == StmtType::CLASS) {
+					auto c = static_cast<ClassStmt *>(stmt);
+					interp.env->set(c->name, Value::NoType(), false);
 				}
-				end = std::chrono::steady_clock::now();
-				std::chrono::duration<double> elapsed = end - start;
-				std::cout << "Program finished successfully in " << elapsed.count() << " seconds " << "with code 0\n";
-				vm.globals->clear();
-			}
-
-			if (!vm.stack.empty()) {
-				vm.stack.clear();
-				// for debugging only!
-				// std::cout << "\n--- Final Stack Top ---\n";
-				// std::cout << valueToString(vm.stack.back()) << "\n";
 			}
 		}
+		for (Stmt *stmt : program) {
+			compiler.compileStmt(stmt);
+		}
+		int line = program.empty() ? 0 : program.back()->line;
+		int col = program.empty() ? 0 : program.back()->col;
+		compiler.emitByte(OpCode::OP_NOTYPE, line, col);
+		compiler.emitByte(OpCode::OP_RETURN, line, col);
+
+		if (compileOnly) {
+			std::string outPath = p.stem().string() + (humanReadable ? ".yb" : ".ymc");
+			// serialize fully before touching the file so a failure leaves no half-written output
+			std::ostringstream buf(humanReadable ? std::ios::out : std::ios::out | std::ios::binary);
+			if (humanReadable)
+				saveAssembly(&chunk, buf);
+			else
+				saveChunk(&chunk, buf);
+			std::ofstream outFile(outPath, humanReadable ? std::ios::out : std::ios::binary);
+			outFile << buf.str();
+			if (!outFile) {
+				std::cerr << "FATAL ERROR: cannot write " << outPath << "\n";
+				return 1;
+			}
+			std::cout << "Successfully compiled to " << outPath << "\n";
+			return 0;
+		}
+		VM vm;
+		setupVM(vm, interp);
+		runProgram(chunk, vm, scriptArgs);
 	} catch (const LangError &e) {
 		printErrorContext(code, e.line, e.col, p);
 		std::cerr << "\033[1;31m" << e.type << ": " << e.message << "\033[0m\n";
@@ -302,6 +244,10 @@ int main(int argc, char *argv[]) {
 void printErrorContext(const string &source, int line, int col, const std::filesystem::path &p) {
 	if (line <= 0)
 		return;
+	if (source.empty()) { // compiled .ymc/.yb: no source text, but line numbers are kept
+		std::cerr << "Traceback (most recent call last): File " << p.filename().string() << ", [line: " << line << "]\n";
+		return;
+	}
 	std::stringstream ss(source);
 	string currentLineText;
 	int currentLineNum = 1;

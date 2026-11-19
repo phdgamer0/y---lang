@@ -3504,7 +3504,7 @@ void VM::run(Chunk &chunk) {
 									result = stack[frame->basePointer];
 								} else {
 									if (result.type == ValueType::NOTYPE) {
-										if (!func->defaultRetArgs.empty()) {
+										if (!func->defaultRetChunks.empty()) { // chunks, not AST: survive .ymc/.yb
 											result =
 												executeDefault(func->defaultRetChunks.empty() ? nullptr : func->defaultRetChunks[0], line);
 										} else if (func->returnType != ValueType::NOTYPE) {
